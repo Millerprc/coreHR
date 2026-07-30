@@ -1,0 +1,63 @@
+# Environment and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+secrets/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyd
+.python-version
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Node and frontend
+node_modules/
+dist/
+build/
+.vite/
+*.tsbuildinfo
+coverage/
+playwright-report/
+test-results/
+
+# Logs and runtime
+*.log
+logs/
+tmp/
+temp/
+*.pid
+
+# Local data and uploads
+data/
+uploads/
+*.sqlite
+*.sqlite3
+*.db
+
+# IDE and OS
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Containers and local overrides
+docker-compose.override.yml
+compose.override.yml
+
+# Generated secrets or local certificates
+deploy/local/certs/
+deploy/local/secrets/
