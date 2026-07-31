@@ -27,7 +27,7 @@ services:
       retries: 30
 
   backend:
-    image: python:3.13-slim
+    image: python:3.13.14-slim
     working_dir: /work/backend
     volumes:
       - ./backend:/work/backend
@@ -35,7 +35,7 @@ services:
       - sh
       - -c
       - |
-        pip install --no-cache-dir -r requirements.txt &&
+        pip install --no-cache-dir --require-hashes -r requirements.lock &&
         pytest -v &&
         python verify_db.py
     environment:
@@ -57,8 +57,7 @@ services:
       - -c
       - |
         npm ci --no-audit --no-fund &&
-        npm run test:run &&
+        npm run test:run -- --maxWorkers=1 --minWorkers=1 &&
         npm run build
-    depends_on:
-      backend:
-        condition: service_completed_successfully
+    # 不依赖 backend：本任务 web 服务单独运行（run-all 调用方式决定，
+    # 避免 backend 完成后 web 被立即杀掉）。
