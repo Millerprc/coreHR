@@ -38,7 +38,7 @@
 | pytest | 8.3.4 | 测试运行器 |
 | pytest-asyncio | 0.25.0 | 异步测试，需 `asyncio_default_fixture_loop_scope` 配置 |
 
-后端依赖在 `python:3.13-slim` Linux 容器（glibc 2.36+）中安装并运行通过。
+后端依赖在 `python:3.13.14-slim` Linux 容器（glibc 2.36+）中以 `pip install --require-hashes -r requirements.lock` 安装并运行通过；`requirements.lock` 含 31 个包与 sha256 哈希。
 
 ### 前端
 
@@ -56,7 +56,7 @@
 
 Ant Design 6.5.2 已作为未来方向纳入评估，本任务不实际安装；其版本锁与 React 19 的集成验证由 Z0-005 任务 ADR 决定。
 
-`package-lock.json` 提交到仓库以保证可复现安装（218 resolved entries）。
+`package-lock.json` 提交到仓库以保证可复现安装（218 resolved entries）；`npm ci` 在容器中按 lockfile 精确安装。Vitest 跑测试时显式使用 `--maxWorkers=1 --minWorkers=1`，避免默认并发在 Windows bind mount 下长时间挂起。
 
 ### 数据库与缓存
 
@@ -74,21 +74,21 @@ Ant Design 6.5.2 已作为未来方向纳入评估，本任务不实际安装；
 
 ### 依赖锁定方案
 
-- Python：使用 `requirements.txt` 固定精确版本（`==`），依赖哈希锁定（`pip install --require-hashes`）由 Z0-002 引入 lock 工具后补全。
-- Node：使用 `package.json` 中显式精确版本（无 `^`、`~`），配合 `package-lock.json`。
-- 容器：使用 `image:tag` 锁定到次版本；Z0-003 引入 digest 锁定。
+- Python：使用 `requirements.txt` 固定 11 个直接依赖的精确版本（`==`）；`requirements.lock` 由 `pip-compile --generate-hashes` 生成，含全部 31 个包与 sha256 哈希，容器使用 `pip install --require-hashes -r requirements.lock` 校验后安装。
+- Node：使用 `package.json` 中显式精确版本（无 `^`、`~`），配合 `package-lock.json`；容器使用 `npm ci` 严格按 lockfile 安装。
+- 容器：使用 `image:tag` 锁定到精确 patch（如 `python:3.13.14-slim`、`postgres:16.14-alpine`），不依赖移动 tag。Z0-003 进一步引入 digest 锁定。
 
 ## 备选方案
 
 | 方案 | 评估 | 是否采纳 |
 |---|---|---|
-| Python 3.12 LTS | 3.12 仍是 LTS；3.13 已是稳定版且本机已装 | 否 |
+| Python 3.12 | 3.13 已是稳定版且本机已装 | 否 |
 | Python 3.11 | 3.13 已稳定 | 否 |
 | Node 24.17.0 | 24.17 已修复高危漏洞；本任务使用 24.18.1 最新 patch | 否 |
 | Node 24.15.0（初版） | 早于 24.17 安全修复，已被复审驳回 | 否 |
 | Django + DRF | 与 T-002 冲突 | 否 |
 | NestJS（Node 后端） | 与 T-002 冲突 | 否 |
-| PostgreSQL 17 | 17 已发布但生态适配尚浅；16 是当前 LTS | 否 |
+| PostgreSQL 17 | 17 已发布但生态适配尚浅；16 系仍受官方支持 | 否 |
 | PostgreSQL 16.10（初版） | 16.10 早于 16.14 安全修复，已被复审驳回 | 否 |
 | MariaDB | 与 T-004 PostgreSQL 冲突 | 否 |
 | Redis 8.x | 8.x 已发布；7.4 是更稳的维护分支 | 否 |
@@ -110,7 +110,7 @@ Ant Design 6.5.2 已作为未来方向纳入评估，本任务不实际安装；
 
 - 后端：FastAPI + SQLAlchemy 2.0 + Alembic 组合是当前 Python 生态最成熟路线。`psycopg v3` + manylinux 轮子覆盖 Linux 部署。
 - 前端：React 19 + Vite 6 + Vitest 3 是当前稳定组合；Ant Design 6 与 React 19 兼容性已通过 npm peer 信息确认。
-- 数据库：PG 16.14 + Redis 7.4.10 满足第零阶段本地容器与第一阶段 8GB/32GB 服务器需求；具体容量与压测不在本任务范围。
+- 数据库：PG 16.14 + Redis 7.4.10 满足第零阶段本地容器与第一阶段 8GB/32GB 服务器需求；具体容量与压测不在本任务范围。PG 16 系仍在 PostgreSQL 官方支持窗口内（按版本政策支持当前 minor 与前两个 minor）。
 - 后续任务必须使用本 ADR 锁定的版本。如需升级，必须新建 ADR 并重新执行兼容性验证。
 - 容器镜像锁定到 tag；生产部署前必须补 digest 锁定（Z0-003 范围）。
 - 验证工程落地在 `docs/adr/evidence/z0-001/`，可在任何 Docker 环境复跑。
@@ -198,5 +198,7 @@ redis:7.4.10-alpine   → 实际版本 Redis 7.4.10
 | 日期 | 动作 | 状态 |
 |---|---|---|
 | 2026-07-31 上午 | 初版提交 | `Accepted` |
-| 2026-07-31 下午 | 复审驳回：版本过时、事实不符、缺 Linux 验证、缺锁文件、缺独立 AI 验证、端口不安全 | 回退 |
-| 2026-07-31 下午 | 修正后版本：版本升级、Linux 容器实跑、验证工程入库、状态 `Proposed` | `Proposed`（待复审通过） |
+| 2026-07-31 上午 | 第一轮复审驳回：版本过时、事实不符、缺 Linux 验证、缺锁文件、缺独立 AI 验证、端口不安全 | 回退 |
+| 2026-07-31 下午 | 第一轮修正：版本升级、Linux 容器实跑、验证工程入库、状态 `Proposed` | `Proposed` |
+| 2026-07-31 下午 | 第二轮复审驳回：`compose wait` 卡死、`up --abort-on-container-exit` 误停 web、vitest 31 worker 在 Windows bind mount 挂起、Python 间接依赖未哈希锁、容器镜像用移动 tag | 回退 |
+| 2026-07-31 下午 | 第二轮修正：`up -d --wait` + `trap`/`finally` `down -v`、web `--no-deps`、vitest 单 worker、`requirements.lock` 带 sha256、`python:3.13.14-slim` 精确 tag | `Proposed`（待本轮复审通过） |
