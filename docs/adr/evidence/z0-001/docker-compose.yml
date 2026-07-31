@@ -1,0 +1,64 @@
+services:
+  pg:
+    image: postgres:16.14-alpine
+    environment:
+      POSTGRES_USER: hris
+      POSTGRES_PASSWORD: devpw
+      POSTGRES_DB: hris_dev
+    ports:
+      - "127.0.0.1:54329:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hris -d hris_dev"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
+    tmpfs:
+      - /var/lib/postgresql/data:rw,noexec,nosuid,size=256m
+
+  redis:
+    image: redis:7.4.10-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "127.0.0.1:63800:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
+
+  backend:
+    image: python:3.13-slim
+    working_dir: /work/backend
+    volumes:
+      - ./backend:/work/backend
+    command:
+      - sh
+      - -c
+      - |
+        pip install --no-cache-dir -r requirements.txt &&
+        pytest -v &&
+        python verify_db.py
+    environment:
+      PG_DSN: postgresql://hris:devpw@pg:5432/hris_dev
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      pg:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  web:
+    image: node:24.18.1-alpine
+    working_dir: /work/web
+    volumes:
+      - ./web:/work/web
+    command:
+      - sh
+      - -c
+      - |
+        npm ci --no-audit --no-fund &&
+        npm run test:run &&
+        npm run build
+    depends_on:
+      backend:
+        condition: service_completed_successfully
