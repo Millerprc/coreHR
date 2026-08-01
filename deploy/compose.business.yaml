@@ -1,0 +1,12 @@
+services:
+  api:
+    environment:
+      COREHR_BOOTSTRAP_TOKEN: ${COREHR_BOOTSTRAP_TOKEN:-local-dev-bootstrap-only}
+    command:
+      - uvicorn
+      - hris.business_main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --reload

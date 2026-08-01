@@ -1,0 +1,109 @@
+:root {
+  color: #172033;
+  background: #f4f7fb;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+}
+
+.app-shell {
+  min-height: 100vh;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: 80px;
+  padding: 0 22px;
+  color: #fff;
+}
+
+.brand-mark {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  place-items: center;
+  border-radius: 10px;
+  background: #2563eb;
+  font-weight: 800;
+}
+
+.brand-caption {
+  display: block;
+  margin-top: 2px;
+  color: #9ca9bd;
+  font-size: 12px;
+}
+
+.app-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 96px;
+  padding: 16px 32px;
+  background: #fff;
+  border-bottom: 1px solid #e7ebf1;
+}
+
+.app-header h3 {
+  margin: 2px 0 0;
+}
+
+.tagline {
+  color: #5f6b7a;
+  font-size: 13px;
+}
+
+.app-content {
+  padding: 28px 32px 48px;
+}
+
+.phase-card {
+  min-height: 440px;
+  border: 1px solid #e2e8f0;
+}
+
+.phase-number {
+  display: inline-grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border-radius: 8px;
+  background: #e8f0ff;
+  color: #1d4ed8;
+}
+
+.status-alert {
+  margin-bottom: 20px;
+}
+
+@media (max-width: 768px) {
+  .ant-layout-sider {
+    display: none;
+  }
+
+  .app-header {
+    height: auto;
+    align-items: flex-start;
+    padding: 20px;
+  }
+
+  .tagline {
+    display: none;
+  }
+
+  .app-content {
+    padding: 20px;
+  }
+}
+

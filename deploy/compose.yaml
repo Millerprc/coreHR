@@ -1,0 +1,93 @@
+name: corehr
+
+services:
+  db:
+    image: postgres:16.14-alpine
+    environment:
+      POSTGRES_DB: corehr
+      POSTGRES_USER: corehr
+      POSTGRES_PASSWORD: ${COREHR_DB_PASSWORD:-corehr_dev_only}
+    ports:
+      - "127.0.0.1:54329:5432"
+    volumes:
+      - corehr_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U corehr -d corehr"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    security_opt:
+      - no-new-privileges:true
+
+  redis:
+    image: redis:7.4.10-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "127.0.0.1:63800:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    security_opt:
+      - no-new-privileges:true
+
+  api:
+    build:
+      context: ../apps/api
+    environment:
+      APP_ENV: development
+      DATABASE_URL: postgresql+psycopg://corehr:${COREHR_DB_PASSWORD:-corehr_dev_only}@db:5432/corehr
+      REDIS_URL: redis://redis:6379/0
+      CORS_ORIGINS: '["http://127.0.0.1:5173","http://localhost:5173"]'
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - ../apps/api/src:/app/src
+      - ../apps/api/alembic:/app/alembic
+    command:
+      - uvicorn
+      - hris.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --reload
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/live')"
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    security_opt:
+      - no-new-privileges:true
+
+  web:
+    build:
+      context: ../apps/web
+      target: development
+    environment:
+      VITE_API_PROXY_TARGET: http://api:8000
+    ports:
+      - "127.0.0.1:5173:5173"
+    volumes:
+      - ../apps/web:/app
+      - web_node_modules:/app/node_modules
+    depends_on:
+      api:
+        condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  corehr_pgdata:
+  web_node_modules:
+
