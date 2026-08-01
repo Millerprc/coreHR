@@ -1,26 +1,108 @@
 # coreHR
 
-企业内部产品化HRIS项目。
+面向企业内部使用、按产品化方式建设的 HRIS。项目采用 AI Native Coding 方式开发，当前以 PostgreSQL、FastAPI、React 和 Ant Design 为技术基线。
 
-当前处于“第一阶段需求澄清 + 第零阶段工程底座开发”状态。
+## 当前状态
+
+第零阶段工程底座已经完成，业务第一至第三阶段的首批可运行切片已经落地并通过整栈验证。
+
+这里的“可运行切片”不代表三个阶段已经全部完成：企业现有数据表、真实人事流程图、合同字段、考勤规则和打卡接口仍需补充，相关功能会在获得正式输入后继续完善。
+
+### 已落地能力
+
+- 平台底座：主管理员初始化、本地账号认证、角色权限、审计日志、统一错误和并发安全流水号。
+- 第一阶段：组织、法人主体、职务、人员、工号、劳动关系、组织任职和月度编制结果。
+- 第二阶段：流程定义与版本、招聘需求、候选人、应聘、合同以及未来生效和回退人事事件。
+- 第三阶段：考勤规则容器、班次、排班、原始打卡、假期、请假和销假记录。
+- 管理端：主管理员登录工作台、核心数据统计、建设状态和待补资料提示。
+
+### 尚未宣称完成
+
+- 未配置真实审批图时，不生成实际审批人，也不自动执行人员变更。
+- 未配置企业考勤规则时，不生成正式考勤日报、月报或薪酬输入。
+- 尚未完成企业历史数据的正式导入映射和完整人员档案表单。
+- 尚未完成一万人同时打卡、查询考勤或薪酬的容量验证。
+- MySQL、Oracle、多租户和应用服务器中间件兼容性延后到第五阶段评估。
+
+## 技术栈
+
+- PostgreSQL 16
+- Redis 7
+- Python / FastAPI / SQLAlchemy / Alembic
+- React / TypeScript / Vite / Ant Design
+- Docker Compose
+
+## 快速开始
+
+详细步骤以[业务切片运行手册](./docs/implementation/business-runbook.md)为准。
+
+PowerShell：
+
+```powershell
+$env:COREHR_DB_PASSWORD = "本地随机数据库密码"
+$env:COREHR_BOOTSTRAP_TOKEN = "一次性随机初始化凭证"
+./scripts/dev-business-up.ps1
+```
+
+Linux 或 macOS：
+
+```bash
+export COREHR_DB_PASSWORD="本地随机数据库密码"
+export COREHR_BOOTSTRAP_TOKEN="一次性随机初始化凭证"
+./scripts/dev-business-up.sh
+```
+
+启动脚本会构建容器、等待 PostgreSQL 和 Redis 就绪、启动 API 与 Web，并执行数据库迁移。首次启动后还需按照运行手册初始化主管理员。
+
+## 访问地址
+
+- 主管理员工作台：<http://127.0.0.1:5173/business.html>
+- 项目建设状态：<http://127.0.0.1:5173/>
+- API 文档：<http://127.0.0.1:8000/docs>
+- 服务就绪状态：<http://127.0.0.1:8000/health/ready>
+
+## 验证与停止
+
+运行完整业务检查：
+
+```powershell
+./scripts/check-business-portable.ps1
+```
+
+停止本地服务：
+
+```powershell
+./scripts/dev-down.ps1
+```
+
+停止服务不会删除 PostgreSQL 数据卷。
+
+## 目录结构
+
+```text
+apps/api/                FastAPI 服务、业务模块、迁移和后端测试
+apps/web/                React 管理端、状态页和前端测试
+deploy/                  Docker Compose 与环境变量示例
+docs/01-foundation/      项目基线、第一阶段规格、PRD 和决策记录
+docs/adr/                架构决策记录
+docs/delivery/           阶段交付回执
+docs/implementation/     实施计划与运行手册
+scripts/                 启动、停止和自动检查脚本
+```
 
 ## 文档入口
 
-- [第一阶段正式文档目录](./docs/01-foundation/00-正式文档目录.md)
-- [MinimaxCode第零阶段开发基线](./docs/01-foundation/09-MinimaxCode第零阶段开发基线.md)
+- [正式文档目录](./docs/01-foundation/00-正式文档目录.md)
+- [第一阶段需求规格](./docs/01-foundation/01-第一阶段需求规格.md)
+- [第一阶段 PRD](./docs/01-foundation/02-第一阶段PRD.md)
+- [项目决策](./docs/01-foundation/03-项目决策.md)
+- [技术架构基线](./docs/01-foundation/04-技术架构基线.md)
+- [代码结构与编码规范](./docs/01-foundation/10-代码结构与编码规范.md)
+- [第一至第三阶段首批交付回执](./docs/delivery/P1-P3-BATCH-A.md)
 - [待确认问题](./docs/01-foundation/99-待确认问题.md)
-- [ADR规则](./docs/adr/README.md)
 
-## 当前可执行任务
+## 数据与安全
 
-MinimaxCode首先执行`Z0-001 技术版本与依赖冻结`。其余任务只有在任务卡依赖全部完成后才能开工。
-
-第一阶段HR业务模块尚未批准开发，不得自行推断业务字段、状态机或审批规则。
-
-## Git工作方式
-
-- 默认分支：`main`。
-- 每个原子任务使用独立分支，例如`feature/z0-001-toolchain`。
-- 一个任务对应一个独立提交或可独立审查的变更集。
-- 提交信息使用Conventional Commits，例如`docs(adr): freeze toolchain versions`。
-- 不向仓库提交密钥、`.env`、真实人员数据、构建产物或本地数据库。
+- 不提交密钥、Personal Access Token、`.env`、真实人员数据、本地数据库或构建产物。
+- 示例配置只用于本地开发；生产环境必须使用独立强密码、HTTPS 和受控的凭据管理方式。
+- 导入企业数据前必须完成脱敏、字段映射和校验规则确认。
