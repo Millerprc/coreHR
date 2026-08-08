@@ -39,6 +39,7 @@ from hris.modules.workforce.models import (
     OrganizationType,
     OrganizationVersion,
     Person,
+    PersonLabel,
     RecruitmentRequest,
     ReportingRelation,
     RevenueTarget,
@@ -74,6 +75,7 @@ __all__ = [
     "OrganizationType",
     "OrganizationVersion",
     "Person",
+    "PersonLabel",
     "RecruitmentRequest",
     "ReportingRelation",
     "RevenueTarget",
@@ -85,4 +87,3 @@ __all__ = [
     "WorkflowTask",
     "WorkflowVersion",
 ]
-

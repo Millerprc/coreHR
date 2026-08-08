@@ -2,6 +2,9 @@
 
 from hris.shared.db import models as phase_models
 from hris.modules.platform.models import (
+    DataDictionary,
+    DataDictionaryItem,
+    ExternalRecordLink,
     NumberSequence,
     Permission,
     Role,
@@ -12,6 +15,9 @@ from hris.modules.platform.models import (
 )
 
 __all__ = [
+    "DataDictionary",
+    "DataDictionaryItem",
+    "ExternalRecordLink",
     "NumberSequence",
     "Permission",
     "Role",

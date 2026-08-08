@@ -241,6 +241,37 @@ class Person(UuidPrimaryKeyMixin, TimestampMixin, Base):
     status: Mapped[str] = mapped_column(String(30), nullable=False, default="active")
 
 
+class PersonLabel(UuidPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "person_labels"
+    __table_args__ = (
+        UniqueConstraint(
+            "person_id",
+            "label_type",
+            "label_name",
+            "effective_from",
+            "source",
+        ),
+        CheckConstraint(
+            "effective_to IS NULL OR effective_to >= effective_from",
+            name="effective_period_order",
+        ),
+    )
+
+    person_id: Mapped[UUID] = mapped_column(
+        Uuid,
+        ForeignKey("persons.id"),
+        nullable=False,
+        index=True,
+    )
+    label_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    label_type: Mapped[str] = mapped_column(String(100), nullable=False)
+    source: Mapped[str] = mapped_column(String(80), nullable=False)
+    effective_from: Mapped[date] = mapped_column(Date, nullable=False)
+    effective_to: Mapped[date | None] = mapped_column(Date)
+    status: Mapped[str] = mapped_column(String(30), nullable=False, default="active")
+    is_ai_generated: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+
 class Employment(UuidPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "employments"
     __table_args__ = (
@@ -606,4 +637,3 @@ class AuditLog(UuidPrimaryKeyMixin, Base):
         default=dict,
     )
     source: Mapped[str] = mapped_column(String(50), nullable=False)
-

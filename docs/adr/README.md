@@ -2,6 +2,11 @@
 
 ADR用于记录影响工程结构、技术选型、安全或运行方式的重要技术决策，不用于决定产品业务规则。
 
+| ADR | 标题 | 状态 | 日期 |
+|---|---|---|---|
+| [ADR-0001](ADR-0001-toolchain.md) | 第零阶段工具链与版本冻结 | Proposed | 2026-07-31 |
+| [ADR-0002](ADR-0002-ehr-source-migration-boundary.md) | EHR 源库镜像与 coreHR 归一化迁移边界 | Accepted | 2026-08-08 |
+
 ## 命名
 
 ```text
