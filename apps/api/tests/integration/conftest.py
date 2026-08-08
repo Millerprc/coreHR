@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 
@@ -86,11 +87,16 @@ async def _seed_access_token(
     raw_token: str,
 ) -> str:
     now = datetime.now(UTC)
-    permission = Permission(
-        code=permission_code,
-        name=f"Synthetic {permission_code}",
-        module_code="TEST",
+    permission = await db_session.scalar(
+        select(Permission).where(Permission.code == permission_code)
     )
+    if permission is None:
+        permission = Permission(
+            code=permission_code,
+            name=f"Synthetic {permission_code}",
+            module_code="TEST",
+        )
+        db_session.add(permission)
     role = Role(
         code=role_code,
         name=f"Synthetic {role_code}",
@@ -104,7 +110,7 @@ async def _seed_access_token(
         status="active",
         failed_attempts=0,
     )
-    db_session.add_all([permission, role, user])
+    db_session.add_all([role, user])
     await db_session.flush()
     db_session.add_all(
         [
