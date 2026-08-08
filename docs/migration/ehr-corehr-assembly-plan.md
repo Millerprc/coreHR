@@ -1,7 +1,7 @@
 # EHR 源数据装配到 coreHR 的执行方案
 
-> 状态：结构映射完成，数据导入待枚举与安全规则确认  
-> 来源：本地 `ehr_data.sql` 只读扫描  
+> 状态：结构映射完成，数据导入待枚举与安全规则确认
+> 来源：本地 `ehr_data.sql` 只读扫描
 > 决策依据：[ADR-0002](../adr/ADR-0002-ehr-source-migration-boundary.md)
 
 ## 1. 装配原则
