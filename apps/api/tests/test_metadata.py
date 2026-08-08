@@ -25,6 +25,12 @@ def test_phase_one_to_three_tables_are_registered() -> None:
         "data_dictionary_items",
         "external_record_links",
         "person_labels",
+        "organization_events",
+        "organization_leaders",
+        "person_bp_memberships",
+        "bp_service_scopes",
+        "revenue_target_months",
+        "outbox_events",
     }
 
     assert expected_tables <= set(Base.metadata.tables)
@@ -36,3 +42,11 @@ def test_external_record_links_do_not_store_raw_source_payloads() -> None:
     assert "raw_payload" not in columns
     assert "source_record_id" in columns
     assert "source_checksum" in columns
+
+
+def test_revenue_months_are_normalized() -> None:
+    target_columns = set(Base.metadata.tables["revenue_targets"].columns.keys())
+    month_columns = set(Base.metadata.tables["revenue_target_months"].columns.keys())
+
+    assert "monthly_amounts" not in target_columns
+    assert {"revenue_target_id", "month", "amount"} <= month_columns

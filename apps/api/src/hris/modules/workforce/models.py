@@ -119,6 +119,8 @@ class OrganizationLegalEntity(UuidPrimaryKeyMixin, TimestampMixin, Base):
     )
     effective_from: Mapped[date] = mapped_column(Date, nullable=False)
     effective_to: Mapped[date | None] = mapped_column(Date)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    is_current: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
 
 class JobCatalog(UuidPrimaryKeyMixin, TimestampMixin, Base):
@@ -144,11 +146,20 @@ class JobCatalog(UuidPrimaryKeyMixin, TimestampMixin, Base):
 
 class CostCenter(UuidPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "cost_centers"
+    __table_args__ = (
+        CheckConstraint(
+            "effective_to IS NULL OR effective_to >= effective_from",
+            name="effective_period_order",
+        ),
+    )
 
     code: Mapped[str] = mapped_column(String(50), unique=True, nullable=False)
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     country_code: Mapped[str | None] = mapped_column(String(3))
     status: Mapped[str] = mapped_column(String(30), nullable=False, default="active")
+    effective_from: Mapped[date] = mapped_column(Date, nullable=False)
+    effective_to: Mapped[date | None] = mapped_column(Date)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
 
 
 class OrganizationCostAllocation(UuidPrimaryKeyMixin, TimestampMixin, Base):
@@ -212,7 +223,6 @@ class RevenueTarget(UuidPrimaryKeyMixin, TimestampMixin, Base):
     year: Mapped[int] = mapped_column(Integer, nullable=False)
     currency_code: Mapped[str] = mapped_column(String(3), nullable=False)
     annual_amount: Mapped[Decimal] = mapped_column(Numeric(20, 4), nullable=False)
-    monthly_amounts: Mapped[list[str]] = mapped_column(JSON, nullable=False)
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     is_current: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     change_reason: Mapped[str] = mapped_column(String(500), nullable=False)
