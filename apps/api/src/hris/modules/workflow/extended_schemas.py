@@ -135,6 +135,45 @@ class JobApplicationPage(BaseModel):
     offset: int
 
 
+class ApplicationHireCreate(BaseModel):
+    idempotency_key: UUID
+    planned_start_date: date
+    employee_type_code: str = Field(
+        min_length=1,
+        max_length=50,
+        pattern=r"^[A-Z][A-Z0-9_]*$",
+    )
+    contract_legal_entity_id: UUID
+    payroll_legal_entity_id: UUID | None = None
+    social_insurance_legal_entity_id: UUID | None = None
+    tax_legal_entity_id: UUID | None = None
+    existing_person_id: UUID | None = None
+    gender_code: str | None = Field(default=None, max_length=30)
+    birth_date: date | None = None
+    nationality_code: str | None = Field(default=None, min_length=2, max_length=3)
+    country_code: str | None = Field(default=None, min_length=2, max_length=3)
+    probation_end_date: date | None = None
+    reason: str = Field(min_length=1, max_length=500)
+
+
+class ApplicationHireConversionResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    application_id: UUID
+    candidate_id: UUID
+    person_id: UUID
+    employment_id: UUID
+    assignment_id: UUID
+    idempotency_key: UUID
+    planned_start_date: date
+    employee_type_code: str
+    converted_by: UUID
+    converted_at: datetime
+    created_at: datetime
+    updated_at: datetime
+
+
 class ContractCreate(BaseModel):
     person_id: UUID
     employment_id: UUID | None = None

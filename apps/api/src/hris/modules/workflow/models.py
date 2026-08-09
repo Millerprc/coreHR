@@ -142,6 +142,50 @@ class JobApplication(UuidPrimaryKeyMixin, TimestampMixin, Base):
     )
 
 
+class ApplicationHireConversion(UuidPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "application_hire_conversions"
+
+    application_id: Mapped[UUID] = mapped_column(
+        Uuid,
+        ForeignKey("job_applications.id"),
+        unique=True,
+        nullable=False,
+    )
+    candidate_id: Mapped[UUID] = mapped_column(
+        Uuid,
+        ForeignKey("candidates.id"),
+        nullable=False,
+        index=True,
+    )
+    person_id: Mapped[UUID] = mapped_column(
+        Uuid,
+        ForeignKey("persons.id"),
+        nullable=False,
+        index=True,
+    )
+    employment_id: Mapped[UUID] = mapped_column(
+        Uuid,
+        ForeignKey("employments.id"),
+        unique=True,
+        nullable=False,
+    )
+    assignment_id: Mapped[UUID] = mapped_column(
+        Uuid,
+        ForeignKey("employment_assignments.id"),
+        unique=True,
+        nullable=False,
+    )
+    idempotency_key: Mapped[UUID] = mapped_column(Uuid, unique=True, nullable=False)
+    request_checksum: Mapped[str] = mapped_column(String(64), nullable=False)
+    planned_start_date: Mapped[date] = mapped_column(Date, nullable=False)
+    employee_type_code: Mapped[str] = mapped_column(String(50), nullable=False)
+    converted_by: Mapped[UUID] = mapped_column(Uuid, nullable=False)
+    converted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
+
+
 class ContractRecord(UuidPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "contract_records"
     __table_args__ = (
@@ -179,4 +223,3 @@ class ContractRecord(UuidPrimaryKeyMixin, TimestampMixin, Base):
         nullable=False,
         default=dict,
     )
-

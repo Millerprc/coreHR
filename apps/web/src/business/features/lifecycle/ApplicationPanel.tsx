@@ -1,8 +1,8 @@
-import { Alert, Button, Empty, Form, Input, Modal, Select, Space, Table, Tag, Typography } from "antd"
+import { Alert, Button, Checkbox, Empty, Form, Input, Modal, Select, Space, Table, Tag, Typography } from "antd"
 import { useCallback, useEffect, useMemo, useState } from "react"
 
 import { workforceApi } from "../workforce/api"
-import type { RecruitmentRequest } from "../workforce/types"
+import type { LegalEntity, Person, RecruitmentRequest } from "../workforce/types"
 import { lifecycleApi } from "./api"
 import type { Candidate, JobApplication } from "./types"
 
@@ -13,11 +13,25 @@ interface ApplicationPanelProps {
 }
 
 
+interface HireFormValues {
+  readonly planned_start_date: string
+  readonly employee_type_code: string
+  readonly contract_legal_entity_id: string
+  readonly same_legal_entities: boolean
+  readonly payroll_legal_entity_id?: string
+  readonly social_insurance_legal_entity_id?: string
+  readonly tax_legal_entity_id?: string
+  readonly existing_person_id?: string
+  readonly probation_end_date?: string
+  readonly reason: string
+}
+
+
 const nextStatuses: Record<string, readonly string[]> = {
   active: ["screening", "rejected", "withdrawn"],
   screening: ["interview", "rejected", "withdrawn"],
   interview: ["offer", "rejected", "withdrawn"],
-  offer: ["hired", "rejected", "withdrawn"],
+  offer: ["rejected", "withdrawn"],
 }
 
 
@@ -25,26 +39,39 @@ export function ApplicationPanel({ token, canAdmin }: ApplicationPanelProps) {
   const [candidates, setCandidates] = useState<readonly Candidate[]>([])
   const [applications, setApplications] = useState<readonly JobApplication[]>([])
   const [requests, setRequests] = useState<readonly RecruitmentRequest[]>([])
+  const [legalEntities, setLegalEntities] = useState<readonly LegalEntity[]>([])
+  const [persons, setPersons] = useState<readonly Person[]>([])
   const [candidateOpen, setCandidateOpen] = useState(false)
   const [applicationOpen, setApplicationOpen] = useState(false)
+  const [hireOpen, setHireOpen] = useState(false)
+  const [hireApplicationRecord, setHireApplicationRecord] = useState<JobApplication | null>(null)
+  const [hireIdempotencyKey, setHireIdempotencyKey] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+  const [personSearching, setPersonSearching] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [hireError, setHireError] = useState<string | null>(null)
   const [candidateForm] = Form.useForm()
   const [applicationForm] = Form.useForm()
+  const [hireForm] = Form.useForm<HireFormValues>()
+  const sameLegalEntities = Form.useWatch("same_legal_entities", hireForm) ?? true
 
   const load = useCallback(async () => {
     setLoading(true)
     setError(null)
     try {
-      const [candidatePage, applicationPage, requestPage] = await Promise.all([
+      const [candidatePage, applicationPage, requestPage, legalPage, personPage] = await Promise.all([
         lifecycleApi.candidates(token),
         lifecycleApi.applications(token),
         workforceApi.recruitmentRequests(token),
+        workforceApi.legalEntities(token),
+        workforceApi.persons(token),
       ])
       setCandidates(candidatePage.items)
       setApplications(applicationPage.items)
       setRequests(requestPage.items)
+      setLegalEntities(legalPage.items)
+      setPersons(personPage.items)
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "应聘数据加载失败")
     } finally {
@@ -108,6 +135,67 @@ export function ApplicationPanel({ token, canAdmin }: ApplicationPanelProps) {
     }
   }
 
+  function openHire(application: JobApplication): void {
+    setHireError(null)
+    setHireApplicationRecord(application)
+    setHireIdempotencyKey(globalThis.crypto.randomUUID())
+    hireForm.setFieldsValue({
+      employee_type_code: "REGULAR",
+      same_legal_entities: true,
+      contract_legal_entity_id: legalEntities.length === 1 ? legalEntities[0].id : undefined,
+    })
+    setHireOpen(true)
+  }
+
+  function closeHire(): void {
+    hireForm.resetFields()
+    setHireOpen(false)
+    setHireApplicationRecord(null)
+    setHireIdempotencyKey(null)
+    setHireError(null)
+  }
+
+  async function searchPersons(value: string): Promise<void> {
+    const search = value.trim()
+    if (search.length < 2) return
+    setPersonSearching(true)
+    setHireError(null)
+    try {
+      const page = await workforceApi.persons(token, search)
+      setPersons(page.items)
+    } catch (caught) {
+      setHireError(caught instanceof Error ? caught.message : "人员档案搜索失败")
+    } finally {
+      setPersonSearching(false)
+    }
+  }
+
+  async function confirmHire(values: HireFormValues): Promise<void> {
+    if (!hireApplicationRecord || !hireIdempotencyKey) return
+    setSaving(true)
+    setError(null)
+    try {
+      await lifecycleApi.hireApplication(token, hireApplicationRecord.id, {
+        idempotency_key: hireIdempotencyKey,
+        planned_start_date: values.planned_start_date,
+        employee_type_code: values.employee_type_code.trim().toUpperCase(),
+        contract_legal_entity_id: values.contract_legal_entity_id,
+        payroll_legal_entity_id: values.same_legal_entities ? null : values.payroll_legal_entity_id || null,
+        social_insurance_legal_entity_id: values.same_legal_entities ? null : values.social_insurance_legal_entity_id || null,
+        tax_legal_entity_id: values.same_legal_entities ? null : values.tax_legal_entity_id || null,
+        existing_person_id: values.existing_person_id || null,
+        probation_end_date: values.probation_end_date || null,
+        reason: values.reason.trim(),
+      })
+      closeHire()
+      await load()
+    } catch (caught) {
+      setHireError(caught instanceof Error ? caught.message : "确认录用失败")
+    } finally {
+      setSaving(false)
+    }
+  }
+
   async function deactivateCandidate(candidate: Candidate): Promise<void> {
     const reason = window.prompt("请输入停用候选人的原因")?.trim()
     if (!reason) return
@@ -128,6 +216,14 @@ export function ApplicationPanel({ token, canAdmin }: ApplicationPanelProps) {
   const requestOptions = useMemo(() => requests
     .filter((item) => !["closed", "cancelled"].includes(item.status))
     .map((item) => ({ label: `${item.request_number} · ${item.requested_count}人`, value: item.id })), [requests])
+  const legalEntityOptions = useMemo(() => legalEntities
+    .filter((item) => item.status === "active")
+    .map((item) => ({ label: `${item.name} (${item.code})`, value: item.id })), [legalEntities])
+  const personOptions = useMemo(() => persons
+    .map((item) => ({
+      label: `${item.display_name}${item.employee_number ? ` (${item.employee_number})` : ""}`,
+      value: item.id,
+    })), [persons])
 
   return <div className="lifecycle-panel-stack">
     {error && <Alert closable onClose={() => setError(null)} type="error" showIcon message={error} />}
@@ -171,10 +267,13 @@ export function ApplicationPanel({ token, canAdmin }: ApplicationPanelProps) {
         { title: "状态", dataIndex: "status", width: 110, render: (value) => <Tag color={value === "hired" ? "success" : ["rejected", "withdrawn"].includes(value) ? "default" : "processing"}>{value}</Tag> },
         {
           title: "推进",
-          width: 260,
-          render: (_value, row) => canAdmin ? <Space wrap>{(nextStatuses[row.status] ?? []).map((status) =>
-            <Button key={status} size="small" loading={saving} danger={["rejected", "withdrawn"].includes(status)} onClick={() => void changeStatus(row, status)}>{status}</Button>,
-          )}</Space> : null,
+          width: 340,
+          render: (_value, row) => canAdmin ? <Space wrap>
+            {row.status === "offer" && <Button type="primary" size="small" loading={saving} onClick={() => openHire(row)}>确认录用</Button>}
+            {(nextStatuses[row.status] ?? []).map((status) =>
+              <Button key={status} size="small" loading={saving} danger={["rejected", "withdrawn"].includes(status)} onClick={() => void changeStatus(row, status)}>{status}</Button>,
+            )}
+          </Space> : null,
         },
       ]}
     />
@@ -190,6 +289,46 @@ export function ApplicationPanel({ token, canAdmin }: ApplicationPanelProps) {
       <Form form={applicationForm} layout="vertical" requiredMark={false} onFinish={(values) => void createApplication(values)}>
         <Form.Item label="候选人" name="candidate_id" rules={[{ required: true }]}><Select showSearch optionFilterProp="label" options={candidateOptions} /></Form.Item>
         <Form.Item label="招聘需求" name="recruitment_request_id" rules={[{ required: true }]}><Select showSearch optionFilterProp="label" options={requestOptions} /></Form.Item>
+      </Form>
+    </Modal>
+    <Modal
+      title="确认录用并创建待入职档案"
+      open={hireOpen}
+      okText="确认录用"
+      confirmLoading={saving}
+      onOk={() => hireForm.submit()}
+      onCancel={closeHire}
+      width={720}
+    >
+      <Form<HireFormValues> form={hireForm} layout="vertical" requiredMark={false} onFinish={(values) => void confirmHire(values)}>
+        {hireError && <Alert type="error" showIcon message={hireError} />}
+        <Typography.Paragraph type="secondary">
+          确认后将占用工号，并按招聘需求建立主组织和主职务。重复提交不会重复建档。
+        </Typography.Paragraph>
+        <Form.Item label="计划入职日期" name="planned_start_date" rules={[{ required: true }]}><Input type="date" /></Form.Item>
+        <Form.Item label="员工类型代码" name="employee_type_code" rules={[{ required: true }]}><Input placeholder="例如 REGULAR、CAMPUS" /></Form.Item>
+        <Form.Item label="合同法人主体" name="contract_legal_entity_id" rules={[{ required: true }]}>
+          <Select showSearch optionFilterProp="label" options={legalEntityOptions} />
+        </Form.Item>
+        <Form.Item name="same_legal_entities" valuePropName="checked"><Checkbox>薪资、社保、个税主体默认与合同主体相同</Checkbox></Form.Item>
+        {!sameLegalEntities && <>
+          <Form.Item label="薪资法人主体" name="payroll_legal_entity_id"><Select allowClear showSearch optionFilterProp="label" options={legalEntityOptions} /></Form.Item>
+          <Form.Item label="社保法人主体" name="social_insurance_legal_entity_id"><Select allowClear showSearch optionFilterProp="label" options={legalEntityOptions} /></Form.Item>
+          <Form.Item label="个税法人主体" name="tax_legal_entity_id"><Select allowClear showSearch optionFilterProp="label" options={legalEntityOptions} /></Form.Item>
+        </>}
+        <Form.Item label="关联已有人员档案" name="existing_person_id" extra="再次入职时选择，系统会沿用原工号">
+          <Select
+            allowClear
+            showSearch
+            filterOption={false}
+            loading={personSearching}
+            onSearch={(value) => void searchPersons(value)}
+            options={personOptions}
+            placeholder="输入至少两个字或工号搜索"
+          />
+        </Form.Item>
+        <Form.Item label="试用期结束日期" name="probation_end_date"><Input type="date" /></Form.Item>
+        <Form.Item label="录用原因" name="reason" rules={[{ required: true }]}><Input.TextArea rows={3} /></Form.Item>
       </Form>
     </Modal>
   </div>

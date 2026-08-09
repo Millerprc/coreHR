@@ -4,6 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from hris.modules.attendance.extended_schemas import PunchCreate, ShiftCreate
+from hris.modules.workflow.extended_schemas import ApplicationHireCreate
 from hris.modules.workforce.extended_schemas import HeadcountPlanCreate
 
 
@@ -45,4 +46,15 @@ def test_shift_midnight_consistency() -> None:
             end_time="08:00:00",
             crosses_midnight=False,
             rule_set_id="00000000-0000-0000-0000-000000000001",
+        )
+
+
+def test_hire_employee_type_code_must_use_uppercase_configuration_code() -> None:
+    with pytest.raises(ValidationError):
+        ApplicationHireCreate(
+            idempotency_key="00000000-0000-4000-8000-000000000001",
+            planned_start_date="2026-09-01",
+            employee_type_code="regular",
+            contract_legal_entity_id="00000000-0000-0000-0000-000000000001",
+            reason="test",
         )

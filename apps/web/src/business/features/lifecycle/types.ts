@@ -69,6 +69,23 @@ export interface JobApplication {
 }
 
 
+export interface ApplicationHireConversion {
+  readonly id: string
+  readonly application_id: string
+  readonly candidate_id: string
+  readonly person_id: string
+  readonly employment_id: string
+  readonly assignment_id: string
+  readonly idempotency_key: string
+  readonly planned_start_date: string
+  readonly employee_type_code: string
+  readonly converted_by: string
+  readonly converted_at: string
+  readonly created_at: string
+  readonly updated_at: string
+}
+
+
 export interface ContractRecord {
   readonly id: string
   readonly person_id: string

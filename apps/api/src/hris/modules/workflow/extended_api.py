@@ -8,6 +8,8 @@ from hris.core.database import get_db
 from hris.modules.platform.dependencies import require_permission
 from hris.modules.platform.models import UserAccount
 from hris.modules.workflow.extended_schemas import (
+    ApplicationHireConversionResponse,
+    ApplicationHireCreate,
     CandidateCreate,
     CandidatePage,
     CandidateResponse,
@@ -233,6 +235,23 @@ async def update_application(
 ) -> JobApplicationResponse:
     return JobApplicationResponse.model_validate(
         await service(db, user, request).update_application(application_id, payload)
+    )
+
+
+@router.post(
+    "/applications/{application_id}/hire",
+    response_model=ApplicationHireConversionResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def hire_application(
+    application_id: UUID,
+    payload: ApplicationHireCreate,
+    request: Request,
+    db: DbSession,
+    user: AdminUser,
+) -> ApplicationHireConversionResponse:
+    return ApplicationHireConversionResponse.model_validate(
+        await service(db, user, request).hire_application(application_id, payload)
     )
 
 

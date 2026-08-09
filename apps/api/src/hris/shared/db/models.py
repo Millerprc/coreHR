@@ -14,6 +14,7 @@ from hris.modules.attendance.models import (
     Shift,
 )
 from hris.modules.workflow.models import (
+    ApplicationHireConversion,
     Candidate,
     ContractRecord,
     JobApplication,
@@ -57,6 +58,7 @@ __all__ = [
     "AttendancePunch",
     "AttendanceRuleSet",
     "AuditLog",
+    "ApplicationHireConversion",
     "Candidate",
     "ContractRecord",
     "CostCenter",

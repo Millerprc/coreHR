@@ -1,5 +1,6 @@
 import { apiRequest } from "../../client"
 import type {
+  ApplicationHireConversion,
   Candidate,
   ContractRecord,
   HrEvent,
@@ -38,6 +39,11 @@ export const lifecycleApi = {
     apiRequest<JobApplication>("/api/v1/lifecycle/applications", token, { method: "POST", body }),
   updateApplication: (token: string, applicationId: string, body: unknown) =>
     apiRequest<JobApplication>(`/api/v1/lifecycle/applications/${applicationId}`, token, { method: "PATCH", body }),
+  hireApplication: (token: string, applicationId: string, body: unknown) =>
+    apiRequest<ApplicationHireConversion>(`/api/v1/lifecycle/applications/${applicationId}/hire`, token, {
+      method: "POST",
+      body,
+    }),
   contracts: (token: string) =>
     apiRequest<LifecyclePage<ContractRecord>>("/api/v1/lifecycle/contracts?limit=200&offset=0", token),
   createContract: (token: string, body: unknown) =>

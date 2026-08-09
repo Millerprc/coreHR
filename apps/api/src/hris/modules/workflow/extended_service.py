@@ -1,3 +1,5 @@
+import hashlib
+import json
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from uuid import UUID
@@ -9,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from hris.core.errors import ApiError
 from hris.modules.platform.numbering import next_number
 from hris.modules.workflow.extended_schemas import (
+    ApplicationHireCreate,
     CandidateCreate,
     CandidateUpdate,
     ContractCreate,
@@ -23,6 +26,7 @@ from hris.modules.workflow.extended_schemas import (
     WorkflowTaskDecision,
 )
 from hris.modules.workflow.models import (
+    ApplicationHireConversion,
     Candidate,
     ContractRecord,
     JobApplication,
@@ -31,6 +35,12 @@ from hris.modules.workflow.models import (
     WorkflowTask,
     WorkflowVersion,
 )
+from hris.modules.workforce.extended_schemas import (
+    EmploymentAssignmentCreate,
+    EmploymentCreate,
+    PersonCreate,
+)
+from hris.modules.workforce.extended_service import ExtendedWorkforceService
 from hris.modules.workforce.models import (
     AuditLog,
     Employment,
@@ -391,6 +401,15 @@ class LifecycleService:
             "withdrawn": {"withdrawn"},
         }
         next_status = changes.get("status")
+        if (
+            application.status != "hired"
+            and "hired" in {next_status, changes.get("current_stage")}
+        ):
+            raise ApiError(
+                status_code=409,
+                code="APPLICATION_HIRE_COMMAND_REQUIRED",
+                message="use the application hire command to create pending-start records",
+            )
         if next_status is not None and next_status not in allowed_transitions.get(application.status, set()):
             raise ApiError(
                 status_code=409,
@@ -410,6 +429,238 @@ class LifecycleService:
             after=changes,
         )
         return application
+
+    @staticmethod
+    def _hire_checksum(application_id: UUID, payload: ApplicationHireCreate) -> str:
+        value = {
+            "application_id": str(application_id),
+            **payload.model_dump(mode="json", exclude={"idempotency_key"}),
+        }
+        canonical = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+    async def _lock_hire_idempotency(self, key: UUID) -> None:
+        lock_key = key.int & ((1 << 63) - 1)
+        await self._session.execute(select(func.pg_advisory_xact_lock(lock_key)))
+
+    async def hire_application(
+        self,
+        application_id: UUID,
+        payload: ApplicationHireCreate,
+    ) -> ApplicationHireConversion:
+        checksum = self._hire_checksum(application_id, payload)
+        await self._lock_hire_idempotency(payload.idempotency_key)
+        existing_key = await self._session.scalar(
+            select(ApplicationHireConversion).where(
+                ApplicationHireConversion.idempotency_key == payload.idempotency_key
+            )
+        )
+        if existing_key is not None:
+            if existing_key.request_checksum != checksum:
+                raise ApiError(
+                    status_code=409,
+                    code="IDEMPOTENCY_KEY_REUSED",
+                    message="idempotency key has already been used with different hire data",
+                )
+            return existing_key
+
+        application = await self._session.get(
+            JobApplication,
+            application_id,
+            with_for_update=True,
+        )
+        if application is None:
+            raise ApiError(
+                status_code=404,
+                code="APPLICATION_NOT_FOUND",
+                message="application not found",
+            )
+        existing_application = await self._session.scalar(
+            select(ApplicationHireConversion).where(
+                ApplicationHireConversion.application_id == application_id
+            )
+        )
+        if existing_application is not None:
+            raise ApiError(
+                status_code=409,
+                code="APPLICATION_ALREADY_CONVERTED",
+                message="application has already been converted to pending-start records",
+            )
+        if application.status not in {"offer", "hired"}:
+            raise ApiError(
+                status_code=409,
+                code="APPLICATION_NOT_READY_FOR_HIRE",
+                message="application must be at offer stage before hire confirmation",
+            )
+
+        candidate = await self._session.get(
+            Candidate,
+            application.candidate_id,
+            with_for_update=True,
+        )
+        if candidate is None:
+            raise ApiError(
+                status_code=404,
+                code="CANDIDATE_NOT_FOUND",
+                message="candidate not found",
+            )
+        if candidate.status == "inactive":
+            raise ApiError(
+                status_code=409,
+                code="CANDIDATE_INACTIVE",
+                message="inactive candidate cannot be hired",
+            )
+        recruitment = await self._session.get(
+            RecruitmentRequest,
+            application.recruitment_request_id,
+        )
+        if recruitment is None:
+            raise ApiError(
+                status_code=404,
+                code="RECRUITMENT_NOT_FOUND",
+                message="recruitment request not found",
+            )
+        if recruitment.status == "cancelled":
+            raise ApiError(
+                status_code=409,
+                code="RECRUITMENT_CANCELLED",
+                message="cancelled recruitment request cannot produce a hire",
+            )
+
+        person_id = payload.existing_person_id or candidate.linked_person_id
+        if (
+            payload.existing_person_id is not None
+            and candidate.linked_person_id is not None
+            and payload.existing_person_id != candidate.linked_person_id
+        ):
+            raise ApiError(
+                status_code=409,
+                code="CANDIDATE_PERSON_MISMATCH",
+                message="candidate is already linked to another person",
+            )
+
+        workforce = ExtendedWorkforceService(
+            self._session,
+            actor_id=self._actor_id,
+            trace_id=self._trace_id,
+        )
+        if person_id is None:
+            person = await workforce.create_person(
+                PersonCreate(
+                    display_name=candidate.display_name,
+                    gender_code=payload.gender_code,
+                    birth_date=payload.birth_date,
+                    nationality_code=payload.nationality_code,
+                    country_code=payload.country_code,
+                    reserve_employee_number=True,
+                    change_reason=payload.reason,
+                )
+            )
+        else:
+            person = await self._session.get(Person, person_id, with_for_update=True)
+            if person is None:
+                raise ApiError(
+                    status_code=404,
+                    code="PERSON_NOT_FOUND",
+                    message="existing person not found",
+                )
+
+        employment = await workforce.create_employment(
+            EmploymentCreate(
+                person_id=person.id,
+                employee_type_code=payload.employee_type_code,
+                planned_start_date=payload.planned_start_date,
+                probation_end_date=payload.probation_end_date,
+                contract_legal_entity_id=payload.contract_legal_entity_id,
+                payroll_legal_entity_id=payload.payroll_legal_entity_id,
+                social_insurance_legal_entity_id=payload.social_insurance_legal_entity_id,
+                tax_legal_entity_id=payload.tax_legal_entity_id,
+                change_reason=payload.reason,
+            )
+        )
+        assignment = await workforce.create_assignment(
+            EmploymentAssignmentCreate(
+                employment_id=employment.id,
+                organization_id=recruitment.organization_id,
+                job_id=recruitment.job_id,
+                relation_type="primary",
+                effective_from=payload.planned_start_date,
+                change_reason=payload.reason,
+            )
+        )
+
+        candidate_before = {
+            "status": candidate.status,
+            "linked_person_id": (
+                str(candidate.linked_person_id)
+                if candidate.linked_person_id is not None
+                else None
+            ),
+        }
+        application_before = {
+            "status": application.status,
+            "current_stage": application.current_stage,
+        }
+        candidate.status = "converted"
+        candidate.linked_person_id = person.id
+        application.status = "hired"
+        application.current_stage = "hired"
+        application.offer_payload = {
+            **application.offer_payload,
+            "result": "accepted",
+            "planned_start_date": payload.planned_start_date.isoformat(),
+        }
+        converted_at = datetime.now(UTC)
+        conversion = ApplicationHireConversion(
+            application_id=application.id,
+            candidate_id=candidate.id,
+            person_id=person.id,
+            employment_id=employment.id,
+            assignment_id=assignment.id,
+            idempotency_key=payload.idempotency_key,
+            request_checksum=checksum,
+            planned_start_date=payload.planned_start_date,
+            employee_type_code=payload.employee_type_code,
+            converted_by=self._actor_id,
+            converted_at=converted_at,
+        )
+        self._session.add(conversion)
+        await self._session.flush()
+        self._audit(
+            action="hire",
+            object_type="job_application",
+            object_id=application.id,
+            reason=payload.reason,
+            before=application_before,
+            after={
+                "status": "hired",
+                "person_id": str(person.id),
+                "employment_id": str(employment.id),
+                "assignment_id": str(assignment.id),
+            },
+        )
+        self._audit(
+            action="convert",
+            object_type="candidate",
+            object_id=candidate.id,
+            reason=payload.reason,
+            before=candidate_before,
+            after={"status": "converted", "linked_person_id": str(person.id)},
+        )
+        self._audit(
+            action="create",
+            object_type="application_hire_conversion",
+            object_id=conversion.id,
+            reason=payload.reason,
+            after={
+                "application_id": str(application.id),
+                "person_id": str(person.id),
+                "employment_id": str(employment.id),
+                "assignment_id": str(assignment.id),
+                "planned_start_date": payload.planned_start_date.isoformat(),
+            },
+        )
+        return conversion
 
     async def create_contract(self, payload: ContractCreate) -> ContractRecord:
         if await self._session.get(Person, payload.person_id) is None:

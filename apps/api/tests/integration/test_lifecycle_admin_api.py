@@ -1,4 +1,5 @@
 from datetime import date, timedelta
+from uuid import uuid4
 
 import pytest
 from httpx import AsyncClient
@@ -68,18 +69,6 @@ async def test_candidate_application_and_contract_admin_lifecycle(
     )
     assert candidate_page.status_code == 200
     assert candidate_page.json()["total"] == 1
-    converted = await business_client.patch(
-        f"/api/v1/lifecycle/candidates/{candidate_id}",
-        headers=_auth(admin_token),
-        json={
-            "status": "converted",
-            "linked_person_id": str(person.id),
-            "change_reason": "Candidate hired",
-        },
-    )
-    assert converted.status_code == 200, converted.text
-    assert converted.json()["linked_person_id"] == str(person.id)
-
     application = await business_client.post(
         "/api/v1/lifecycle/applications",
         headers=_auth(admin_token),
@@ -91,18 +80,31 @@ async def test_candidate_application_and_contract_admin_lifecycle(
     )
     assert application.status_code == 201, application.text
     application_id = application.json()["id"]
-    for next_status in ("screening", "interview", "offer", "hired"):
+    for next_status in ("screening", "interview", "offer"):
         updated = await business_client.patch(
             f"/api/v1/lifecycle/applications/{application_id}",
             headers=_auth(admin_token),
             json={
                 "status": next_status,
                 "current_stage": next_status,
-                "offer_payload": {"result": "accepted"} if next_status == "hired" else {},
                 "change_reason": f"Move to {next_status}",
             },
         )
         assert updated.status_code == 200, updated.text
+    hired = await business_client.post(
+        f"/api/v1/lifecycle/applications/{application_id}/hire",
+        headers=_auth(admin_token),
+        json={
+            "idempotency_key": str(uuid4()),
+            "planned_start_date": today.isoformat(),
+            "employee_type_code": "REGULAR",
+            "contract_legal_entity_id": str(legal.id),
+            "existing_person_id": str(person.id),
+            "reason": "Synthetic accepted offer",
+        },
+    )
+    assert hired.status_code == 201, hired.text
+    assert hired.json()["person_id"] == str(person.id)
     application_page = await business_client.get(
         "/api/v1/lifecycle/applications?status=hired",
         headers=_auth(admin_token),
