@@ -100,6 +100,7 @@ scripts/                 启动、停止和自动检查脚本
 - [技术架构基线](./docs/01-foundation/04-技术架构基线.md)
 - [代码结构与编码规范](./docs/01-foundation/10-代码结构与编码规范.md)
 - [一至三阶段实现符合性审查](./docs/review/phase-1-3-implementation-conformance-review.md)
+- [企业输入包 01：主数据与稳定编码对照](./docs/input-packs/01-master-code-mapping.md)
 - [第一至第三阶段首批交付回执（历史快照）](./docs/delivery/P1-P3-BATCH-A.md)
 - [待确认问题](./docs/01-foundation/99-待确认问题.md)
 
