@@ -17,6 +17,10 @@ import { useCallback, useEffect, useMemo, useState } from "react"
 import { getPageCount, logout } from "./client"
 import { DictionaryWorkspace } from "./features/configuration/DictionaryWorkspace"
 import { OrganizationWorkspace } from "./features/organization/OrganizationWorkspace"
+import { HeadcountWorkspace } from "./features/workforce/HeadcountWorkspace"
+import { PeopleWorkspace } from "./features/workforce/PeopleWorkspace"
+import { RecruitmentWorkspace } from "./features/workforce/RecruitmentWorkspace"
+import { workforceApi } from "./features/workforce/api"
 import { workspaceFromHash, workspaces } from "./navigation"
 import type { WorkspaceKey } from "./navigation"
 import type { UserProfile } from "./types"
@@ -53,7 +57,7 @@ function DashboardWorkspace({
 
   useEffect(() => {
     void Promise.all([
-      getPageCount("/api/v1/workforce/organizations", token),
+      workforceApi.organizations(token).then((items) => items.length),
       getPageCount("/api/v1/workforce/persons", token),
       getPageCount("/api/v1/workforce/jobs", token),
       getPageCount("/api/v1/workforce/legal-entities", token),
@@ -72,7 +76,7 @@ function DashboardWorkspace({
           <Typography.Title id="dashboard-title" level={2}>工作台</Typography.Title>
           <Typography.Paragraph type="secondary">查看基础人力数据，并进入当前已经开放的管理工作区。</Typography.Paragraph>
         </div>
-        <Tag color="processing">P1-A 组织基础能力</Tag>
+        <Tag color="processing">第一阶段 Core HR</Tag>
       </div>
       {error && <Alert type="error" showIcon message={error} />}
       {!counts ? <Skeleton active paragraph={{ rows: 6 }} /> : (
@@ -92,6 +96,18 @@ function DashboardWorkspace({
         <Card variant="outlined" title="组织中心">
           <Typography.Paragraph>维护当前组织树、未来变更、法人、负责人、BP及财务维度。</Typography.Paragraph>
           <Button type="primary" onClick={() => onNavigate("organization")}>进入组织中心</Button>
+        </Card>
+        <Card variant="outlined" title="人员中心">
+          <Typography.Paragraph>维护自然人、劳动关系、主组织职务和协议关系。</Typography.Paragraph>
+          <Button onClick={() => onNavigate("people")}>进入人员中心</Button>
+        </Card>
+        <Card variant="outlined" title="人力与编制">
+          <Typography.Paragraph>维护月度编制、占编规则、冻结和快照结果。</Typography.Paragraph>
+          <Button onClick={() => onNavigate("headcount")}>进入人力与编制</Button>
+        </Card>
+        <Card variant="outlined" title="招聘需求">
+          <Typography.Paragraph>创建招聘需求并查看不阻断业务的编制参考。</Typography.Paragraph>
+          <Button onClick={() => onNavigate("recruitment")}>进入招聘需求</Button>
         </Card>
       </div>
     </section>
@@ -114,7 +130,7 @@ export function AppShell({ token, user, onSignedOut }: AppShellProps) {
   const [signingOut, setSigningOut] = useState(false)
 
   const can = useCallback(
-    (permission: string) => user.permissions.includes(permission),
+    (permission: string) => user.permissions.includes("*") || user.permissions.includes(permission),
     [user.permissions],
   )
 
@@ -151,6 +167,12 @@ export function AppShell({ token, user, onSignedOut }: AppShellProps) {
     content = <DictionaryWorkspace token={token} canAdmin={can("CONFIGURATION_ADMIN")} />
   } else if (selected === "organization") {
     content = <OrganizationWorkspace token={token} canAdmin={can("ORGANIZATION_ADMIN")} />
+  } else if (selected === "people") {
+    content = <PeopleWorkspace token={token} canAdmin={can("WORKFORCE_ADMIN")} />
+  } else if (selected === "headcount") {
+    content = <HeadcountWorkspace token={token} canAdmin={can("WORKFORCE_ADMIN")} />
+  } else if (selected === "recruitment") {
+    content = <RecruitmentWorkspace token={token} canAdmin={can("LIFECYCLE_ADMIN")} />
   } else if (selected === "dashboard") {
     content = <DashboardWorkspace token={token} onNavigate={navigate} />
   } else {

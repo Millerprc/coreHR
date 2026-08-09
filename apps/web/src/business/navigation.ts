@@ -30,9 +30,9 @@ export const workspaces: readonly WorkspaceDefinition[] = [
     permission: "ORGANIZATION_VIEW",
     available: true,
   },
-  { key: "people", label: "人员中心", available: false },
-  { key: "headcount", label: "人力与编制", available: false },
-  { key: "recruitment", label: "招聘需求", available: false },
+  { key: "people", label: "人员中心", permission: "WORKFORCE_ADMIN", available: true },
+  { key: "headcount", label: "人力与编制", permission: "WORKFORCE_ADMIN", available: true },
+  { key: "recruitment", label: "招聘需求", permission: "LIFECYCLE_ADMIN", available: true },
   { key: "governance", label: "数据治理", available: false },
 ]
 

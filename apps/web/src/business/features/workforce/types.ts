@@ -1,0 +1,161 @@
+export interface Page<T> {
+  readonly items: readonly T[]
+  readonly total: number
+  readonly limit: number
+  readonly offset: number
+}
+
+
+export interface Person {
+  readonly id: string
+  readonly employee_number: string | null
+  readonly display_name: string
+  readonly former_name: string | null
+  readonly gender_code: string | null
+  readonly birth_date: string | null
+  readonly nationality_code: string | null
+  readonly country_code: string | null
+  readonly status: string
+}
+
+
+export interface Employment {
+  readonly id: string
+  readonly person_id: string
+  readonly employee_type_code: string
+  readonly status: string
+  readonly planned_start_date: string
+  readonly actual_start_date: string | null
+  readonly probation_end_date: string | null
+  readonly end_date: string | null
+  readonly contract_legal_entity_id: string | null
+  readonly payroll_legal_entity_id: string | null
+  readonly social_insurance_legal_entity_id: string | null
+  readonly tax_legal_entity_id: string | null
+  readonly version: number
+}
+
+
+export interface EmploymentAssignment {
+  readonly id: string
+  readonly employment_id: string
+  readonly organization_id: string
+  readonly job_id: string | null
+  readonly relation_type: "primary" | "concurrent" | "secondment" | "project" | "virtual"
+  readonly effective_from: string
+  readonly effective_to: string | null
+  readonly version: number
+}
+
+
+export interface AgreementRelationship {
+  readonly id: string
+  readonly person_id: string
+  readonly agreement_type_code: string
+  readonly legal_entity_id: string | null
+  readonly counterparty_name: string | null
+  readonly effective_from: string
+  readonly effective_to: string | null
+  readonly source: string
+}
+
+
+export interface PersonArchive {
+  readonly person: Person
+  readonly employments: readonly Employment[]
+  readonly assignments: readonly EmploymentAssignment[]
+  readonly agreements: readonly AgreementRelationship[]
+}
+
+
+export interface Job {
+  readonly id: string
+  readonly code: string
+  readonly name: string
+  readonly level_code: string | null
+  readonly grade_code: string | null
+  readonly class_code: string | null
+  readonly sequence_code: string | null
+  readonly status: string
+  readonly effective_from: string
+  readonly effective_to: string | null
+}
+
+
+export interface LegalEntity {
+  readonly id: string
+  readonly code: string
+  readonly name: string
+  readonly country_code: string
+  readonly status: string
+  readonly effective_from: string
+  readonly effective_to: string | null
+}
+
+
+export interface OrganizationOption {
+  readonly id: string
+  readonly code: string
+  readonly name: string
+}
+
+
+export interface OccupancyRule {
+  readonly id: string
+  readonly employee_type_code: string
+  readonly counts_for_headcount: boolean
+  readonly effective_from: string
+  readonly effective_to: string | null
+  readonly version: number
+}
+
+
+export interface HeadcountFreeze {
+  readonly id: string
+  readonly freeze_type: "month_close" | "business"
+  readonly period_month: string | null
+  readonly organization_id: string | null
+  readonly job_id: string | null
+  readonly status: string
+  readonly starts_at: string
+  readonly ends_at: string | null
+  readonly reason: string
+}
+
+
+export interface HeadcountResultLine {
+  readonly organization_id: string
+  readonly organization_code: string
+  readonly job_id: string
+  readonly job_code: string
+  readonly job_name: string
+  readonly period_month: string
+  readonly planned_count: string
+  readonly plan_version: number
+  readonly current_count: number
+  readonly variance: string
+  readonly month_start_count: number | null
+  readonly month_end_count: number | null
+  readonly average_count: string | null
+  readonly frozen: boolean
+}
+
+
+export interface HeadcountResult {
+  readonly period_month: string
+  readonly as_of: string
+  readonly items: readonly HeadcountResultLine[]
+}
+
+
+export interface RecruitmentRequest {
+  readonly id: string
+  readonly request_number: string
+  readonly organization_id: string
+  readonly job_id: string
+  readonly requested_count: number
+  readonly target_month: string | null
+  readonly status: "draft" | "submitted" | "closed" | "cancelled"
+  readonly reason: string
+  readonly workflow_instance_id: string | null
+}

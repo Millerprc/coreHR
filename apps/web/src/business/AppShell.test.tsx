@@ -86,4 +86,19 @@ describe("AppShell navigation", () => {
     ).toBeInTheDocument()
     expect(window.location.hash).toBe("#configuration")
   })
+
+  it("treats the administrator wildcard as access to every available workspace", async () => {
+    render(
+      <AppShell
+        token="synthetic-token"
+        user={{ ...administrator, permissions: ["*"] }}
+        onSignedOut={() => undefined}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole("menuitem", { name: "人员中心" }))
+
+    expect(await screen.findByRole("heading", { name: "人员中心" })).toBeInTheDocument()
+    expect(window.location.hash).toBe("#people")
+  })
 })
