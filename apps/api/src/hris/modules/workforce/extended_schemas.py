@@ -1,6 +1,6 @@
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -86,6 +86,16 @@ class PersonResponse(BaseModel):
     updated_at: datetime
 
 
+class PersonUpdate(BaseModel):
+    display_name: str | None = Field(default=None, min_length=1, max_length=200)
+    former_name: str | None = Field(default=None, max_length=200)
+    gender_code: str | None = Field(default=None, max_length=30)
+    birth_date: date | None = None
+    nationality_code: str | None = Field(default=None, min_length=2, max_length=3)
+    country_code: str | None = Field(default=None, min_length=2, max_length=3)
+    change_reason: str = Field(min_length=1, max_length=500)
+
+
 class EmployeeNumberResponse(BaseModel):
     person_id: UUID
     employee_number: str
@@ -134,10 +144,18 @@ class EmploymentAssignmentCreate(BaseModel):
     employment_id: UUID
     organization_id: UUID
     job_id: UUID | None = None
-    relation_type: str = Field(min_length=1, max_length=30)
+    relation_type: Literal["primary", "concurrent", "secondment", "project", "virtual"]
     effective_from: date
     effective_to: date | None = None
     change_reason: str = Field(min_length=1, max_length=500)
+
+    @model_validator(mode="after")
+    def validate_assignment(self) -> "EmploymentAssignmentCreate":
+        if self.effective_to is not None and self.effective_to < self.effective_from:
+            raise ValueError("effective_to不能早于effective_from")
+        if self.relation_type == "primary" and self.job_id is None:
+            raise ValueError("主组织关系必须指定职务")
+        return self
 
 
 class EmploymentAssignmentResponse(BaseModel):
@@ -151,6 +169,45 @@ class EmploymentAssignmentResponse(BaseModel):
     effective_from: date
     effective_to: date | None
     version: int
+
+
+class AgreementRelationshipCreate(BaseModel):
+    person_id: UUID
+    agreement_type_code: str = Field(min_length=1, max_length=50)
+    legal_entity_id: UUID | None = None
+    counterparty_name: str | None = Field(default=None, max_length=300)
+    effective_from: date
+    effective_to: date | None = None
+    source: str = Field(default="manual", min_length=1, max_length=50)
+    change_reason: str = Field(min_length=1, max_length=500)
+
+    @model_validator(mode="after")
+    def validate_agreement(self) -> "AgreementRelationshipCreate":
+        if self.legal_entity_id is None and not self.counterparty_name:
+            raise ValueError("法人主体和合作方名称至少填写一项")
+        if self.effective_to is not None and self.effective_to < self.effective_from:
+            raise ValueError("effective_to不能早于effective_from")
+        return self
+
+
+class AgreementRelationshipResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    person_id: UUID
+    agreement_type_code: str
+    legal_entity_id: UUID | None
+    counterparty_name: str | None
+    effective_from: date
+    effective_to: date | None
+    source: str
+
+
+class PersonArchiveResponse(BaseModel):
+    person: PersonResponse
+    employments: list[EmploymentResponse]
+    assignments: list[EmploymentAssignmentResponse]
+    agreements: list[AgreementRelationshipResponse]
 
 
 class HeadcountPlanCreate(BaseModel):

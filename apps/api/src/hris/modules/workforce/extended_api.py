@@ -8,6 +8,8 @@ from hris.core.database import get_db
 from hris.modules.platform.dependencies import require_permission
 from hris.modules.platform.models import UserAccount
 from hris.modules.workforce.extended_schemas import (
+    AgreementRelationshipCreate,
+    AgreementRelationshipResponse,
     EmployeeNumberResponse,
     EmploymentAssignmentCreate,
     EmploymentAssignmentResponse,
@@ -20,8 +22,10 @@ from hris.modules.workforce.extended_schemas import (
     LegalEntityCreate,
     LegalEntityResponse,
     PageResponse,
+    PersonArchiveResponse,
     PersonCreate,
     PersonResponse,
+    PersonUpdate,
 )
 from hris.modules.workforce.extended_service import ExtendedWorkforceService
 from hris.modules.workforce.models import HeadcountPlan, JobCatalog, LegalEntity, Person
@@ -108,15 +112,52 @@ async def list_persons(
     user: AdminUser,
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
+    search: str | None = Query(default=None, max_length=200),
+    person_status: str | None = Query(default=None, alias="status", max_length=30),
 ) -> PageResponse:
-    items, total = await service(db, user, request).list_models(
-        Person, limit=limit, offset=offset, order_by=Person.employee_number
+    items, total = await service(db, user, request).list_persons(
+        search=search,
+        status=person_status,
+        limit=limit,
+        offset=offset,
     )
     return PageResponse(
         items=[PersonResponse.model_validate(item).model_dump() for item in items],
         total=total,
         limit=limit,
         offset=offset,
+    )
+
+
+@router.get("/persons/{person_id}", response_model=PersonArchiveResponse)
+async def get_person_archive(
+    person_id: UUID, request: Request, db: DbSession, user: AdminUser
+) -> PersonArchiveResponse:
+    person, employments, assignments, agreements = await service(
+        db, user, request
+    ).person_archive(person_id)
+    return PersonArchiveResponse(
+        person=PersonResponse.model_validate(person),
+        employments=[EmploymentResponse.model_validate(item) for item in employments],
+        assignments=[
+            EmploymentAssignmentResponse.model_validate(item) for item in assignments
+        ],
+        agreements=[
+            AgreementRelationshipResponse.model_validate(item) for item in agreements
+        ],
+    )
+
+
+@router.patch("/persons/{person_id}", response_model=PersonResponse)
+async def update_person(
+    person_id: UUID,
+    payload: PersonUpdate,
+    request: Request,
+    db: DbSession,
+    user: AdminUser,
+) -> PersonResponse:
+    return PersonResponse.model_validate(
+        await service(db, user, request).update_person(person_id, payload)
     )
 
 
@@ -150,6 +191,22 @@ async def create_employment_assignment(
 ) -> EmploymentAssignmentResponse:
     return EmploymentAssignmentResponse.model_validate(
         await service(db, user, request).create_assignment(payload)
+    )
+
+
+@router.post(
+    "/agreement-relationships",
+    response_model=AgreementRelationshipResponse,
+    status_code=201,
+)
+async def create_agreement_relationship(
+    payload: AgreementRelationshipCreate,
+    request: Request,
+    db: DbSession,
+    user: AdminUser,
+) -> AgreementRelationshipResponse:
+    return AgreementRelationshipResponse.model_validate(
+        await service(db, user, request).create_agreement_relationship(payload)
     )
 
 

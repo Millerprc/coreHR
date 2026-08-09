@@ -8,14 +8,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from hris.core.errors import ApiError
 from hris.modules.platform.models import NumberSequence
 from hris.modules.workforce.extended_schemas import (
+    AgreementRelationshipCreate,
     EmploymentAssignmentCreate,
     EmploymentCreate,
     HeadcountPlanCreate,
     JobCreate,
     LegalEntityCreate,
     PersonCreate,
+    PersonUpdate,
 )
 from hris.modules.workforce.models import (
+    AgreementRelationship,
     AuditLog,
     Employment,
     EmploymentAssignment,
@@ -45,6 +48,7 @@ class ExtendedWorkforceService:
         object_id: UUID,
         reason: str,
         after: dict[str, Any],
+        before: dict[str, Any] | None = None,
     ) -> None:
         self._session.add(
             AuditLog(
@@ -55,7 +59,7 @@ class ExtendedWorkforceService:
                 object_type=object_type,
                 object_id=object_id,
                 reason=reason,
-                before_payload={},
+                before_payload=before or {},
                 after_payload=after,
                 source="api",
             )
@@ -164,6 +168,35 @@ class ExtendedWorkforceService:
             )
         return person.employee_number
 
+    async def update_person(self, person_id: UUID, payload: PersonUpdate) -> Person:
+        person = await self._session.get(Person, person_id, with_for_update=True)
+        if person is None:
+            raise ApiError(status_code=404, code="PERSON_NOT_FOUND", message="人员不存在")
+        changes = payload.model_dump(exclude={"change_reason"}, exclude_unset=True)
+        if not changes:
+            raise ApiError(status_code=422, code="PERSON_CHANGE_EMPTY", message="没有可保存的档案变更")
+        before = {field: getattr(person, field) for field in changes}
+        for field, value in changes.items():
+            setattr(person, field, value)
+        await self._session.flush()
+        await self._session.refresh(person)
+        self._audit(
+            action="update",
+            object_type="person",
+            object_id=person.id,
+            reason=payload.change_reason,
+            before=self._json_values(before),
+            after=self._json_values(changes),
+        )
+        return person
+
+    @staticmethod
+    def _json_values(values: dict[str, Any]) -> dict[str, Any]:
+        return {
+            key: value.isoformat() if isinstance(value, (date, datetime)) else value
+            for key, value in values.items()
+        }
+
     async def create_employment(self, payload: EmploymentCreate) -> Employment:
         person = await self._session.get(Person, payload.person_id)
         if person is None:
@@ -238,6 +271,28 @@ class ExtendedWorkforceService:
             raise ApiError(status_code=404, code="ORGANIZATION_NOT_FOUND", message="组织不存在")
         if payload.job_id is not None and await self._session.get(JobCatalog, payload.job_id) is None:
             raise ApiError(status_code=404, code="JOB_NOT_FOUND", message="职务不存在")
+        if payload.relation_type == "primary":
+            overlap_filters = [
+                EmploymentAssignment.employment_id == payload.employment_id,
+                EmploymentAssignment.relation_type == "primary",
+                or_(
+                    EmploymentAssignment.effective_to.is_(None),
+                    EmploymentAssignment.effective_to >= payload.effective_from,
+                ),
+            ]
+            if payload.effective_to is not None:
+                overlap_filters.append(
+                    EmploymentAssignment.effective_from <= payload.effective_to
+                )
+            overlap = await self._session.scalar(
+                select(EmploymentAssignment.id).where(*overlap_filters).limit(1)
+            )
+            if overlap is not None:
+                raise ApiError(
+                    status_code=409,
+                    code="PRIMARY_ASSIGNMENT_PERIOD_OVERLAP",
+                    message="同一雇佣关系在该有效期间只能有一条主组织和主职务关系",
+                )
         assignment = EmploymentAssignment(
             **payload.model_dump(exclude={"change_reason"}),
             version=1,
@@ -256,6 +311,102 @@ class ExtendedWorkforceService:
             },
         )
         return assignment
+
+    async def create_agreement_relationship(
+        self,
+        payload: AgreementRelationshipCreate,
+    ) -> AgreementRelationship:
+        if await self._session.get(Person, payload.person_id) is None:
+            raise ApiError(status_code=404, code="PERSON_NOT_FOUND", message="人员不存在")
+        if (
+            payload.legal_entity_id is not None
+            and await self._session.get(LegalEntity, payload.legal_entity_id) is None
+        ):
+            raise ApiError(status_code=404, code="LEGAL_ENTITY_NOT_FOUND", message="法人主体不存在")
+        relationship = AgreementRelationship(
+            **payload.model_dump(exclude={"change_reason"})
+        )
+        self._session.add(relationship)
+        await self._session.flush()
+        self._audit(
+            action="create",
+            object_type="agreement_relationship",
+            object_id=relationship.id,
+            reason=payload.change_reason,
+            after={
+                "person_id": str(relationship.person_id),
+                "agreement_type_code": relationship.agreement_type_code,
+                "effective_from": relationship.effective_from.isoformat(),
+            },
+        )
+        return relationship
+
+    async def person_archive(
+        self,
+        person_id: UUID,
+    ) -> tuple[Person, list[Employment], list[EmploymentAssignment], list[AgreementRelationship]]:
+        person = await self._session.get(Person, person_id)
+        if person is None:
+            raise ApiError(status_code=404, code="PERSON_NOT_FOUND", message="人员不存在")
+        employments = list(
+            (
+                await self._session.scalars(
+                    select(Employment)
+                    .where(Employment.person_id == person_id)
+                    .order_by(Employment.planned_start_date.desc())
+                )
+            ).all()
+        )
+        employment_ids = [item.id for item in employments]
+        assignments: list[EmploymentAssignment] = []
+        if employment_ids:
+            assignments = list(
+                (
+                    await self._session.scalars(
+                        select(EmploymentAssignment)
+                        .where(EmploymentAssignment.employment_id.in_(employment_ids))
+                        .order_by(EmploymentAssignment.effective_from.desc())
+                    )
+                ).all()
+            )
+        agreements = list(
+            (
+                await self._session.scalars(
+                    select(AgreementRelationship)
+                    .where(AgreementRelationship.person_id == person_id)
+                    .order_by(AgreementRelationship.effective_from.desc())
+                )
+            ).all()
+        )
+        return person, employments, assignments, agreements
+
+    async def list_persons(
+        self,
+        *,
+        search: str | None,
+        status: str | None,
+        limit: int,
+        offset: int,
+    ) -> tuple[list[Person], int]:
+        filters = []
+        if search:
+            pattern = f"%{search.strip()}%"
+            filters.append(
+                or_(Person.display_name.ilike(pattern), Person.employee_number.ilike(pattern))
+            )
+        if status:
+            filters.append(Person.status == status)
+        count_query = select(func.count()).select_from(Person).where(*filters)
+        item_query = (
+            select(Person)
+            .where(*filters)
+            .order_by(Person.employee_number.nulls_last(), Person.display_name)
+            .limit(limit)
+            .offset(offset)
+        )
+        total = await self._session.scalar(count_query)
+        items = list((await self._session.scalars(item_query)).all())
+        return items, total or 0
 
     async def create_headcount_plan(self, payload: HeadcountPlanCreate) -> HeadcountPlan:
         if await self._session.get(Organization, payload.organization_id) is None:
