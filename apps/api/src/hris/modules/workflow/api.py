@@ -1,7 +1,7 @@
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, Query, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from hris.core.database import get_db
@@ -22,6 +22,10 @@ DbSession = Annotated[AsyncSession, Depends(get_db)]
 AdminUser = Annotated[UserAccount, Depends(require_permission("LIFECYCLE_ADMIN"))]
 
 
+def service(db: AsyncSession, user: UserAccount, request: Request) -> WorkflowService:
+    return WorkflowService(db, actor_id=user.id, trace_id=str(request.state.trace_id))
+
+
 @router.post(
     "/definitions",
     response_model=WorkflowDefinitionResponse,
@@ -29,10 +33,11 @@ AdminUser = Annotated[UserAccount, Depends(require_permission("LIFECYCLE_ADMIN")
 )
 async def create_workflow_definition(
     payload: WorkflowDefinitionCreate,
+    request: Request,
     db: DbSession,
-    _user: AdminUser,
+    user: AdminUser,
 ) -> WorkflowDefinitionResponse:
-    result = await WorkflowService(db).create_definition(payload)
+    result = await service(db, user, request).create_definition(payload)
     return WorkflowDefinitionResponse.model_validate(result)
 
 
@@ -41,12 +46,13 @@ async def create_workflow_definition(
     response_model=WorkflowDefinitionListResponse,
 )
 async def list_workflow_definitions(
+    request: Request,
     db: DbSession,
-    _user: AdminUser,
+    user: AdminUser,
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
 ) -> WorkflowDefinitionListResponse:
-    items, total = await WorkflowService(db).list_definitions(
+    items, total = await service(db, user, request).list_definitions(
         limit=limit,
         offset=offset,
     )
@@ -67,10 +73,11 @@ async def list_workflow_definitions(
 )
 async def get_workflow_definition(
     definition_id: UUID,
+    request: Request,
     db: DbSession,
-    _user: AdminUser,
+    user: AdminUser,
 ) -> WorkflowDefinitionDetailResponse:
-    definition, versions = await WorkflowService(db).definition_detail(definition_id)
+    definition, versions = await service(db, user, request).definition_detail(definition_id)
     return WorkflowDefinitionDetailResponse(
         definition=WorkflowDefinitionResponse.model_validate(definition),
         versions=[WorkflowVersionResponse.model_validate(version) for version in versions],

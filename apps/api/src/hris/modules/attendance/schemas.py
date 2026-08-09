@@ -1,5 +1,5 @@
 from datetime import date, datetime
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -47,3 +47,42 @@ class AttendanceRuleSetListResponse(BaseModel):
     limit: int
     offset: int
 
+
+class AttendanceRuleSetUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    timezone: str | None = Field(default=None, min_length=1, max_length=100)
+    effective_from: date | None = None
+    effective_to: date | None = None
+    rules: dict[str, Any] | None = None
+
+    @model_validator(mode="after")
+    def validate_rule_set(self) -> "AttendanceRuleSetUpdate":
+        if not self.model_dump(exclude_unset=True):
+            raise ValueError("at least one rule-set field must be changed")
+        if self.timezone is not None:
+            try:
+                ZoneInfo(self.timezone)
+            except ZoneInfoNotFoundError as exc:
+                raise ValueError("timezone must be a valid IANA timezone") from exc
+        if self.effective_from and self.effective_to and self.effective_to < self.effective_from:
+            raise ValueError("effective_to cannot be earlier than effective_from")
+        return self
+
+
+class AttendanceRuleSetVersionCreate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    timezone: str | None = Field(default=None, min_length=1, max_length=100)
+    effective_from: date
+    effective_to: date | None = None
+    rules: dict[str, Any] | None = None
+
+    @model_validator(mode="after")
+    def validate_version(self) -> "AttendanceRuleSetVersionCreate":
+        if self.effective_to is not None and self.effective_to < self.effective_from:
+            raise ValueError("effective_to cannot be earlier than effective_from")
+        if self.timezone is not None:
+            try:
+                ZoneInfo(self.timezone)
+            except ZoneInfoNotFoundError as exc:
+                raise ValueError("timezone must be a valid IANA timezone") from exc
+        return self

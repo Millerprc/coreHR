@@ -16,6 +16,7 @@ import { useCallback, useEffect, useMemo, useState } from "react"
 
 import { getPageCount, logout } from "./client"
 import { DictionaryWorkspace } from "./features/configuration/DictionaryWorkspace"
+import { AttendanceWorkspace } from "./features/attendance/AttendanceWorkspace"
 import { LifecycleWorkspace } from "./features/lifecycle/LifecycleWorkspace"
 import { OrganizationWorkspace } from "./features/organization/OrganizationWorkspace"
 import { HeadcountWorkspace } from "./features/workforce/HeadcountWorkspace"
@@ -176,6 +177,8 @@ export function AppShell({ token, user, onSignedOut }: AppShellProps) {
     content = <RecruitmentWorkspace token={token} canAdmin={can("LIFECYCLE_ADMIN")} />
   } else if (selected === "lifecycle") {
     content = <LifecycleWorkspace token={token} canAdmin={can("LIFECYCLE_ADMIN")} />
+  } else if (selected === "attendance") {
+    content = <AttendanceWorkspace token={token} canAdmin={can("ATTENDANCE_ADMIN")} />
   } else if (selected === "dashboard") {
     content = <DashboardWorkspace token={token} onNavigate={navigate} />
   } else {

@@ -1,20 +1,30 @@
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal
 from typing import Any
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
-from sqlalchemy import select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from hris.core.errors import ApiError
 from hris.modules.attendance.extended_schemas import (
+    AttendanceDailyCalculate,
+    AttendanceMonthlyCalculate,
     LeaveCancellationCreate,
     LeaveRequestCreate,
+    LeaveRequestUpdate,
     LeaveTypeCreate,
+    LeaveTypeUpdate,
     PunchCreate,
     ScheduleAssignmentCreate,
+    ScheduleAssignmentUpdate,
     ShiftCreate,
+    ShiftUpdate,
 )
 from hris.modules.attendance.models import (
+    AttendanceDailyResult,
+    AttendanceMonthlyResult,
     AttendancePunch,
     AttendanceRuleSet,
     LeaveRequest,
@@ -24,7 +34,7 @@ from hris.modules.attendance.models import (
 )
 from hris.modules.platform.numbering import next_number
 from hris.modules.workflow.models import WorkflowInstance
-from hris.modules.workforce.models import AuditLog, Employment
+from hris.modules.workforce.models import AuditLog, Employment, Person
 
 
 class ExtendedAttendanceService:
@@ -33,7 +43,16 @@ class ExtendedAttendanceService:
         self._actor_id = actor_id
         self._trace_id = trace_id
 
-    def _audit(self, *, action: str, object_type: str, object_id: UUID, after: dict[str, Any]) -> None:
+    def _audit(
+        self,
+        *,
+        action: str,
+        object_type: str,
+        object_id: UUID,
+        after: dict[str, Any],
+        reason: str | None = None,
+        before: dict[str, Any] | None = None,
+    ) -> None:
         self._session.add(
             AuditLog(
                 occurred_at=datetime.now(UTC),
@@ -42,12 +61,45 @@ class ExtendedAttendanceService:
                 action=action,
                 object_type=object_type,
                 object_id=object_id,
-                reason=None,
-                before_payload={},
+                reason=reason,
+                before_payload=before or {},
                 after_payload=after,
                 source="api",
             )
         )
+
+    async def list_employment_options(
+        self,
+        *,
+        search: str | None,
+        limit: int,
+        offset: int,
+    ) -> tuple[list[dict[str, Any]], int]:
+        filters = []
+        if search:
+            term = f"%{search.strip()}%"
+            filters.append(or_(Person.display_name.ilike(term), Person.employee_number.ilike(term)))
+        total = await self._session.scalar(
+            select(func.count()).select_from(Employment).join(Person, Person.id == Employment.person_id).where(*filters)
+        )
+        rows = (
+            await self._session.execute(
+                select(
+                    Employment.id,
+                    Employment.person_id,
+                    Person.employee_number,
+                    Person.display_name,
+                    Employment.employee_type_code,
+                    Employment.status,
+                )
+                .join(Person, Person.id == Employment.person_id)
+                .where(*filters)
+                .order_by(Person.employee_number, Person.display_name)
+                .limit(limit)
+                .offset(offset)
+            )
+        ).mappings().all()
+        return [dict(row) for row in rows], total or 0
 
     async def create_shift(self, payload: ShiftCreate) -> Shift:
         if await self._session.scalar(select(Shift.id).where(Shift.code == payload.code)) is not None:
@@ -62,6 +114,52 @@ class ExtendedAttendanceService:
             object_type="shift",
             object_id=shift.id,
             after={"code": shift.code, "name": shift.name},
+        )
+        return shift
+
+    async def list_shifts(
+        self,
+        *,
+        status: str | None,
+        limit: int,
+        offset: int,
+    ) -> tuple[list[Shift], int]:
+        filters = [Shift.status == status] if status else []
+        total = await self._session.scalar(select(func.count()).select_from(Shift).where(*filters))
+        items = list(
+            (
+                await self._session.scalars(
+                    select(Shift).where(*filters).order_by(Shift.code).limit(limit).offset(offset)
+                )
+            ).all()
+        )
+        return items, total or 0
+
+    async def update_shift(self, shift_id: UUID, payload: ShiftUpdate) -> Shift:
+        shift = await self._session.get(Shift, shift_id, with_for_update=True)
+        if shift is None:
+            raise ApiError(status_code=404, code="SHIFT_NOT_FOUND", message="shift not found")
+        changes = payload.model_dump(exclude_unset=True)
+        rule_set_id = changes.get("rule_set_id")
+        if rule_set_id is not None and await self._session.get(AttendanceRuleSet, rule_set_id) is None:
+            raise ApiError(status_code=404, code="RULE_SET_NOT_FOUND", message="attendance rule set not found")
+        start_time = changes.get("start_time", shift.start_time)
+        end_time = changes.get("end_time", shift.end_time)
+        crosses_midnight = changes.get("crosses_midnight", shift.crosses_midnight)
+        if crosses_midnight and end_time > start_time:
+            raise ApiError(status_code=422, code="SHIFT_TIME_RANGE_INVALID", message="invalid overnight shift time range")
+        if not crosses_midnight and end_time <= start_time:
+            raise ApiError(status_code=422, code="SHIFT_TIME_RANGE_INVALID", message="invalid shift time range")
+        before = {field: str(getattr(shift, field)) for field in changes}
+        for field, value in changes.items():
+            setattr(shift, field, value)
+        await self._session.flush()
+        self._audit(
+            action="update",
+            object_type="shift",
+            object_id=shift.id,
+            before=before,
+            after={field: str(value) for field, value in changes.items()},
         )
         return shift
 
@@ -89,6 +187,63 @@ class ExtendedAttendanceService:
         )
         return assignment
 
+    async def list_schedules(
+        self,
+        *,
+        employment_id: UUID | None,
+        date_from: date | None,
+        date_to: date | None,
+        limit: int,
+        offset: int,
+    ) -> tuple[list[ScheduleAssignment], int]:
+        filters = []
+        if employment_id is not None:
+            filters.append(ScheduleAssignment.employment_id == employment_id)
+        if date_from is not None:
+            filters.append(ScheduleAssignment.work_date >= date_from)
+        if date_to is not None:
+            filters.append(ScheduleAssignment.work_date <= date_to)
+        total = await self._session.scalar(
+            select(func.count()).select_from(ScheduleAssignment).where(*filters)
+        )
+        items = list(
+            (
+                await self._session.scalars(
+                    select(ScheduleAssignment)
+                    .where(*filters)
+                    .order_by(ScheduleAssignment.work_date.desc())
+                    .limit(limit)
+                    .offset(offset)
+                )
+            ).all()
+        )
+        return items, total or 0
+
+    async def update_schedule(
+        self,
+        schedule_id: UUID,
+        payload: ScheduleAssignmentUpdate,
+    ) -> ScheduleAssignment:
+        schedule = await self._session.get(ScheduleAssignment, schedule_id, with_for_update=True)
+        if schedule is None:
+            raise ApiError(status_code=404, code="SCHEDULE_NOT_FOUND", message="schedule not found")
+        changes = payload.model_dump(exclude_unset=True)
+        shift_id = changes.get("shift_id")
+        if shift_id is not None and await self._session.get(Shift, shift_id) is None:
+            raise ApiError(status_code=404, code="SHIFT_NOT_FOUND", message="shift not found")
+        before = {field: str(getattr(schedule, field)) for field in changes}
+        for field, value in changes.items():
+            setattr(schedule, field, value)
+        await self._session.flush()
+        self._audit(
+            action="update",
+            object_type="schedule_assignment",
+            object_id=schedule.id,
+            before=before,
+            after={field: str(value) for field, value in changes.items()},
+        )
+        return schedule
+
     async def ingest_punch(self, payload: PunchCreate) -> tuple[AttendancePunch, bool]:
         existing = await self._session.scalar(
             select(AttendancePunch).where(
@@ -111,6 +266,38 @@ class ExtendedAttendanceService:
         )
         return punch, False
 
+    async def list_punches(
+        self,
+        *,
+        employment_id: UUID | None,
+        punched_from: datetime | None,
+        punched_to: datetime | None,
+        limit: int,
+        offset: int,
+    ) -> tuple[list[AttendancePunch], int]:
+        filters = []
+        if employment_id is not None:
+            filters.append(AttendancePunch.employment_id == employment_id)
+        if punched_from is not None:
+            filters.append(AttendancePunch.punched_at >= punched_from)
+        if punched_to is not None:
+            filters.append(AttendancePunch.punched_at <= punched_to)
+        total = await self._session.scalar(
+            select(func.count()).select_from(AttendancePunch).where(*filters)
+        )
+        items = list(
+            (
+                await self._session.scalars(
+                    select(AttendancePunch)
+                    .where(*filters)
+                    .order_by(AttendancePunch.punched_at.desc())
+                    .limit(limit)
+                    .offset(offset)
+                )
+            ).all()
+        )
+        return items, total or 0
+
     async def create_leave_type(self, payload: LeaveTypeCreate) -> LeaveType:
         if await self._session.scalar(
             select(LeaveType.id).where(LeaveType.code == payload.code)
@@ -124,6 +311,42 @@ class ExtendedAttendanceService:
             object_type="leave_type",
             object_id=leave_type.id,
             after={"code": leave_type.code},
+        )
+        return leave_type
+
+    async def list_leave_types(
+        self,
+        *,
+        status: str | None,
+        limit: int,
+        offset: int,
+    ) -> tuple[list[LeaveType], int]:
+        filters = [LeaveType.status == status] if status else []
+        total = await self._session.scalar(select(func.count()).select_from(LeaveType).where(*filters))
+        items = list(
+            (
+                await self._session.scalars(
+                    select(LeaveType).where(*filters).order_by(LeaveType.code).limit(limit).offset(offset)
+                )
+            ).all()
+        )
+        return items, total or 0
+
+    async def update_leave_type(self, leave_type_id: UUID, payload: LeaveTypeUpdate) -> LeaveType:
+        leave_type = await self._session.get(LeaveType, leave_type_id, with_for_update=True)
+        if leave_type is None:
+            raise ApiError(status_code=404, code="LEAVE_TYPE_NOT_FOUND", message="leave type not found")
+        changes = payload.model_dump(exclude_unset=True)
+        before = {field: getattr(leave_type, field) for field in changes}
+        for field, value in changes.items():
+            setattr(leave_type, field, value)
+        await self._session.flush()
+        self._audit(
+            action="update",
+            object_type="leave_type",
+            object_id=leave_type.id,
+            before=before,
+            after=changes,
         )
         return leave_type
 
@@ -155,6 +378,92 @@ class ExtendedAttendanceService:
             object_type="leave_request",
             object_id=request.id,
             after={"request_number": request.request_number, "status": request.status},
+        )
+        return request
+
+    async def list_leave_requests(
+        self,
+        *,
+        status: str | None,
+        employment_id: UUID | None,
+        limit: int,
+        offset: int,
+    ) -> tuple[list[LeaveRequest], int]:
+        filters = []
+        if status is not None:
+            filters.append(LeaveRequest.status == status)
+        if employment_id is not None:
+            filters.append(LeaveRequest.employment_id == employment_id)
+        total = await self._session.scalar(
+            select(func.count()).select_from(LeaveRequest).where(*filters)
+        )
+        items = list(
+            (
+                await self._session.scalars(
+                    select(LeaveRequest)
+                    .where(*filters)
+                    .order_by(LeaveRequest.created_at.desc())
+                    .limit(limit)
+                    .offset(offset)
+                )
+            ).all()
+        )
+        return items, total or 0
+
+    async def update_leave_request(
+        self,
+        request_id: UUID,
+        payload: LeaveRequestUpdate,
+    ) -> LeaveRequest:
+        request = await self._session.get(LeaveRequest, request_id, with_for_update=True)
+        if request is None:
+            raise ApiError(status_code=404, code="LEAVE_REQUEST_NOT_FOUND", message="leave request not found")
+        allowed = {
+            "draft": {"draft", "approved", "rejected", "cancelled"},
+            "pending_approval": {"approved", "rejected", "cancelled"},
+            "draft_cancellation": {"approved", "rejected", "cancelled"},
+            "approved": {"approved", "cancelled"},
+            "rejected": {"rejected"},
+            "cancelled": {"cancelled"},
+        }
+        if payload.status not in allowed.get(request.status, set()):
+            raise ApiError(
+                status_code=409,
+                code="LEAVE_STATUS_TRANSITION_INVALID",
+                message="leave request status transition is not allowed",
+            )
+        if payload.status == "approved" and request.cancellation_of_id is None:
+            overlap = await self._session.scalar(
+                select(LeaveRequest.id).where(
+                    LeaveRequest.employment_id == request.employment_id,
+                    LeaveRequest.status == "approved",
+                    LeaveRequest.cancellation_of_id.is_(None),
+                    LeaveRequest.id != request.id,
+                    LeaveRequest.start_date <= request.end_date,
+                    LeaveRequest.end_date >= request.start_date,
+                )
+            )
+            if overlap is not None:
+                raise ApiError(
+                    status_code=409,
+                    code="LEAVE_REQUEST_OVERLAPS",
+                    message="approved leave request overlaps an existing approved leave",
+                )
+        before_status = request.status
+        request.status = payload.status
+        if payload.status == "approved" and request.cancellation_of_id is not None:
+            original = await self._session.get(LeaveRequest, request.cancellation_of_id, with_for_update=True)
+            if original is None:
+                raise ApiError(status_code=422, code="LEAVE_ORIGINAL_MISSING", message="original leave request not found")
+            original.status = "cancelled"
+        await self._session.flush()
+        self._audit(
+            action="status_change",
+            object_type="leave_request",
+            object_id=request.id,
+            reason=payload.change_reason,
+            before={"status": before_status},
+            after={"status": request.status},
         )
         return request
 
@@ -198,3 +507,320 @@ class ExtendedAttendanceService:
             after={"cancellation_of_id": str(original.id), "status": cancellation.status},
         )
         return cancellation
+
+    async def calculate_daily(
+        self,
+        payload: AttendanceDailyCalculate,
+    ) -> AttendanceDailyResult:
+        if await self._session.get(Employment, payload.employment_id) is None:
+            raise ApiError(status_code=404, code="EMPLOYMENT_NOT_FOUND", message="employment not found")
+        schedule = await self._session.scalar(
+            select(ScheduleAssignment).where(
+                ScheduleAssignment.employment_id == payload.employment_id,
+                ScheduleAssignment.work_date == payload.work_date,
+                ScheduleAssignment.status == "active",
+            )
+        )
+        scheduled_minutes = 0
+        worked_minutes = 0
+        late_minutes = 0
+        early_leave_minutes = 0
+        exception_codes: list[str] = []
+        evidence: dict[str, Any] = {"calculation_reason": payload.reason}
+        status = "unscheduled"
+
+        if schedule is None:
+            exception_codes.append("NO_SCHEDULE")
+        else:
+            shift = await self._session.get(Shift, schedule.shift_id)
+            if shift is None:
+                raise ApiError(status_code=422, code="SHIFT_NOT_FOUND", message="scheduled shift not found")
+            rule_set = await self._session.get(AttendanceRuleSet, shift.rule_set_id)
+            if rule_set is None:
+                raise ApiError(status_code=422, code="RULE_SET_NOT_FOUND", message="attendance rule set not found")
+            timezone = ZoneInfo(rule_set.timezone)
+            scheduled_start = datetime.combine(payload.work_date, shift.start_time, tzinfo=timezone)
+            end_date = payload.work_date + timedelta(days=1) if shift.crosses_midnight else payload.work_date
+            scheduled_end = datetime.combine(end_date, shift.end_time, tzinfo=timezone)
+            scheduled_minutes = max(0, int((scheduled_end - scheduled_start).total_seconds() // 60))
+            grace_late = int(rule_set.rules.get("late_grace_minutes", 0) or 0)
+            grace_early = int(rule_set.rules.get("early_leave_grace_minutes", 0) or 0)
+            punches = list(
+                (
+                    await self._session.scalars(
+                        select(AttendancePunch)
+                        .where(
+                            AttendancePunch.employment_id == payload.employment_id,
+                            AttendancePunch.punched_at >= scheduled_start - timedelta(hours=6),
+                            AttendancePunch.punched_at <= scheduled_end + timedelta(hours=6),
+                        )
+                        .order_by(AttendancePunch.punched_at)
+                    )
+                ).all()
+            )
+            leave = await self._session.scalar(
+                select(LeaveRequest)
+                .where(
+                    LeaveRequest.employment_id == payload.employment_id,
+                    LeaveRequest.status == "approved",
+                    LeaveRequest.cancellation_of_id.is_(None),
+                    LeaveRequest.start_date <= payload.work_date,
+                    LeaveRequest.end_date >= payload.work_date,
+                )
+                .order_by(LeaveRequest.created_at.desc())
+                .limit(1)
+            )
+            in_punches = [item for item in punches if item.punch_type == "in"]
+            out_punches = [item for item in punches if item.punch_type == "out"]
+            first_punch = min(in_punches or punches, key=lambda item: item.punched_at) if punches else None
+            last_punch = max(out_punches or punches, key=lambda item: item.punched_at) if punches else None
+            has_pair = (
+                first_punch is not None
+                and last_punch is not None
+                and first_punch.id != last_punch.id
+                and last_punch.punched_at > first_punch.punched_at
+            )
+            if first_punch is not None:
+                late_minutes = max(
+                    0,
+                    int((first_punch.punched_at - scheduled_start).total_seconds() // 60) - grace_late,
+                )
+            if last_punch is not None:
+                early_leave_minutes = max(
+                    0,
+                    int((scheduled_end - last_punch.punched_at).total_seconds() // 60) - grace_early,
+                )
+            if has_pair and first_punch is not None and last_punch is not None:
+                worked_minutes = max(
+                    0,
+                    int((last_punch.punched_at - first_punch.punched_at).total_seconds() // 60),
+                )
+            if not punches:
+                if leave is not None:
+                    status = "leave"
+                else:
+                    status = "absent"
+                    exception_codes.append("NO_PUNCH")
+            elif not has_pair:
+                status = "exception"
+                exception_codes.append("MISSING_PUNCH")
+            elif leave is not None:
+                status = "leave_with_punch"
+            elif late_minutes or early_leave_minutes:
+                status = "exception"
+            else:
+                status = "normal"
+            if late_minutes:
+                exception_codes.append("LATE")
+            if early_leave_minutes:
+                exception_codes.append("EARLY_LEAVE")
+            evidence.update(
+                {
+                    "schedule_id": str(schedule.id),
+                    "shift_id": str(shift.id),
+                    "rule_set_id": str(rule_set.id),
+                    "rule_set_version": rule_set.version,
+                    "timezone": rule_set.timezone,
+                    "scheduled_start": scheduled_start.isoformat(),
+                    "scheduled_end": scheduled_end.isoformat(),
+                    "punch_ids": [str(item.id) for item in punches],
+                    "punch_times": [item.punched_at.isoformat() for item in punches],
+                    "leave_request_id": str(leave.id) if leave is not None else None,
+                }
+            )
+
+        previous = list(
+            (
+                await self._session.scalars(
+                    select(AttendanceDailyResult).where(
+                        AttendanceDailyResult.employment_id == payload.employment_id,
+                        AttendanceDailyResult.work_date == payload.work_date,
+                    )
+                )
+            ).all()
+        )
+        for item in previous:
+            item.is_current = False
+        version = max((item.version for item in previous), default=0) + 1
+        result = AttendanceDailyResult(
+            employment_id=payload.employment_id,
+            work_date=payload.work_date,
+            status=status,
+            scheduled_minutes=scheduled_minutes,
+            worked_minutes=worked_minutes,
+            late_minutes=late_minutes,
+            early_leave_minutes=early_leave_minutes,
+            exception_codes=exception_codes,
+            evidence=evidence,
+            version=version,
+            is_current=True,
+        )
+        self._session.add(result)
+        await self._session.flush()
+        self._audit(
+            action="calculate",
+            object_type="attendance_daily_result",
+            object_id=result.id,
+            reason=payload.reason,
+            after={"status": result.status, "version": result.version},
+        )
+        return result
+
+    async def list_daily_results(
+        self,
+        *,
+        employment_id: UUID | None,
+        date_from: date | None,
+        date_to: date | None,
+        current_only: bool,
+        limit: int,
+        offset: int,
+    ) -> tuple[list[AttendanceDailyResult], int]:
+        filters = []
+        if employment_id is not None:
+            filters.append(AttendanceDailyResult.employment_id == employment_id)
+        if date_from is not None:
+            filters.append(AttendanceDailyResult.work_date >= date_from)
+        if date_to is not None:
+            filters.append(AttendanceDailyResult.work_date <= date_to)
+        if current_only:
+            filters.append(AttendanceDailyResult.is_current.is_(True))
+        total = await self._session.scalar(
+            select(func.count()).select_from(AttendanceDailyResult).where(*filters)
+        )
+        items = list(
+            (
+                await self._session.scalars(
+                    select(AttendanceDailyResult)
+                    .where(*filters)
+                    .order_by(AttendanceDailyResult.work_date.desc(), AttendanceDailyResult.version.desc())
+                    .limit(limit)
+                    .offset(offset)
+                )
+            ).all()
+        )
+        return items, total or 0
+
+    @staticmethod
+    def _next_month(period_month: date) -> date:
+        return date(period_month.year + (period_month.month == 12), 1 if period_month.month == 12 else period_month.month + 1, 1)
+
+    async def calculate_monthly(
+        self,
+        payload: AttendanceMonthlyCalculate,
+    ) -> AttendanceMonthlyResult:
+        if await self._session.get(Employment, payload.employment_id) is None:
+            raise ApiError(status_code=404, code="EMPLOYMENT_NOT_FOUND", message="employment not found")
+        next_month = self._next_month(payload.period_month)
+        schedules = list(
+            (
+                await self._session.scalars(
+                    select(ScheduleAssignment).where(
+                        ScheduleAssignment.employment_id == payload.employment_id,
+                        ScheduleAssignment.status == "active",
+                        ScheduleAssignment.work_date >= payload.period_month,
+                        ScheduleAssignment.work_date < next_month,
+                    )
+                )
+            ).all()
+        )
+        for schedule in schedules:
+            existing = await self._session.scalar(
+                select(AttendanceDailyResult.id).where(
+                    AttendanceDailyResult.employment_id == payload.employment_id,
+                    AttendanceDailyResult.work_date == schedule.work_date,
+                    AttendanceDailyResult.is_current.is_(True),
+                )
+            )
+            if existing is None:
+                await self.calculate_daily(
+                    AttendanceDailyCalculate(
+                        employment_id=payload.employment_id,
+                        work_date=schedule.work_date,
+                        reason=f"monthly aggregation: {payload.reason}",
+                    )
+                )
+        daily_results = list(
+            (
+                await self._session.scalars(
+                    select(AttendanceDailyResult).where(
+                        AttendanceDailyResult.employment_id == payload.employment_id,
+                        AttendanceDailyResult.work_date >= payload.period_month,
+                        AttendanceDailyResult.work_date < next_month,
+                        AttendanceDailyResult.is_current.is_(True),
+                    )
+                )
+            ).all()
+        )
+        scheduled_days = Decimal(sum(1 for item in daily_results if item.scheduled_minutes > 0))
+        worked_days = Decimal(sum(1 for item in daily_results if item.worked_minutes > 0))
+        leave_days = Decimal(sum(1 for item in daily_results if item.status == "leave"))
+        absent_days = Decimal(sum(1 for item in daily_results if item.status == "absent"))
+        previous = list(
+            (
+                await self._session.scalars(
+                    select(AttendanceMonthlyResult).where(
+                        AttendanceMonthlyResult.employment_id == payload.employment_id,
+                        AttendanceMonthlyResult.period_month == payload.period_month,
+                    )
+                )
+            ).all()
+        )
+        for item in previous:
+            item.is_current = False
+        version = max((item.version for item in previous), default=0) + 1
+        result = AttendanceMonthlyResult(
+            employment_id=payload.employment_id,
+            period_month=payload.period_month,
+            scheduled_days=scheduled_days,
+            worked_days=worked_days,
+            leave_days=leave_days,
+            absent_days=absent_days,
+            late_minutes=sum(item.late_minutes for item in daily_results),
+            early_leave_minutes=sum(item.early_leave_minutes for item in daily_results),
+            version=version,
+            is_current=True,
+            status="calculated",
+        )
+        self._session.add(result)
+        await self._session.flush()
+        self._audit(
+            action="calculate",
+            object_type="attendance_monthly_result",
+            object_id=result.id,
+            reason=payload.reason,
+            after={"period_month": result.period_month.isoformat(), "version": result.version},
+        )
+        return result
+
+    async def list_monthly_results(
+        self,
+        *,
+        employment_id: UUID | None,
+        period_month: date | None,
+        current_only: bool,
+        limit: int,
+        offset: int,
+    ) -> tuple[list[AttendanceMonthlyResult], int]:
+        filters = []
+        if employment_id is not None:
+            filters.append(AttendanceMonthlyResult.employment_id == employment_id)
+        if period_month is not None:
+            filters.append(AttendanceMonthlyResult.period_month == period_month)
+        if current_only:
+            filters.append(AttendanceMonthlyResult.is_current.is_(True))
+        total = await self._session.scalar(
+            select(func.count()).select_from(AttendanceMonthlyResult).where(*filters)
+        )
+        items = list(
+            (
+                await self._session.scalars(
+                    select(AttendanceMonthlyResult)
+                    .where(*filters)
+                    .order_by(AttendanceMonthlyResult.period_month.desc(), AttendanceMonthlyResult.version.desc())
+                    .limit(limit)
+                    .offset(offset)
+                )
+            ).all()
+        )
+        return items, total or 0

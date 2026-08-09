@@ -1,0 +1,40 @@
+import { apiRequest } from "../../client"
+import type {
+  AttendanceDailyResult,
+  AttendanceEmploymentOption,
+  AttendanceMonthlyResult,
+  AttendancePage,
+  AttendancePunch,
+  AttendanceRuleSet,
+  LeaveRequest,
+  LeaveType,
+  ScheduleAssignment,
+  Shift,
+} from "./types"
+
+
+export const attendanceApi = {
+  employmentOptions: (token: string, search = "") => apiRequest<AttendancePage<AttendanceEmploymentOption>>(`/api/v1/attendance/employment-options?limit=200&offset=0${search ? `&search=${encodeURIComponent(search)}` : ""}`, token),
+  ruleSets: (token: string) => apiRequest<AttendancePage<AttendanceRuleSet>>("/api/v1/attendance/rule-sets?limit=200&offset=0", token),
+  createRuleSet: (token: string, body: unknown) => apiRequest<AttendanceRuleSet>("/api/v1/attendance/rule-sets", token, { method: "POST", body }),
+  createRuleVersion: (token: string, id: string, body: unknown) => apiRequest<AttendanceRuleSet>(`/api/v1/attendance/rule-sets/${id}/versions`, token, { method: "POST", body }),
+  publishRuleSet: (token: string, id: string) => apiRequest<AttendanceRuleSet>(`/api/v1/attendance/rule-sets/${id}/publish`, token, { method: "POST" }),
+  shifts: (token: string) => apiRequest<AttendancePage<Shift>>("/api/v1/attendance/shifts?limit=200&offset=0", token),
+  createShift: (token: string, body: unknown) => apiRequest<Shift>("/api/v1/attendance/shifts", token, { method: "POST", body }),
+  updateShift: (token: string, id: string, body: unknown) => apiRequest<Shift>(`/api/v1/attendance/shifts/${id}`, token, { method: "PATCH", body }),
+  schedules: (token: string) => apiRequest<AttendancePage<ScheduleAssignment>>("/api/v1/attendance/schedules?limit=200&offset=0", token),
+  createSchedule: (token: string, body: unknown) => apiRequest<ScheduleAssignment>("/api/v1/attendance/schedules", token, { method: "POST", body }),
+  updateSchedule: (token: string, id: string, body: unknown) => apiRequest<ScheduleAssignment>(`/api/v1/attendance/schedules/${id}`, token, { method: "PATCH", body }),
+  punches: (token: string) => apiRequest<AttendancePage<AttendancePunch>>("/api/v1/attendance/punches?limit=200&offset=0", token),
+  createPunch: (token: string, body: unknown) => apiRequest("/api/v1/attendance/punches", token, { method: "POST", body }),
+  leaveTypes: (token: string) => apiRequest<AttendancePage<LeaveType>>("/api/v1/attendance/leave-types?limit=200&offset=0", token),
+  createLeaveType: (token: string, body: unknown) => apiRequest<LeaveType>("/api/v1/attendance/leave-types", token, { method: "POST", body }),
+  leaveRequests: (token: string) => apiRequest<AttendancePage<LeaveRequest>>("/api/v1/attendance/leave-requests?limit=200&offset=0", token),
+  createLeaveRequest: (token: string, body: unknown) => apiRequest<LeaveRequest>("/api/v1/attendance/leave-requests", token, { method: "POST", body }),
+  updateLeaveRequest: (token: string, id: string, body: unknown) => apiRequest<LeaveRequest>(`/api/v1/attendance/leave-requests/${id}`, token, { method: "PATCH", body }),
+  cancelLeaveRequest: (token: string, id: string, body: unknown) => apiRequest<LeaveRequest>(`/api/v1/attendance/leave-requests/${id}/cancel`, token, { method: "POST", body }),
+  dailyResults: (token: string) => apiRequest<AttendancePage<AttendanceDailyResult>>("/api/v1/attendance/daily-results?limit=200&offset=0", token),
+  calculateDaily: (token: string, body: unknown) => apiRequest<AttendanceDailyResult>("/api/v1/attendance/daily-results/calculate", token, { method: "POST", body }),
+  monthlyResults: (token: string) => apiRequest<AttendancePage<AttendanceMonthlyResult>>("/api/v1/attendance/monthly-results?limit=200&offset=0", token),
+  calculateMonthly: (token: string, body: unknown) => apiRequest<AttendanceMonthlyResult>("/api/v1/attendance/monthly-results/calculate", token, { method: "POST", body }),
+}

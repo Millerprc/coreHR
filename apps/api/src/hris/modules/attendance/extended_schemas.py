@@ -6,6 +6,22 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
+class AttendanceEmploymentOption(BaseModel):
+    id: UUID
+    person_id: UUID
+    employee_number: str | None
+    display_name: str
+    employee_type_code: str
+    status: str
+
+
+class AttendanceEmploymentOptionPage(BaseModel):
+    items: list[AttendanceEmploymentOption]
+    total: int
+    limit: int
+    offset: int
+
+
 class ShiftCreate(BaseModel):
     code: str = Field(min_length=1, max_length=50)
     name: str = Field(min_length=1, max_length=200)
@@ -36,6 +52,28 @@ class ShiftResponse(BaseModel):
     status: str
 
 
+class ShiftUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    start_time: time | None = None
+    end_time: time | None = None
+    crosses_midnight: bool | None = None
+    rule_set_id: UUID | None = None
+    status: Literal["active", "inactive"] | None = None
+
+    @model_validator(mode="after")
+    def validate_change(self) -> "ShiftUpdate":
+        if not self.model_dump(exclude_unset=True):
+            raise ValueError("at least one shift field must be changed")
+        return self
+
+
+class ShiftPage(BaseModel):
+    items: list[ShiftResponse]
+    total: int
+    limit: int
+    offset: int
+
+
 class ScheduleAssignmentCreate(BaseModel):
     employment_id: UUID
     work_date: date
@@ -52,6 +90,25 @@ class ScheduleAssignmentResponse(BaseModel):
     shift_id: UUID
     source: str
     status: str
+
+
+class ScheduleAssignmentUpdate(BaseModel):
+    shift_id: UUID | None = None
+    source: str | None = Field(default=None, min_length=1, max_length=50)
+    status: Literal["active", "cancelled"] | None = None
+
+    @model_validator(mode="after")
+    def validate_change(self) -> "ScheduleAssignmentUpdate":
+        if not self.model_dump(exclude_unset=True):
+            raise ValueError("at least one schedule field must be changed")
+        return self
+
+
+class ScheduleAssignmentPage(BaseModel):
+    items: list[ScheduleAssignmentResponse]
+    total: int
+    limit: int
+    offset: int
 
 
 class PunchCreate(BaseModel):
@@ -86,6 +143,13 @@ class PunchIngestResponse(BaseModel):
     record: PunchResponse
 
 
+class PunchPage(BaseModel):
+    items: list[PunchResponse]
+    total: int
+    limit: int
+    offset: int
+
+
 class LeaveTypeCreate(BaseModel):
     code: str = Field(min_length=1, max_length=50)
     name: str = Field(min_length=1, max_length=200)
@@ -102,6 +166,26 @@ class LeaveTypeResponse(BaseModel):
     unit: str
     status: str
     rules: dict[str, Any]
+
+
+class LeaveTypeUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    unit: Literal["day", "hour"] | None = None
+    status: Literal["active", "inactive"] | None = None
+    rules: dict[str, Any] | None = None
+
+    @model_validator(mode="after")
+    def validate_change(self) -> "LeaveTypeUpdate":
+        if not self.model_dump(exclude_unset=True):
+            raise ValueError("at least one leave-type field must be changed")
+        return self
+
+
+class LeaveTypePage(BaseModel):
+    items: list[LeaveTypeResponse]
+    total: int
+    limit: int
+    offset: int
 
 
 class LeaveRequestCreate(BaseModel):
@@ -139,3 +223,81 @@ class LeaveRequestResponse(BaseModel):
 class LeaveCancellationCreate(BaseModel):
     reason: str = Field(min_length=1, max_length=5000)
     workflow_instance_id: UUID | None = None
+
+
+class LeaveRequestUpdate(BaseModel):
+    status: Literal["draft", "approved", "rejected", "cancelled"]
+    change_reason: str = Field(min_length=1, max_length=500)
+
+
+class LeaveRequestPage(BaseModel):
+    items: list[LeaveRequestResponse]
+    total: int
+    limit: int
+    offset: int
+
+
+class AttendanceDailyCalculate(BaseModel):
+    employment_id: UUID
+    work_date: date
+    reason: str = Field(default="manual calculation", min_length=1, max_length=500)
+
+
+class AttendanceDailyResultResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    employment_id: UUID
+    work_date: date
+    status: str
+    scheduled_minutes: int
+    worked_minutes: int
+    late_minutes: int
+    early_leave_minutes: int
+    exception_codes: list[str]
+    evidence: dict[str, Any]
+    version: int
+    is_current: bool
+
+
+class AttendanceDailyResultPage(BaseModel):
+    items: list[AttendanceDailyResultResponse]
+    total: int
+    limit: int
+    offset: int
+
+
+class AttendanceMonthlyCalculate(BaseModel):
+    employment_id: UUID
+    period_month: date
+    reason: str = Field(default="manual aggregation", min_length=1, max_length=500)
+
+    @model_validator(mode="after")
+    def validate_month(self) -> "AttendanceMonthlyCalculate":
+        if self.period_month.day != 1:
+            raise ValueError("period_month must be the first day of a month")
+        return self
+
+
+class AttendanceMonthlyResultResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    employment_id: UUID
+    period_month: date
+    scheduled_days: Decimal
+    worked_days: Decimal
+    leave_days: Decimal
+    absent_days: Decimal
+    late_minutes: int
+    early_leave_minutes: int
+    version: int
+    is_current: bool
+    status: str
+
+
+class AttendanceMonthlyResultPage(BaseModel):
+    items: list[AttendanceMonthlyResultResponse]
+    total: int
+    limit: int
+    offset: int

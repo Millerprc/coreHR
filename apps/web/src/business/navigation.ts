@@ -6,6 +6,7 @@ export type WorkspaceKey =
   | "headcount"
   | "recruitment"
   | "lifecycle"
+  | "attendance"
   | "governance"
 
 
@@ -35,6 +36,7 @@ export const workspaces: readonly WorkspaceDefinition[] = [
   { key: "headcount", label: "人力与编制", permission: "WORKFORCE_ADMIN", available: true },
   { key: "recruitment", label: "招聘需求", permission: "LIFECYCLE_ADMIN", available: true },
   { key: "lifecycle", label: "员工生命周期", permission: "LIFECYCLE_ADMIN", available: true },
+  { key: "attendance", label: "考勤管理", permission: "ATTENDANCE_ADMIN", available: true },
   { key: "governance", label: "数据治理", available: false },
 ]
 

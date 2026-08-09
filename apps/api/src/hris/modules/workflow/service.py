@@ -1,3 +1,5 @@
+from datetime import UTC, datetime
+from typing import Any
 from uuid import UUID
 
 from sqlalchemy import func, select
@@ -6,11 +8,36 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from hris.core.errors import ApiError
 from hris.modules.workflow.models import WorkflowDefinition, WorkflowVersion
 from hris.modules.workflow.schemas import WorkflowDefinitionCreate
+from hris.modules.workforce.models import AuditLog
 
 
 class WorkflowService:
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(self, session: AsyncSession, *, actor_id: UUID, trace_id: str) -> None:
         self._session = session
+        self._actor_id = actor_id
+        self._trace_id = trace_id
+
+    def _audit(
+        self,
+        *,
+        action: str,
+        object_id: UUID,
+        after: dict[str, Any],
+    ) -> None:
+        self._session.add(
+            AuditLog(
+                occurred_at=datetime.now(UTC),
+                actor_id=self._actor_id,
+                trace_id=self._trace_id,
+                action=action,
+                object_type="workflow_definition",
+                object_id=object_id,
+                reason=None,
+                before_payload={},
+                after_payload=after,
+                source="api",
+            )
+        )
 
     async def create_definition(
         self,
@@ -115,6 +142,11 @@ class WorkflowService:
         )
         self._session.add(version)
         await self._session.flush()
+        self._audit(
+            action="create",
+            object_id=definition.id,
+            after={"code": definition.code, "version": version.version, "status": definition.status},
+        )
         return definition
 
     async def list_definitions(
