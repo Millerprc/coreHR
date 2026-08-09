@@ -63,6 +63,20 @@ button, input, textarea, select { font: inherit; }
 .user-summary { display: grid; text-align: right; line-height: 1.35; }
 .business-content { padding: 24px; overflow: auto; }
 .workspace-section { width: min(1560px, 100%); margin: 0 auto; }
+
+.lifecycle-tabs { margin-top: 18px; }
+.lifecycle-panel-stack { display: grid; gap: 18px; }
+.panel-heading { align-items: flex-start; display: flex; gap: 20px; justify-content: space-between; }
+.panel-heading .ant-typography { margin-bottom: 0; }
+.payload-preview {
+  background: #f6f8fa;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  max-height: 320px;
+  overflow: auto;
+  padding: 12px;
+  white-space: pre-wrap;
+}
 .workspace-heading, .detail-toolbar, .organization-title-row, .panel-heading {
   display: flex;
   align-items: center;
