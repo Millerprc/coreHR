@@ -2,7 +2,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from hris.core.errors import ApiError
@@ -14,6 +14,7 @@ from hris.modules.workflow.extended_schemas import (
     HrEventRollbackCreate,
     JobApplicationCreate,
     RecruitmentRequestCreate,
+    RecruitmentRequestUpdate,
     WorkflowInstanceCreate,
 )
 from hris.modules.workflow.models import (
@@ -42,7 +43,16 @@ class LifecycleService:
         self._actor_id = actor_id
         self._trace_id = trace_id
 
-    def _audit(self, *, action: str, object_type: str, object_id: UUID, after: dict[str, Any]) -> None:
+    def _audit(
+        self,
+        *,
+        action: str,
+        object_type: str,
+        object_id: UUID,
+        after: dict[str, Any],
+        reason: str | None = None,
+        before: dict[str, Any] | None = None,
+    ) -> None:
         self._session.add(
             AuditLog(
                 occurred_at=datetime.now(UTC),
@@ -51,8 +61,8 @@ class LifecycleService:
                 action=action,
                 object_type=object_type,
                 object_id=object_id,
-                reason=None,
-                before_payload={},
+                reason=reason,
+                before_payload=before or {},
                 after_payload=after,
                 source="api",
             )
@@ -123,6 +133,103 @@ class LifecycleService:
             after={"request_number": request.request_number},
         )
         return request
+
+    async def get_recruitment_request(self, request_id: UUID) -> RecruitmentRequest:
+        recruitment_request = await self._session.get(RecruitmentRequest, request_id)
+        if recruitment_request is None:
+            raise ApiError(status_code=404, code="RECRUITMENT_NOT_FOUND", message="招聘需求不存在")
+        return recruitment_request
+
+    async def list_recruitment_requests(
+        self,
+        *,
+        status: str | None,
+        organization_id: UUID | None,
+        job_id: UUID | None,
+        limit: int,
+        offset: int,
+    ) -> tuple[list[RecruitmentRequest], int]:
+        filters = []
+        if status is not None:
+            filters.append(RecruitmentRequest.status == status)
+        if organization_id is not None:
+            filters.append(RecruitmentRequest.organization_id == organization_id)
+        if job_id is not None:
+            filters.append(RecruitmentRequest.job_id == job_id)
+        total = await self._session.scalar(
+            select(func.count()).select_from(RecruitmentRequest).where(*filters)
+        )
+        items = list(
+            (
+                await self._session.scalars(
+                    select(RecruitmentRequest)
+                    .where(*filters)
+                    .order_by(RecruitmentRequest.created_at.desc())
+                    .limit(limit)
+                    .offset(offset)
+                )
+            ).all()
+        )
+        return items, total or 0
+
+    async def update_recruitment_request(
+        self,
+        request_id: UUID,
+        payload: RecruitmentRequestUpdate,
+    ) -> RecruitmentRequest:
+        recruitment_request = await self._session.get(
+            RecruitmentRequest,
+            request_id,
+            with_for_update=True,
+        )
+        if recruitment_request is None:
+            raise ApiError(status_code=404, code="RECRUITMENT_NOT_FOUND", message="招聘需求不存在")
+        changes = payload.model_dump(exclude={"change_reason"}, exclude_unset=True)
+        next_status = changes.get("status")
+        allowed_transitions = {
+            "draft": {"draft", "submitted", "cancelled", "closed"},
+            "submitted": {"submitted", "cancelled", "closed"},
+            "closed": {"closed"},
+            "cancelled": {"cancelled"},
+        }
+        if next_status is not None and next_status not in allowed_transitions.get(
+            recruitment_request.status,
+            set(),
+        ):
+            raise ApiError(
+                status_code=409,
+                code="RECRUITMENT_STATUS_TRANSITION_INVALID",
+                message="招聘需求状态不允许这样变更",
+            )
+        if recruitment_request.status in {"closed", "cancelled"} and any(
+            field != "status" for field in changes
+        ):
+            raise ApiError(
+                status_code=409,
+                code="RECRUITMENT_REQUEST_FINALIZED",
+                message="已关闭或取消的招聘需求不能直接修改",
+            )
+        before = {
+            field: getattr(recruitment_request, field).isoformat()
+            if hasattr(getattr(recruitment_request, field), "isoformat")
+            else getattr(recruitment_request, field)
+            for field in changes
+        }
+        for field, value in changes.items():
+            setattr(recruitment_request, field, value)
+        await self._session.flush()
+        self._audit(
+            action="update",
+            object_type="recruitment_request",
+            object_id=recruitment_request.id,
+            reason=payload.change_reason,
+            before=before,
+            after={
+                field: value.isoformat() if hasattr(value, "isoformat") else value
+                for field, value in changes.items()
+            },
+        )
+        return recruitment_request
 
     async def create_application(self, payload: JobApplicationCreate) -> JobApplication:
         if await self._session.get(Candidate, payload.candidate_id) is None:

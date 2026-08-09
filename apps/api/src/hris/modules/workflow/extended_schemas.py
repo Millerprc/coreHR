@@ -47,6 +47,28 @@ class RecruitmentRequestResponse(BaseModel):
     workflow_instance_id: UUID | None
 
 
+class RecruitmentRequestUpdate(BaseModel):
+    requested_count: int | None = Field(default=None, gt=0, le=10000)
+    target_month: date | None = None
+    reason: str | None = Field(default=None, min_length=1, max_length=5000)
+    status: Literal["draft", "submitted", "closed", "cancelled"] | None = None
+    change_reason: str = Field(min_length=1, max_length=500)
+
+    @model_validator(mode="after")
+    def validate_change(self) -> "RecruitmentRequestUpdate":
+        changed = self.model_dump(exclude={"change_reason"}, exclude_unset=True)
+        if not changed:
+            raise ValueError("至少提供一个招聘需求变更字段")
+        return self
+
+
+class RecruitmentRequestPage(BaseModel):
+    items: list[RecruitmentRequestResponse]
+    total: int
+    limit: int
+    offset: int
+
+
 class JobApplicationCreate(BaseModel):
     candidate_id: UUID
     recruitment_request_id: UUID

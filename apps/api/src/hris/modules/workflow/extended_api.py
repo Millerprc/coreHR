@@ -1,7 +1,7 @@
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Request, status
+from fastapi import APIRouter, Depends, Query, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from hris.core.database import get_db
@@ -18,7 +18,9 @@ from hris.modules.workflow.extended_schemas import (
     JobApplicationCreate,
     JobApplicationResponse,
     RecruitmentRequestCreate,
+    RecruitmentRequestPage,
     RecruitmentRequestResponse,
+    RecruitmentRequestUpdate,
     WorkflowInstanceCreate,
     WorkflowInstanceResponse,
     WorkflowPublishResponse,
@@ -57,6 +59,57 @@ async def create_recruitment_request(
 ) -> RecruitmentRequestResponse:
     return RecruitmentRequestResponse.model_validate(
         await service(db, user, request).create_recruitment_request(payload)
+    )
+
+
+@router.get("/recruitment-requests", response_model=RecruitmentRequestPage)
+async def list_recruitment_requests(
+    request: Request,
+    db: DbSession,
+    user: AdminUser,
+    request_status: str | None = Query(default=None, alias="status", max_length=30),
+    organization_id: UUID | None = Query(default=None),
+    job_id: UUID | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+) -> RecruitmentRequestPage:
+    items, total = await service(db, user, request).list_recruitment_requests(
+        status=request_status,
+        organization_id=organization_id,
+        job_id=job_id,
+        limit=limit,
+        offset=offset,
+    )
+    return RecruitmentRequestPage(
+        items=[RecruitmentRequestResponse.model_validate(item) for item in items],
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.get("/recruitment-requests/{request_id}", response_model=RecruitmentRequestResponse)
+async def get_recruitment_request(
+    request_id: UUID,
+    request: Request,
+    db: DbSession,
+    user: AdminUser,
+) -> RecruitmentRequestResponse:
+    return RecruitmentRequestResponse.model_validate(
+        await service(db, user, request).get_recruitment_request(request_id)
+    )
+
+
+@router.patch("/recruitment-requests/{request_id}", response_model=RecruitmentRequestResponse)
+async def update_recruitment_request(
+    request_id: UUID,
+    payload: RecruitmentRequestUpdate,
+    request: Request,
+    db: DbSession,
+    user: AdminUser,
+) -> RecruitmentRequestResponse:
+    return RecruitmentRequestResponse.model_validate(
+        await service(db, user, request).update_recruitment_request(request_id, payload)
     )
 
 
