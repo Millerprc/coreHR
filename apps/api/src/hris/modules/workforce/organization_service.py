@@ -1,4 +1,5 @@
 from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal
 from typing import Any
 from uuid import UUID
 from zoneinfo import ZoneInfo
@@ -13,24 +14,38 @@ from hris.modules.platform.governance_models import OutboxEvent
 from hris.modules.platform.numbering import next_number
 from hris.modules.workforce.models import (
     AuditLog,
+    CostCenter,
     LegalEntity,
     Organization,
+    OrganizationCostAllocation,
     OrganizationLegalEntity,
     OrganizationType,
     OrganizationVersion,
     Person,
+    RevenueTarget,
 )
 from hris.modules.workforce.organization_models import (
     BpServiceScope,
     OrganizationEvent,
     OrganizationLeader,
     PersonBpMembership,
+    RevenueTargetMonth,
 )
-from hris.modules.workforce.organization_policy import DomainViolation, assert_no_cycle
+from hris.modules.workforce.organization_policy import (
+    DomainViolation,
+    assert_allocation_total,
+    assert_no_cycle,
+    assert_revenue_total,
+)
 from hris.modules.workforce.organization_schemas import (
     BpMembershipCreate,
     BpMembershipView,
     BpServiceScopeSet,
+    CostAllocationLine,
+    CostAllocationSet,
+    CostAllocationView,
+    CostCenterCreate,
+    CostCenterView,
     OrganizationCreate,
     OrganizationEventView,
     OrganizationLeaderSet,
@@ -43,6 +58,11 @@ from hris.modules.workforce.organization_schemas import (
     OrganizationVersionCreate,
     OrganizationView,
     RelationSetView,
+    RevenueAggregationView,
+    RevenueCurrencyTotal,
+    RevenueTargetMonthInput,
+    RevenueTargetSet,
+    RevenueTargetView,
 )
 
 
@@ -1116,6 +1136,499 @@ class OrganizationService:
             bp_membership_ids=bp_membership_ids,
         )
 
+    async def create_cost_center(
+        self,
+        payload: CostCenterCreate,
+    ) -> CostCenterView:
+        await self._session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtext(:cost_center_code))"),
+            {"cost_center_code": f"corehr:cost-center:{payload.code}"},
+        )
+        existing = await self._session.scalar(
+            select(CostCenter).where(CostCenter.code == payload.code)
+        )
+        if existing is not None:
+            raise ApiError(
+                status_code=409,
+                code="COST_CENTER_CODE_CONFLICT",
+                message="成本中心代码已存在",
+            )
+        cost_center = CostCenter(
+            **payload.model_dump(),
+            status="active",
+            version=1,
+        )
+        self._session.add(cost_center)
+        await self._session.flush()
+        await self._audit(
+            action="organization.cost_center.create",
+            object_type="cost_center",
+            object_id=cost_center.id,
+            reason="创建成本中心",
+            before={},
+            after={
+                "code": cost_center.code,
+                "name": cost_center.name,
+                "effective_from": cost_center.effective_from.isoformat(),
+            },
+        )
+        await self._outbox(
+            "organization.cost_center.created",
+            "cost_center",
+            cost_center.id,
+            {"cost_center_id": str(cost_center.id), "version": 1},
+        )
+        return CostCenterView.model_validate(cost_center)
+
+    async def list_cost_centers(self) -> list[CostCenterView]:
+        items = (
+            await self._session.scalars(
+                select(CostCenter).order_by(CostCenter.code)
+            )
+        ).all()
+        return [CostCenterView.model_validate(item) for item in items]
+
+    async def set_cost_allocation(
+        self,
+        organization_id: UUID,
+        payload: CostAllocationSet,
+    ) -> CostAllocationView:
+        await self._lock_idempotency(payload.command.idempotency_key)
+        existing_event = await self._event_by_idempotency(
+            payload.command.idempotency_key
+        )
+        if existing_event is not None:
+            if (
+                existing_event.event_type != "COST_ALLOCATION_SET"
+                or existing_event.organization_id != organization_id
+            ):
+                self._raise_idempotency_conflict()
+            return await self.get_cost_allocation_as_of(
+                organization_id,
+                existing_event.effective_date,
+            )
+
+        cost_center_ids = self._unique_ids(
+            [line.cost_center_id for line in payload.lines],
+            code="COST_CENTER_DUPLICATE",
+            message="同一分摊版本不能重复使用成本中心",
+        )
+        try:
+            assert_allocation_total(
+                [line.allocation_percent for line in payload.lines]
+            )
+        except DomainViolation as exc:
+            self._raise_validation_domain(exc)
+
+        await self._lock_organization(organization_id)
+        await self._state_as_of(organization_id, payload.effective_from)
+        for cost_center_id in cost_center_ids:
+            cost_center = await self._session.get(CostCenter, cost_center_id)
+            if (
+                cost_center is None
+                or cost_center.status != "active"
+                or cost_center.effective_from > payload.effective_from
+                or (
+                    cost_center.effective_to is not None
+                    and cost_center.effective_to < payload.effective_from
+                )
+            ):
+                raise ApiError(
+                    status_code=422,
+                    code="COST_CENTER_NOT_EFFECTIVE",
+                    message="成本中心不存在或在指定日期无效",
+                )
+
+        current_version = await self._relation_version(
+            organization_id,
+            "COST_ALLOCATION_SET",
+        )
+        self._assert_expected_version(current_version, payload.command)
+        prior_rows = list(
+            (
+                await self._session.scalars(
+                    select(OrganizationCostAllocation).where(
+                        OrganizationCostAllocation.organization_id == organization_id,
+                        or_(
+                            OrganizationCostAllocation.effective_to.is_(None),
+                            OrganizationCostAllocation.effective_to
+                            >= payload.effective_from,
+                        ),
+                    )
+                )
+            ).all()
+        )
+        before = (
+            {
+                "version": max(row.version for row in prior_rows),
+                "lines": [
+                    {
+                        "cost_center_id": str(row.cost_center_id),
+                        "allocation_percent": str(row.allocation_percent),
+                    }
+                    for row in prior_rows
+                ],
+            }
+            if prior_rows
+            else {}
+        )
+        self._assert_new_relation_period(
+            [row.effective_from for row in prior_rows],
+            payload.effective_from,
+        )
+        for row in prior_rows:
+            row.effective_to = payload.effective_from - timedelta(days=1)
+            row.is_current = False
+        await self._session.flush()
+
+        next_version = current_version + 1
+        self._session.add_all(
+            [
+                OrganizationCostAllocation(
+                    organization_id=organization_id,
+                    cost_center_id=line.cost_center_id,
+                    allocation_percent=line.allocation_percent,
+                    effective_from=payload.effective_from,
+                    effective_to=payload.effective_to,
+                    version=next_version,
+                    is_current=True,
+                )
+                for line in payload.lines
+            ]
+        )
+        await self._session.flush()
+        event = await self._record_relation_event(
+            organization_id=organization_id,
+            event_type="COST_ALLOCATION_SET",
+            effective_date=payload.effective_from,
+            effective_to=payload.effective_to,
+            command=payload.command,
+            version=next_version,
+            related_ids=cost_center_ids,
+        )
+        await self._audit(
+            action="organization.cost_allocation.set",
+            object_type="organization",
+            object_id=organization_id,
+            reason=payload.command.change_reason,
+            before=before,
+            after={
+                "version": next_version,
+                "lines": [
+                    {
+                        "cost_center_id": str(line.cost_center_id),
+                        "allocation_percent": str(line.allocation_percent),
+                    }
+                    for line in payload.lines
+                ],
+            },
+        )
+        await self._outbox(
+            "organization.cost_allocation.set",
+            "organization",
+            organization_id,
+            {
+                "organization_id": str(organization_id),
+                "event_id": str(event.id),
+                "version": next_version,
+            },
+        )
+        return await self.get_cost_allocation_as_of(
+            organization_id,
+            payload.effective_from,
+        )
+
+    async def get_cost_allocation_as_of(
+        self,
+        organization_id: UUID,
+        effective_at: date,
+    ) -> CostAllocationView:
+        await self._state_as_of(organization_id, effective_at)
+        rows = list(
+            (
+                await self._session.scalars(
+                    select(OrganizationCostAllocation)
+                    .where(
+                        OrganizationCostAllocation.organization_id == organization_id,
+                        OrganizationCostAllocation.effective_from <= effective_at,
+                        or_(
+                            OrganizationCostAllocation.effective_to.is_(None),
+                            OrganizationCostAllocation.effective_to >= effective_at,
+                        ),
+                    )
+                    .order_by(OrganizationCostAllocation.cost_center_id)
+                )
+            ).all()
+        )
+        if not rows:
+            raise ApiError(
+                status_code=404,
+                code="COST_ALLOCATION_NOT_FOUND",
+                message="指定日期没有成本分摊版本",
+            )
+        return CostAllocationView(
+            organization_id=organization_id,
+            effective_at=effective_at,
+            version=max(row.version for row in rows),
+            lines=[
+                CostAllocationLine(
+                    cost_center_id=row.cost_center_id,
+                    allocation_percent=row.allocation_percent,
+                )
+                for row in rows
+            ],
+        )
+
+    async def set_revenue_target(
+        self,
+        organization_id: UUID,
+        payload: RevenueTargetSet,
+    ) -> RevenueTargetView:
+        await self._lock_idempotency(payload.command.idempotency_key)
+        existing_event = await self._event_by_idempotency(
+            payload.command.idempotency_key
+        )
+        if existing_event is not None:
+            if (
+                existing_event.event_type != "REVENUE_TARGET_SET"
+                or existing_event.organization_id != organization_id
+                or int(existing_event.payload.get("year", 0)) != payload.year
+                or existing_event.payload.get("currency_code") != payload.currency_code
+            ):
+                self._raise_idempotency_conflict()
+            return await self._revenue_target_view(
+                UUID(existing_event.payload["revenue_target_id"])
+            )
+
+        month_values: dict[int, Decimal] = {}
+        for month in payload.months:
+            if month.month in month_values:
+                raise ApiError(
+                    status_code=422,
+                    code="REVENUE_MONTH_SET_INVALID",
+                    message="收入目标月份不能重复",
+                )
+            month_values[month.month] = month.amount
+        try:
+            assert_revenue_total(payload.annual_amount, month_values)
+        except DomainViolation as exc:
+            self._raise_validation_domain(exc)
+
+        await self._lock_organization(organization_id)
+        await self._state_as_of(organization_id, self.business_date())
+        current_target = await self._session.scalar(
+            select(RevenueTarget)
+            .where(
+                RevenueTarget.organization_id == organization_id,
+                RevenueTarget.year == payload.year,
+                RevenueTarget.currency_code == payload.currency_code,
+                RevenueTarget.is_current.is_(True),
+            )
+            .order_by(RevenueTarget.version.desc())
+            .limit(1)
+        )
+        current_version = current_target.version if current_target is not None else 1
+        self._assert_expected_version(current_version, payload.command)
+        before: dict[str, Any] = {}
+        if current_target is not None:
+            prior_months = (
+                await self._session.scalars(
+                    select(RevenueTargetMonth)
+                    .where(
+                        RevenueTargetMonth.revenue_target_id == current_target.id
+                    )
+                    .order_by(RevenueTargetMonth.month)
+                )
+            ).all()
+            before = {
+                "revenue_target_id": str(current_target.id),
+                "year": current_target.year,
+                "currency_code": current_target.currency_code,
+                "annual_amount": str(current_target.annual_amount),
+                "months": [
+                    {"month": row.month, "amount": str(row.amount)}
+                    for row in prior_months
+                ],
+                "version": current_target.version,
+            }
+            current_target.is_current = False
+            await self._session.flush()
+
+        next_version = current_version + 1
+        target = RevenueTarget(
+            organization_id=organization_id,
+            year=payload.year,
+            currency_code=payload.currency_code,
+            annual_amount=payload.annual_amount,
+            version=next_version,
+            is_current=True,
+            change_reason=payload.command.change_reason,
+        )
+        self._session.add(target)
+        await self._session.flush()
+        self._session.add_all(
+            [
+                RevenueTargetMonth(
+                    revenue_target_id=target.id,
+                    month=month,
+                    amount=amount,
+                )
+                for month, amount in sorted(month_values.items())
+            ]
+        )
+        await self._session.flush()
+        event = await self._record_relation_event(
+            organization_id=organization_id,
+            event_type="REVENUE_TARGET_SET",
+            effective_date=self.business_date(),
+            command=payload.command,
+            version=next_version,
+            related_ids=[target.id],
+            extra_payload={
+                "revenue_target_id": str(target.id),
+                "year": payload.year,
+                "currency_code": payload.currency_code,
+            },
+        )
+        await self._audit(
+            action="organization.revenue_target.set",
+            object_type="organization",
+            object_id=organization_id,
+            reason=payload.command.change_reason,
+            before=before,
+            after={
+                "revenue_target_id": str(target.id),
+                "year": payload.year,
+                "currency_code": payload.currency_code,
+                "annual_amount": str(payload.annual_amount),
+                "version": next_version,
+            },
+        )
+        await self._outbox(
+            "organization.revenue_target.set",
+            "organization",
+            organization_id,
+            {
+                "organization_id": str(organization_id),
+                "revenue_target_id": str(target.id),
+                "event_id": str(event.id),
+                "version": next_version,
+            },
+        )
+        return await self._revenue_target_view(target.id)
+
+    async def get_revenue_targets(
+        self,
+        organization_id: UUID,
+        year: int,
+    ) -> list[RevenueTargetView]:
+        result = await self.aggregate_revenue_tree(
+            organization_id,
+            year,
+            include_descendants=False,
+        )
+        return result.targets
+
+    async def aggregate_revenue_tree(
+        self,
+        organization_id: UUID,
+        year: int,
+        *,
+        include_descendants: bool,
+    ) -> RevenueAggregationView:
+        await self._organization(organization_id)
+        organization_ids = {organization_id}
+        if include_descendants:
+            parents = await self._parent_map_as_of(self.business_date())
+            pending = [organization_id]
+            while pending:
+                parent_id = pending.pop()
+                children = [
+                    child_id
+                    for child_id, candidate_parent in parents.items()
+                    if candidate_parent == parent_id and child_id not in organization_ids
+                ]
+                organization_ids.update(children)
+                pending.extend(children)
+
+        targets = list(
+            (
+                await self._session.scalars(
+                    select(RevenueTarget).where(
+                        RevenueTarget.organization_id.in_(organization_ids),
+                        RevenueTarget.year == year,
+                        RevenueTarget.is_current.is_(True),
+                    )
+                )
+            ).all()
+        )
+        month_rows = (
+            list(
+                (
+                    await self._session.scalars(
+                        select(RevenueTargetMonth)
+                        .where(
+                            RevenueTargetMonth.revenue_target_id.in_(
+                                [target.id for target in targets]
+                            )
+                        )
+                        .order_by(
+                            RevenueTargetMonth.revenue_target_id,
+                            RevenueTargetMonth.month,
+                        )
+                    )
+                ).all()
+            )
+            if targets
+            else []
+        )
+        months_by_target: dict[UUID, list[RevenueTargetMonth]] = {}
+        for month_row in month_rows:
+            months_by_target.setdefault(month_row.revenue_target_id, []).append(
+                month_row
+            )
+
+        totals: dict[str, RevenueCurrencyTotal] = {}
+        own_targets: list[RevenueTargetView] = []
+        for target in targets:
+            target_months = months_by_target.get(target.id, [])
+            currency_total = totals.setdefault(
+                target.currency_code,
+                RevenueCurrencyTotal(
+                    annual_amount=Decimal("0.0000"),
+                    months={month: Decimal("0.0000") for month in range(1, 13)},
+                ),
+            )
+            currency_total.annual_amount += target.annual_amount
+            for month_row in target_months:
+                currency_total.months[month_row.month] += month_row.amount
+            if target.organization_id == organization_id:
+                own_targets.append(
+                    RevenueTargetView(
+                        id=target.id,
+                        organization_id=target.organization_id,
+                        year=target.year,
+                        currency_code=target.currency_code,
+                        annual_amount=target.annual_amount,
+                        months=[
+                            RevenueTargetMonthInput(
+                                month=row.month,
+                                amount=row.amount,
+                            )
+                            for row in target_months
+                        ],
+                        version=target.version,
+                    )
+                )
+
+        return RevenueAggregationView(
+            organization_id=organization_id,
+            year=year,
+            include_descendants=include_descendants,
+            targets=sorted(own_targets, key=lambda item: item.currency_code),
+            totals_by_currency=totals,
+        )
+
     async def _state_as_of(
         self,
         organization_id: UUID,
@@ -1429,6 +1942,37 @@ class OrganizationService:
             status=membership.status,
         )
 
+    async def _revenue_target_view(
+        self,
+        target_id: UUID,
+    ) -> RevenueTargetView:
+        target = await self._session.get(RevenueTarget, target_id)
+        if target is None:
+            raise ApiError(
+                status_code=404,
+                code="REVENUE_TARGET_NOT_FOUND",
+                message="收入目标不存在",
+            )
+        month_rows = (
+            await self._session.scalars(
+                select(RevenueTargetMonth)
+                .where(RevenueTargetMonth.revenue_target_id == target_id)
+                .order_by(RevenueTargetMonth.month)
+            )
+        ).all()
+        return RevenueTargetView(
+            id=target.id,
+            organization_id=target.organization_id,
+            year=target.year,
+            currency_code=target.currency_code,
+            annual_amount=target.annual_amount,
+            months=[
+                RevenueTargetMonthInput(month=row.month, amount=row.amount)
+                for row in month_rows
+            ],
+            version=target.version,
+        )
+
     @staticmethod
     def _unique_ids(
         values: list[UUID],
@@ -1623,6 +2167,14 @@ class OrganizationService:
     def _raise_domain(exc: DomainViolation) -> None:
         raise ApiError(
             status_code=409,
+            code=exc.code,
+            message=exc.message,
+        ) from exc
+
+    @staticmethod
+    def _raise_validation_domain(exc: DomainViolation) -> None:
+        raise ApiError(
+            status_code=422,
             code=exc.code,
             message=exc.message,
         ) from exc

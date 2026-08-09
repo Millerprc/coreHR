@@ -14,6 +14,10 @@ from hris.modules.workforce.organization_schemas import (
     BpMembershipCreate,
     BpMembershipView,
     BpServiceScopeSet,
+    CostAllocationSet,
+    CostAllocationView,
+    CostCenterCreate,
+    CostCenterView,
     OrganizationCreate,
     OrganizationEventView,
     OrganizationLeaderSet,
@@ -26,6 +30,9 @@ from hris.modules.workforce.organization_schemas import (
     OrganizationVersionCreate,
     OrganizationView,
     RelationSetView,
+    RevenueAggregationView,
+    RevenueTargetSet,
+    RevenueTargetView,
 )
 from hris.modules.workforce.organization_service import OrganizationService
 
@@ -277,4 +284,109 @@ async def get_organization_relations(
     return await organization_service.get_relations(
         organization_id,
         effective_at or organization_service.business_date(),
+    )
+
+
+@router.post(
+    "/api/v1/cost-centers",
+    response_model=CostCenterView,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_cost_center(
+    payload: CostCenterCreate,
+    request: Request,
+    db: DbSession,
+    user: OrganizationAdmin,
+) -> CostCenterView:
+    return await service(db, user, request).create_cost_center(payload)
+
+
+@router.get(
+    "/api/v1/cost-centers",
+    response_model=list[CostCenterView],
+)
+async def list_cost_centers(
+    request: Request,
+    db: DbSession,
+    user: OrganizationViewer,
+) -> list[CostCenterView]:
+    return await service(db, user, request).list_cost_centers()
+
+
+@router.put(
+    "/api/v1/organizations/{organization_id}/cost-allocation",
+    response_model=CostAllocationView,
+)
+async def set_organization_cost_allocation(
+    organization_id: UUID,
+    payload: CostAllocationSet,
+    request: Request,
+    db: DbSession,
+    user: OrganizationAdmin,
+) -> CostAllocationView:
+    return await service(db, user, request).set_cost_allocation(
+        organization_id,
+        payload,
+    )
+
+
+@router.get(
+    "/api/v1/organizations/{organization_id}/cost-allocation",
+    response_model=CostAllocationView,
+)
+async def get_organization_cost_allocation(
+    organization_id: UUID,
+    request: Request,
+    db: DbSession,
+    user: OrganizationViewer,
+    effective_at: date | None = Query(default=None),
+) -> CostAllocationView:
+    organization_service = service(db, user, request)
+    return await organization_service.get_cost_allocation_as_of(
+        organization_id,
+        effective_at or organization_service.business_date(),
+    )
+
+
+@router.put(
+    "/api/v1/organizations/{organization_id}/revenue-targets/{year}/{currency_code}",
+    response_model=RevenueTargetView,
+)
+async def set_organization_revenue_target(
+    organization_id: UUID,
+    year: int,
+    currency_code: str,
+    payload: RevenueTargetSet,
+    request: Request,
+    db: DbSession,
+    user: OrganizationAdmin,
+) -> RevenueTargetView:
+    if payload.year != year or payload.currency_code != currency_code:
+        raise ApiError(
+            status_code=422,
+            code="REVENUE_PATH_MISMATCH",
+            message="路径中的年度和币种必须与请求体一致",
+        )
+    return await service(db, user, request).set_revenue_target(
+        organization_id,
+        payload,
+    )
+
+
+@router.get(
+    "/api/v1/organizations/{organization_id}/revenue-targets",
+    response_model=RevenueAggregationView,
+)
+async def get_organization_revenue_targets(
+    organization_id: UUID,
+    request: Request,
+    db: DbSession,
+    user: OrganizationViewer,
+    year: int = Query(ge=2000, le=2200),
+    include_descendants: bool = Query(default=False),
+) -> RevenueAggregationView:
+    return await service(db, user, request).aggregate_revenue_tree(
+        organization_id,
+        year,
+        include_descendants=include_descendants,
     )

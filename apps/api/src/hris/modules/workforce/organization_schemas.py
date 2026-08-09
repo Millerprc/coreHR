@@ -209,7 +209,7 @@ class RevenueTargetSet(OrganizationRequest):
     year: int = Field(ge=2000, le=2200)
     currency_code: str = Field(pattern=r"^[A-Z]{3}$")
     annual_amount: Decimal = Field(ge=0, decimal_places=4)
-    months: list[RevenueTargetMonthInput] = Field(min_length=12, max_length=12)
+    months: list[RevenueTargetMonthInput]
     command: VersionCommand
 
 
@@ -223,7 +223,14 @@ class RevenueTargetView(BaseModel):
     version: int
 
 
+class RevenueCurrencyTotal(BaseModel):
+    annual_amount: Decimal
+    months: dict[int, Decimal]
+
+
 class RevenueAggregationView(BaseModel):
     organization_id: UUID
     year: int
-    totals_by_currency: dict[str, Decimal]
+    include_descendants: bool
+    targets: list[RevenueTargetView]
+    totals_by_currency: dict[str, RevenueCurrencyTotal]
