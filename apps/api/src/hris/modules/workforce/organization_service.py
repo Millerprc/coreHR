@@ -13,21 +13,36 @@ from hris.modules.platform.governance_models import OutboxEvent
 from hris.modules.platform.numbering import next_number
 from hris.modules.workforce.models import (
     AuditLog,
+    LegalEntity,
     Organization,
+    OrganizationLegalEntity,
     OrganizationType,
     OrganizationVersion,
+    Person,
 )
-from hris.modules.workforce.organization_models import OrganizationEvent
+from hris.modules.workforce.organization_models import (
+    BpServiceScope,
+    OrganizationEvent,
+    OrganizationLeader,
+    PersonBpMembership,
+)
 from hris.modules.workforce.organization_policy import DomainViolation, assert_no_cycle
 from hris.modules.workforce.organization_schemas import (
+    BpMembershipCreate,
+    BpMembershipView,
+    BpServiceScopeSet,
     OrganizationCreate,
     OrganizationEventView,
+    OrganizationLeaderSet,
+    OrganizationLegalEntitySet,
+    OrganizationRelationsView,
     OrganizationTreeNode,
     OrganizationTypeCreate,
     OrganizationTypeUpdate,
     OrganizationTypeView,
     OrganizationVersionCreate,
     OrganizationView,
+    RelationSetView,
 )
 
 
@@ -564,6 +579,543 @@ class OrganizationService:
             ],
         )
 
+    async def set_legal_entities(
+        self,
+        organization_id: UUID,
+        payload: OrganizationLegalEntitySet,
+    ) -> RelationSetView:
+        await self._lock_idempotency(payload.command.idempotency_key)
+        existing_event = await self._event_by_idempotency(
+            payload.command.idempotency_key
+        )
+        if existing_event is not None:
+            return self._relation_set_from_event(
+                existing_event,
+                expected_type="LEGAL_ENTITY_SET",
+            )
+
+        await self._lock_organization(organization_id)
+        await self._organization(organization_id)
+        related_ids = self._unique_ids(
+            payload.legal_entity_ids,
+            code="LEGAL_ENTITY_DUPLICATE",
+            message="法人主体不能重复",
+        )
+        for legal_entity_id in related_ids:
+            legal_entity = await self._session.get(LegalEntity, legal_entity_id)
+            if (
+                legal_entity is None
+                or legal_entity.status != "active"
+                or legal_entity.effective_from > payload.effective_from
+                or (
+                    legal_entity.effective_to is not None
+                    and legal_entity.effective_to < payload.effective_from
+                )
+            ):
+                raise ApiError(
+                    status_code=422,
+                    code="LEGAL_ENTITY_NOT_EFFECTIVE",
+                    message="法人主体不存在或在指定日期无效",
+                )
+
+        current_version = await self._relation_version(
+            organization_id,
+            "LEGAL_ENTITY_SET",
+        )
+        self._assert_expected_version(current_version, payload.command)
+        prior_rows = list(
+            (
+                await self._session.scalars(
+                    select(OrganizationLegalEntity).where(
+                        OrganizationLegalEntity.organization_id == organization_id,
+                        or_(
+                            OrganizationLegalEntity.effective_to.is_(None),
+                            OrganizationLegalEntity.effective_to >= payload.effective_from,
+                        ),
+                    )
+                )
+            ).all()
+        )
+        self._assert_new_relation_period(
+            [row.effective_from for row in prior_rows],
+            payload.effective_from,
+        )
+        for row in prior_rows:
+            row.effective_to = payload.effective_from - timedelta(days=1)
+            row.is_current = False
+        await self._session.flush()
+
+        next_version = current_version + 1
+        self._session.add_all(
+            [
+                OrganizationLegalEntity(
+                    organization_id=organization_id,
+                    legal_entity_id=legal_entity_id,
+                    effective_from=payload.effective_from,
+                    effective_to=payload.effective_to,
+                    version=next_version,
+                    is_current=True,
+                )
+                for legal_entity_id in related_ids
+            ]
+        )
+        await self._session.flush()
+        event = await self._record_relation_event(
+            organization_id=organization_id,
+            event_type="LEGAL_ENTITY_SET",
+            effective_date=payload.effective_from,
+            command=payload.command,
+            version=next_version,
+            related_ids=related_ids,
+            effective_to=payload.effective_to,
+        )
+        await self._audit_relation_set(
+            action="organization.legal_entities.set",
+            organization_id=organization_id,
+            reason=payload.command.change_reason,
+            version=next_version,
+            related_ids=related_ids,
+        )
+        await self._outbox(
+            "organization.legal_entities.set",
+            "organization",
+            organization_id,
+            {
+                "organization_id": str(organization_id),
+                "event_id": str(event.id),
+                "version": next_version,
+            },
+        )
+        return RelationSetView(
+            organization_id=organization_id,
+            effective_from=payload.effective_from,
+            effective_to=payload.effective_to,
+            version=next_version,
+            related_ids=related_ids,
+        )
+
+    async def set_leaders(
+        self,
+        organization_id: UUID,
+        payload: OrganizationLeaderSet,
+    ) -> RelationSetView:
+        if len(payload.person_ids) > 3:
+            raise ApiError(
+                status_code=409,
+                code="LEADER_LIMIT_EXCEEDED",
+                message="同一组织同一期间最多设置三名主负责人",
+            )
+        related_ids = self._unique_ids(
+            payload.person_ids,
+            code="LEADER_DUPLICATE",
+            message="组织负责人不能重复",
+        )
+        await self._lock_idempotency(payload.command.idempotency_key)
+        existing_event = await self._event_by_idempotency(
+            payload.command.idempotency_key
+        )
+        if existing_event is not None:
+            return self._relation_set_from_event(
+                existing_event,
+                expected_type="LEADER_SET",
+            )
+
+        await self._lock_organization(organization_id)
+        await self._organization(organization_id)
+        for person_id in related_ids:
+            person = await self._session.get(Person, person_id)
+            if person is None or person.status != "active":
+                raise ApiError(
+                    status_code=422,
+                    code="LEADER_PERSON_NOT_ACTIVE",
+                    message="负责人不存在或未启用",
+                )
+
+        current_version = await self._relation_version(organization_id, "LEADER_SET")
+        self._assert_expected_version(current_version, payload.command)
+        prior_rows = list(
+            (
+                await self._session.scalars(
+                    select(OrganizationLeader).where(
+                        OrganizationLeader.organization_id == organization_id,
+                        or_(
+                            OrganizationLeader.effective_to.is_(None),
+                            OrganizationLeader.effective_to >= payload.effective_from,
+                        ),
+                    )
+                )
+            ).all()
+        )
+        self._assert_new_relation_period(
+            [row.effective_from for row in prior_rows],
+            payload.effective_from,
+        )
+        for row in prior_rows:
+            row.effective_to = payload.effective_from - timedelta(days=1)
+        await self._session.flush()
+
+        next_version = current_version + 1
+        self._session.add_all(
+            [
+                OrganizationLeader(
+                    organization_id=organization_id,
+                    person_id=person_id,
+                    effective_from=payload.effective_from,
+                    effective_to=payload.effective_to,
+                    version=next_version,
+                    status="active",
+                )
+                for person_id in related_ids
+            ]
+        )
+        await self._session.flush()
+        event = await self._record_relation_event(
+            organization_id=organization_id,
+            event_type="LEADER_SET",
+            effective_date=payload.effective_from,
+            command=payload.command,
+            version=next_version,
+            related_ids=related_ids,
+            effective_to=payload.effective_to,
+        )
+        await self._audit_relation_set(
+            action="organization.leaders.set",
+            organization_id=organization_id,
+            reason=payload.command.change_reason,
+            version=next_version,
+            related_ids=related_ids,
+        )
+        await self._outbox(
+            "organization.leaders.set",
+            "organization",
+            organization_id,
+            {
+                "organization_id": str(organization_id),
+                "event_id": str(event.id),
+                "version": next_version,
+            },
+        )
+        return RelationSetView(
+            organization_id=organization_id,
+            effective_from=payload.effective_from,
+            effective_to=payload.effective_to,
+            version=next_version,
+            related_ids=related_ids,
+        )
+
+    async def create_bp_membership(
+        self,
+        payload: BpMembershipCreate,
+    ) -> BpMembershipView:
+        related_ids = self._unique_ids(
+            payload.organization_ids,
+            code="BP_SCOPE_DUPLICATE",
+            message="BP服务组织不能重复",
+        )
+        await self._lock_idempotency(payload.command.idempotency_key)
+        existing_event = await self._event_by_idempotency(
+            payload.command.idempotency_key
+        )
+        if existing_event is not None:
+            if existing_event.event_type != "BP_MEMBERSHIP_CREATE":
+                self._raise_idempotency_conflict()
+            membership_id = UUID(existing_event.payload["membership_id"])
+            return await self._bp_membership_view(membership_id)
+
+        await self._lock_person(payload.person_id)
+        person = await self._session.get(Person, payload.person_id)
+        if person is None or person.status != "active":
+            raise ApiError(
+                status_code=422,
+                code="BP_PERSON_NOT_ACTIVE",
+                message="BP人员不存在或未启用",
+            )
+        for organization_id in related_ids:
+            await self._state_as_of(organization_id, payload.effective_from)
+
+        overlap_filters = [
+            PersonBpMembership.person_id == payload.person_id,
+            PersonBpMembership.status == "active",
+            or_(
+                PersonBpMembership.effective_to.is_(None),
+                PersonBpMembership.effective_to >= payload.effective_from,
+            ),
+        ]
+        if payload.effective_to is not None:
+            overlap_filters.append(
+                PersonBpMembership.effective_from <= payload.effective_to
+            )
+        overlap = await self._session.scalar(
+            select(PersonBpMembership.id).where(*overlap_filters).limit(1)
+        )
+        if overlap is not None:
+            raise ApiError(
+                status_code=409,
+                code="BP_TYPE_OVERLAP",
+                message="同一人员同一有效期间只能兼任一类BP",
+            )
+
+        current_version = (
+            await self._session.scalar(
+                select(func.max(PersonBpMembership.version)).where(
+                    PersonBpMembership.person_id == payload.person_id
+                )
+            )
+            or 1
+        )
+        self._assert_expected_version(current_version, payload.command)
+        next_version = current_version + 1
+        membership = PersonBpMembership(
+            person_id=payload.person_id,
+            bp_type=payload.bp_type,
+            effective_from=payload.effective_from,
+            effective_to=payload.effective_to,
+            version=next_version,
+            status="active",
+        )
+        self._session.add(membership)
+        await self._session.flush()
+        self._session.add_all(
+            [
+                BpServiceScope(
+                    membership_id=membership.id,
+                    organization_id=organization_id,
+                    effective_from=payload.effective_from,
+                    effective_to=payload.effective_to,
+                )
+                for organization_id in related_ids
+            ]
+        )
+        await self._session.flush()
+        event = await self._record_relation_event(
+            organization_id=related_ids[0],
+            event_type="BP_MEMBERSHIP_CREATE",
+            effective_date=payload.effective_from,
+            command=payload.command,
+            version=next_version,
+            related_ids=related_ids,
+            effective_to=payload.effective_to,
+            extra_payload={"membership_id": str(membership.id)},
+        )
+        await self._audit(
+            action="organization.bp_membership.create",
+            object_type="bp_membership",
+            object_id=membership.id,
+            reason=payload.command.change_reason,
+            before={},
+            after={
+                "person_id": str(payload.person_id),
+                "bp_type": payload.bp_type,
+                "organization_ids": [str(item) for item in related_ids],
+                "version": next_version,
+            },
+        )
+        await self._outbox(
+            "organization.bp_membership.created",
+            "person",
+            payload.person_id,
+            {
+                "person_id": str(payload.person_id),
+                "membership_id": str(membership.id),
+                "event_id": str(event.id),
+                "version": next_version,
+            },
+        )
+        return await self._bp_membership_view(membership.id)
+
+    async def set_bp_service_scopes(
+        self,
+        membership_id: UUID,
+        payload: BpServiceScopeSet,
+    ) -> BpMembershipView:
+        related_ids = self._unique_ids(
+            payload.organization_ids,
+            code="BP_SCOPE_DUPLICATE",
+            message="BP服务组织不能重复",
+        )
+        await self._lock_idempotency(payload.command.idempotency_key)
+        existing_event = await self._event_by_idempotency(
+            payload.command.idempotency_key
+        )
+        if existing_event is not None:
+            if (
+                existing_event.event_type != "BP_SCOPE_SET"
+                or existing_event.payload.get("membership_id") != str(membership_id)
+            ):
+                self._raise_idempotency_conflict()
+            return await self._bp_membership_view(membership_id)
+
+        membership = await self._session.get(PersonBpMembership, membership_id)
+        if membership is None or membership.status != "active":
+            raise ApiError(
+                status_code=404,
+                code="BP_MEMBERSHIP_NOT_FOUND",
+                message="BP兼任关系不存在或已失效",
+            )
+        await self._lock_person(membership.person_id)
+        if payload.effective_from < membership.effective_from or (
+            membership.effective_to is not None
+            and payload.effective_from > membership.effective_to
+        ):
+            raise ApiError(
+                status_code=422,
+                code="BP_SCOPE_PERIOD_INVALID",
+                message="BP服务范围生效日期必须位于兼任关系有效期内",
+            )
+        self._assert_expected_version(membership.version, payload.command)
+        for organization_id in related_ids:
+            await self._state_as_of(organization_id, payload.effective_from)
+
+        prior_rows = list(
+            (
+                await self._session.scalars(
+                    select(BpServiceScope).where(
+                        BpServiceScope.membership_id == membership_id,
+                        or_(
+                            BpServiceScope.effective_to.is_(None),
+                            BpServiceScope.effective_to >= payload.effective_from,
+                        ),
+                    )
+                )
+            ).all()
+        )
+        self._assert_new_relation_period(
+            [row.effective_from for row in prior_rows],
+            payload.effective_from,
+        )
+        for row in prior_rows:
+            row.effective_to = payload.effective_from - timedelta(days=1)
+        await self._session.flush()
+
+        membership.version += 1
+        self._session.add_all(
+            [
+                BpServiceScope(
+                    membership_id=membership_id,
+                    organization_id=organization_id,
+                    effective_from=payload.effective_from,
+                    effective_to=payload.effective_to,
+                )
+                for organization_id in related_ids
+            ]
+        )
+        await self._session.flush()
+        event = await self._record_relation_event(
+            organization_id=related_ids[0],
+            event_type="BP_SCOPE_SET",
+            effective_date=payload.effective_from,
+            command=payload.command,
+            version=membership.version,
+            related_ids=related_ids,
+            effective_to=payload.effective_to,
+            extra_payload={"membership_id": str(membership.id)},
+        )
+        await self._audit(
+            action="organization.bp_scopes.set",
+            object_type="bp_membership",
+            object_id=membership.id,
+            reason=payload.command.change_reason,
+            before={},
+            after={
+                "organization_ids": [str(item) for item in related_ids],
+                "version": membership.version,
+            },
+        )
+        await self._outbox(
+            "organization.bp_scopes.set",
+            "person",
+            membership.person_id,
+            {
+                "person_id": str(membership.person_id),
+                "membership_id": str(membership.id),
+                "event_id": str(event.id),
+                "version": membership.version,
+            },
+        )
+        return await self._bp_membership_view(membership.id)
+
+    async def get_relations(
+        self,
+        organization_id: UUID,
+        effective_at: date,
+    ) -> OrganizationRelationsView:
+        await self._state_as_of(organization_id, effective_at)
+        legal_rows = list(
+            (
+                await self._session.scalars(
+                    select(OrganizationLegalEntity)
+                    .where(
+                        OrganizationLegalEntity.organization_id == organization_id,
+                        OrganizationLegalEntity.effective_from <= effective_at,
+                        or_(
+                            OrganizationLegalEntity.effective_to.is_(None),
+                            OrganizationLegalEntity.effective_to >= effective_at,
+                        ),
+                    )
+                    .order_by(OrganizationLegalEntity.legal_entity_id)
+                )
+            ).all()
+        )
+        leader_rows = list(
+            (
+                await self._session.scalars(
+                    select(OrganizationLeader)
+                    .where(
+                        OrganizationLeader.organization_id == organization_id,
+                        OrganizationLeader.effective_from <= effective_at,
+                        or_(
+                            OrganizationLeader.effective_to.is_(None),
+                            OrganizationLeader.effective_to >= effective_at,
+                        ),
+                    )
+                    .order_by(OrganizationLeader.person_id)
+                )
+            ).all()
+        )
+        bp_membership_ids = list(
+            (
+                await self._session.scalars(
+                    select(PersonBpMembership.id)
+                    .join(
+                        BpServiceScope,
+                        BpServiceScope.membership_id == PersonBpMembership.id,
+                    )
+                    .where(
+                        BpServiceScope.organization_id == organization_id,
+                        BpServiceScope.effective_from <= effective_at,
+                        or_(
+                            BpServiceScope.effective_to.is_(None),
+                            BpServiceScope.effective_to >= effective_at,
+                        ),
+                        PersonBpMembership.effective_from <= effective_at,
+                        or_(
+                            PersonBpMembership.effective_to.is_(None),
+                            PersonBpMembership.effective_to >= effective_at,
+                        ),
+                        PersonBpMembership.status == "active",
+                    )
+                    .distinct()
+                    .order_by(PersonBpMembership.id)
+                )
+            ).all()
+        )
+        return OrganizationRelationsView(
+            effective_at=effective_at,
+            legal_entity_ids=[row.legal_entity_id for row in legal_rows],
+            legal_entity_version=await self._relation_version_as_of(
+                organization_id,
+                "LEGAL_ENTITY_SET",
+                effective_at,
+            ),
+            leader_person_ids=[row.person_id for row in leader_rows],
+            leader_version=await self._relation_version_as_of(
+                organization_id,
+                "LEADER_SET",
+                effective_at,
+            ),
+            bp_membership_ids=bp_membership_ids,
+        )
+
     async def _state_as_of(
         self,
         organization_id: UUID,
@@ -723,6 +1275,198 @@ class OrganizationService:
                 "event_id": str(event.id),
                 "version": next_version.version,
             },
+        )
+
+    async def _relation_version(
+        self,
+        organization_id: UUID,
+        event_type: str,
+    ) -> int:
+        last_expected = await self._session.scalar(
+            select(func.max(OrganizationEvent.expected_version)).where(
+                OrganizationEvent.organization_id == organization_id,
+                OrganizationEvent.event_type == event_type,
+                OrganizationEvent.status == "applied",
+            )
+        )
+        return (last_expected + 1) if last_expected is not None else 1
+
+    async def _relation_version_as_of(
+        self,
+        organization_id: UUID,
+        event_type: str,
+        effective_at: date,
+    ) -> int:
+        event = await self._session.scalar(
+            select(OrganizationEvent)
+            .where(
+                OrganizationEvent.organization_id == organization_id,
+                OrganizationEvent.event_type == event_type,
+                OrganizationEvent.status == "applied",
+                OrganizationEvent.effective_date <= effective_at,
+            )
+            .order_by(
+                OrganizationEvent.effective_date.desc(),
+                OrganizationEvent.created_at.desc(),
+            )
+            .limit(1)
+        )
+        return int(event.payload["version"]) if event is not None else 1
+
+    async def _record_relation_event(
+        self,
+        *,
+        organization_id: UUID,
+        event_type: str,
+        effective_date: date,
+        command: VersionCommand,
+        version: int,
+        related_ids: list[UUID],
+        effective_to: date | None = None,
+        extra_payload: dict[str, Any] | None = None,
+    ) -> OrganizationEvent:
+        event_payload: dict[str, Any] = {
+            "version": version,
+            "related_ids": [str(item) for item in related_ids],
+            "effective_to": effective_to.isoformat() if effective_to else None,
+        }
+        if extra_payload:
+            event_payload.update(extra_payload)
+        event = OrganizationEvent(
+            organization_id=organization_id,
+            event_type=event_type,
+            effective_date=effective_date,
+            status="applied",
+            payload=event_payload,
+            expected_version=command.expected_version,
+            idempotency_key=command.idempotency_key,
+            change_reason=command.change_reason,
+            applied_at=datetime.now(UTC),
+        )
+        self._session.add(event)
+        await self._session.flush()
+        return event
+
+    def _relation_set_from_event(
+        self,
+        event: OrganizationEvent,
+        *,
+        expected_type: str,
+    ) -> RelationSetView:
+        if event.event_type != expected_type:
+            self._raise_idempotency_conflict()
+        return RelationSetView(
+            organization_id=event.organization_id,
+            effective_from=event.effective_date,
+            effective_to=(
+                date.fromisoformat(event.payload["effective_to"])
+                if event.payload.get("effective_to")
+                else None
+            ),
+            version=int(event.payload["version"]),
+            related_ids=[UUID(item) for item in event.payload["related_ids"]],
+        )
+
+    async def _audit_relation_set(
+        self,
+        *,
+        action: str,
+        organization_id: UUID,
+        reason: str,
+        version: int,
+        related_ids: list[UUID],
+    ) -> None:
+        await self._audit(
+            action=action,
+            object_type="organization",
+            object_id=organization_id,
+            reason=reason,
+            before={},
+            after={
+                "version": version,
+                "related_ids": [str(item) for item in related_ids],
+            },
+        )
+
+    async def _bp_membership_view(
+        self,
+        membership_id: UUID,
+    ) -> BpMembershipView:
+        membership = await self._session.get(PersonBpMembership, membership_id)
+        if membership is None:
+            raise ApiError(
+                status_code=404,
+                code="BP_MEMBERSHIP_NOT_FOUND",
+                message="BP兼任关系不存在",
+            )
+        latest_scope_date = await self._session.scalar(
+            select(func.max(BpServiceScope.effective_from)).where(
+                BpServiceScope.membership_id == membership_id
+            )
+        )
+        organization_ids: list[UUID] = []
+        if latest_scope_date is not None:
+            organization_ids = list(
+                (
+                    await self._session.scalars(
+                        select(BpServiceScope.organization_id)
+                        .where(
+                            BpServiceScope.membership_id == membership_id,
+                            BpServiceScope.effective_from == latest_scope_date,
+                        )
+                        .order_by(BpServiceScope.organization_id)
+                    )
+                ).all()
+            )
+        return BpMembershipView(
+            id=membership.id,
+            person_id=membership.person_id,
+            bp_type=membership.bp_type,
+            organization_ids=organization_ids,
+            effective_from=membership.effective_from,
+            effective_to=membership.effective_to,
+            version=membership.version,
+            status=membership.status,
+        )
+
+    @staticmethod
+    def _unique_ids(
+        values: list[UUID],
+        *,
+        code: str,
+        message: str,
+    ) -> list[UUID]:
+        if len(set(values)) != len(values):
+            raise ApiError(status_code=422, code=code, message=message)
+        return values
+
+    @staticmethod
+    def _assert_new_relation_period(
+        prior_starts: list[date],
+        effective_from: date,
+    ) -> None:
+        if any(start >= effective_from for start in prior_starts):
+            raise ApiError(
+                status_code=422,
+                code="EFFECTIVE_DATE_SEQUENCE_INVALID",
+                message="新关系版本的生效日期必须晚于已有有效版本",
+            )
+
+    @staticmethod
+    def _assert_expected_version(
+        current_version: int,
+        command: VersionCommand,
+    ) -> None:
+        if command.expected_version != current_version:
+            OrganizationService._raise_version_conflict(
+                current_version,
+                command.expected_version,
+            )
+
+    async def _lock_person(self, person_id: UUID) -> None:
+        await self._session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtext(:person_key))"),
+            {"person_key": f"corehr:person:{person_id}"},
         )
 
     async def _organization(self, organization_id: UUID) -> Organization:

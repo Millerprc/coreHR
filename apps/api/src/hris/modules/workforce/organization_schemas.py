@@ -120,7 +120,7 @@ class OrganizationLegalEntitySet(EffectivePeriod):
 
 
 class OrganizationLeaderSet(EffectivePeriod):
-    person_ids: list[UUID] = Field(max_length=3)
+    person_ids: list[UUID]
     command: VersionCommand
 
 
@@ -136,10 +136,31 @@ class BpServiceScopeSet(EffectivePeriod):
     command: VersionCommand
 
 
+class RelationSetView(BaseModel):
+    organization_id: UUID
+    effective_from: date
+    effective_to: date | None
+    version: int
+    related_ids: list[UUID]
+
+
+class BpMembershipView(BaseModel):
+    id: UUID
+    person_id: UUID
+    bp_type: Literal["HRBP", "EBP", "TBP", "FBP"]
+    organization_ids: list[UUID]
+    effective_from: date
+    effective_to: date | None
+    version: int
+    status: str
+
+
 class OrganizationRelationsView(BaseModel):
     effective_at: date
     legal_entity_ids: list[UUID]
+    legal_entity_version: int
     leader_person_ids: list[UUID]
+    leader_version: int
     bp_membership_ids: list[UUID]
 
 
