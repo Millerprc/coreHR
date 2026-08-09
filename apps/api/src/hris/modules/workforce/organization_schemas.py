@@ -9,7 +9,7 @@ from hris.core.concurrency import VersionCommand
 
 
 class OrganizationRequest(BaseModel):
-    model_config = ConfigDict(str_strip_whitespace=True)
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
 
 
 class EffectivePeriod(OrganizationRequest):

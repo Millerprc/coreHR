@@ -18,6 +18,7 @@ class Settings(BaseSettings):
         "postgresql+psycopg://corehr:corehr_dev@127.0.0.1:54329/corehr"
     )
     redis_url: str = "redis://127.0.0.1:63800/0"
+    business_timezone: str = "Asia/Shanghai"
     cors_origins: list[str] = Field(
         default_factory=lambda: ["http://127.0.0.1:5173", "http://localhost:5173"]
     )
@@ -26,4 +27,3 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
-
