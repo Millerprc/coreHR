@@ -1,3 +1,4 @@
+from datetime import date
 from typing import Annotated, Any
 from uuid import UUID
 
@@ -15,12 +16,21 @@ from hris.modules.workforce.extended_schemas import (
     EmploymentAssignmentResponse,
     EmploymentCreate,
     EmploymentResponse,
+    HeadcountFreezeClose,
+    HeadcountFreezeCreate,
+    HeadcountFreezeResponse,
     HeadcountPlanCreate,
     HeadcountPlanResponse,
+    HeadcountResultLine,
+    HeadcountResultResponse,
+    HeadcountSnapshotBatchResponse,
+    HeadcountSnapshotGenerate,
     JobCreate,
     JobResponse,
     LegalEntityCreate,
     LegalEntityResponse,
+    OccupancyRuleCreate,
+    OccupancyRuleResponse,
     PageResponse,
     PersonArchiveResponse,
     PersonCreate,
@@ -28,7 +38,13 @@ from hris.modules.workforce.extended_schemas import (
     PersonUpdate,
 )
 from hris.modules.workforce.extended_service import ExtendedWorkforceService
-from hris.modules.workforce.models import HeadcountPlan, JobCatalog, LegalEntity, Person
+from hris.modules.workforce.models import (
+    HeadcountFreeze,
+    HeadcountPlan,
+    JobCatalog,
+    LegalEntity,
+    OccupancyRule,
+)
 
 
 router = APIRouter(prefix="/api/v1/workforce", tags=["phase-1-workforce-admin"])
@@ -235,4 +251,125 @@ async def list_headcount_plans(
         total=total,
         limit=limit,
         offset=offset,
+    )
+
+
+@router.post("/occupancy-rules", response_model=OccupancyRuleResponse, status_code=201)
+async def create_occupancy_rule(
+    payload: OccupancyRuleCreate,
+    request: Request,
+    db: DbSession,
+    user: AdminUser,
+) -> OccupancyRuleResponse:
+    return OccupancyRuleResponse.model_validate(
+        await service(db, user, request).create_occupancy_rule(payload)
+    )
+
+
+@router.get("/occupancy-rules", response_model=PageResponse)
+async def list_occupancy_rules(
+    request: Request,
+    db: DbSession,
+    user: AdminUser,
+    limit: int = Query(default=100, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+) -> PageResponse:
+    items, total = await service(db, user, request).list_models(
+        OccupancyRule,
+        limit=limit,
+        offset=offset,
+        order_by=OccupancyRule.employee_type_code,
+    )
+    return PageResponse(
+        items=[OccupancyRuleResponse.model_validate(item).model_dump() for item in items],
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.post("/headcount-freezes", response_model=HeadcountFreezeResponse, status_code=201)
+async def create_headcount_freeze(
+    payload: HeadcountFreezeCreate,
+    request: Request,
+    db: DbSession,
+    user: AdminUser,
+) -> HeadcountFreezeResponse:
+    return HeadcountFreezeResponse.model_validate(
+        await service(db, user, request).create_headcount_freeze(payload)
+    )
+
+
+@router.get("/headcount-freezes", response_model=PageResponse)
+async def list_headcount_freezes(
+    request: Request,
+    db: DbSession,
+    user: AdminUser,
+    limit: int = Query(default=100, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+) -> PageResponse:
+    items, total = await service(db, user, request).list_models(
+        HeadcountFreeze,
+        limit=limit,
+        offset=offset,
+        order_by=HeadcountFreeze.starts_at.desc(),
+    )
+    return PageResponse(
+        items=[HeadcountFreezeResponse.model_validate(item).model_dump() for item in items],
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.post("/headcount-freezes/{freeze_id}/close", response_model=HeadcountFreezeResponse)
+async def close_headcount_freeze(
+    freeze_id: UUID,
+    payload: HeadcountFreezeClose,
+    request: Request,
+    db: DbSession,
+    user: AdminUser,
+) -> HeadcountFreezeResponse:
+    return HeadcountFreezeResponse.model_validate(
+        await service(db, user, request).close_headcount_freeze(freeze_id, payload.reason)
+    )
+
+
+@router.post(
+    "/headcount-snapshots",
+    response_model=HeadcountSnapshotBatchResponse,
+    status_code=201,
+)
+async def generate_headcount_snapshot(
+    payload: HeadcountSnapshotGenerate,
+    request: Request,
+    db: DbSession,
+    user: AdminUser,
+) -> HeadcountSnapshotBatchResponse:
+    return HeadcountSnapshotBatchResponse.model_validate(
+        await service(db, user, request).generate_headcount_snapshot(payload)
+    )
+
+
+@router.get("/headcount-results", response_model=HeadcountResultResponse)
+async def get_headcount_results(
+    request: Request,
+    db: DbSession,
+    user: AdminUser,
+    period_month: date = Query(),
+    as_of: date | None = Query(default=None),
+    organization_id: UUID | None = Query(default=None),
+    job_id: UUID | None = Query(default=None),
+) -> HeadcountResultResponse:
+    query_date = as_of or date.today()
+    items = await service(db, user, request).headcount_results(
+        period_month=period_month,
+        as_of=query_date,
+        organization_id=organization_id,
+        job_id=job_id,
+    )
+    return HeadcountResultResponse(
+        period_month=period_month,
+        as_of=query_date,
+        items=[HeadcountResultLine.model_validate(item) for item in items],
     )

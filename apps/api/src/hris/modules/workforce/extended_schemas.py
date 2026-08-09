@@ -216,6 +216,7 @@ class HeadcountPlanCreate(BaseModel):
     period_month: date
     planned_count: Decimal = Field(ge=0, max_digits=12, decimal_places=2)
     change_reason: str = Field(min_length=1, max_length=500)
+    override_freeze: bool = False
 
     @model_validator(mode="after")
     def validate_month(self) -> "HeadcountPlanCreate":
@@ -235,6 +236,129 @@ class HeadcountPlanResponse(BaseModel):
     version: int
     is_current: bool
     change_reason: str
+
+
+class OccupancyRuleCreate(BaseModel):
+    employee_type_code: str = Field(min_length=1, max_length=50)
+    counts_for_headcount: bool
+    effective_from: date
+    effective_to: date | None = None
+    change_reason: str = Field(min_length=1, max_length=500)
+
+    @model_validator(mode="after")
+    def validate_period(self) -> "OccupancyRuleCreate":
+        if self.effective_to is not None and self.effective_to < self.effective_from:
+            raise ValueError("effective_to不能早于effective_from")
+        return self
+
+
+class OccupancyRuleResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    employee_type_code: str
+    counts_for_headcount: bool
+    effective_from: date
+    effective_to: date | None
+    version: int
+
+
+class HeadcountFreezeCreate(BaseModel):
+    freeze_type: Literal["month_close", "business"]
+    period_month: date | None = None
+    organization_id: UUID | None = None
+    job_id: UUID | None = None
+    starts_at: datetime
+    ends_at: datetime | None = None
+    reason: str = Field(min_length=1, max_length=500)
+
+    @model_validator(mode="after")
+    def validate_freeze(self) -> "HeadcountFreezeCreate":
+        if self.period_month is not None and self.period_month.day != 1:
+            raise ValueError("period_month必须使用月份第一天")
+        if self.freeze_type == "month_close" and self.period_month is None:
+            raise ValueError("月结冻结必须指定月份")
+        if self.starts_at.tzinfo is None or (
+            self.ends_at is not None and self.ends_at.tzinfo is None
+        ):
+            raise ValueError("冻结起止时间必须包含时区")
+        if self.ends_at is not None and self.ends_at <= self.starts_at:
+            raise ValueError("ends_at必须晚于starts_at")
+        return self
+
+
+class HeadcountFreezeResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    freeze_type: str
+    period_month: date | None
+    organization_id: UUID | None
+    job_id: UUID | None
+    status: str
+    starts_at: datetime
+    ends_at: datetime | None
+    reason: str
+
+
+class HeadcountFreezeClose(BaseModel):
+    reason: str = Field(min_length=1, max_length=500)
+
+
+class HeadcountSnapshotGenerate(BaseModel):
+    snapshot_type: Literal["month_start", "month_end"]
+    period_month: date
+    timezone: str = Field(min_length=1, max_length=100)
+    boundary_at: datetime
+    rule_version: str = Field(min_length=1, max_length=50)
+    parent_batch_id: UUID | None = None
+    reason: str = Field(min_length=1, max_length=500)
+
+    @model_validator(mode="after")
+    def validate_snapshot(self) -> "HeadcountSnapshotGenerate":
+        if self.period_month.day != 1:
+            raise ValueError("period_month必须使用月份第一天")
+        if self.boundary_at.tzinfo is None:
+            raise ValueError("boundary_at必须包含时区")
+        return self
+
+
+class HeadcountSnapshotBatchResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    snapshot_type: str
+    period_month: date
+    timezone: str
+    boundary_at: datetime
+    rule_version: str
+    version: int
+    parent_batch_id: UUID | None
+    status: str
+    reason: str | None
+
+
+class HeadcountResultLine(BaseModel):
+    organization_id: UUID
+    organization_code: str
+    job_id: UUID
+    job_code: str
+    job_name: str
+    period_month: date
+    planned_count: Decimal
+    plan_version: int
+    current_count: int
+    variance: Decimal
+    month_start_count: int | None
+    month_end_count: int | None
+    average_count: Decimal | None
+    frozen: bool
+
+
+class HeadcountResultResponse(BaseModel):
+    period_month: date
+    as_of: date
+    items: list[HeadcountResultLine]
 
 
 class PageResponse(BaseModel):
