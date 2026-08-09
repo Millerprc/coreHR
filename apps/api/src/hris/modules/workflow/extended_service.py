@@ -8,12 +8,14 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from hris.core.config import get_settings
 from hris.core.errors import ApiError
 from hris.modules.platform.numbering import next_number
 from hris.modules.workflow.extended_schemas import (
     ApplicationHireCreate,
     CandidateCreate,
     CandidateUpdate,
+    ContractActionCreate,
     ContractCreate,
     ContractUpdate,
     HrEventCreate,
@@ -42,6 +44,7 @@ from hris.modules.workforce.extended_schemas import (
 )
 from hris.modules.workforce.extended_service import ExtendedWorkforceService
 from hris.modules.workforce.models import (
+    AgreementRelationship,
     AuditLog,
     Employment,
     EmploymentAssignment,
@@ -439,7 +442,17 @@ class LifecycleService:
         canonical = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
-    async def _lock_hire_idempotency(self, key: UUID) -> None:
+    @staticmethod
+    def _hr_event_checksum(operation: str, value: dict[str, Any]) -> str:
+        canonical = json.dumps(
+            {"operation": operation, **value},
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+    async def _lock_idempotency(self, key: UUID) -> None:
         lock_key = key.int & ((1 << 63) - 1)
         await self._session.execute(select(func.pg_advisory_xact_lock(lock_key)))
 
@@ -449,7 +462,7 @@ class LifecycleService:
         payload: ApplicationHireCreate,
     ) -> ApplicationHireConversion:
         checksum = self._hire_checksum(application_id, payload)
-        await self._lock_hire_idempotency(payload.idempotency_key)
+        await self._lock_idempotency(payload.idempotency_key)
         existing_key = await self._session.scalar(
             select(ApplicationHireConversion).where(
                 ApplicationHireConversion.idempotency_key == payload.idempotency_key
@@ -664,27 +677,86 @@ class LifecycleService:
 
     async def create_contract(self, payload: ContractCreate) -> ContractRecord:
         if await self._session.get(Person, payload.person_id) is None:
-            raise ApiError(status_code=404, code="PERSON_NOT_FOUND", message="人员不存在")
-        if payload.employment_id is not None and await self._session.get(
-            Employment, payload.employment_id
+            raise ApiError(status_code=404, code="PERSON_NOT_FOUND", message="person not found")
+        employment = None
+        if payload.employment_id is not None:
+            employment = await self._session.get(Employment, payload.employment_id)
+            if employment is None:
+                raise ApiError(
+                    status_code=404,
+                    code="EMPLOYMENT_NOT_FOUND",
+                    message="employment not found",
+                )
+            if employment.person_id != payload.person_id:
+                raise ApiError(
+                    status_code=422,
+                    code="CONTRACT_RELATION_PERSON_MISMATCH",
+                    message="employment does not belong to the contract person",
+                )
+        agreement = None
+        if payload.agreement_relationship_id is not None:
+            agreement = await self._session.get(
+                AgreementRelationship,
+                payload.agreement_relationship_id,
+            )
+            if agreement is None:
+                raise ApiError(
+                    status_code=404,
+                    code="AGREEMENT_RELATIONSHIP_NOT_FOUND",
+                    message="agreement relationship not found",
+                )
+            if agreement.person_id != payload.person_id:
+                raise ApiError(
+                    status_code=422,
+                    code="CONTRACT_RELATION_PERSON_MISMATCH",
+                    message="agreement relationship does not belong to the contract person",
+                )
+        legal_entity_id = payload.legal_entity_id
+        if legal_entity_id is None and employment is not None:
+            legal_entity_id = employment.contract_legal_entity_id
+        if legal_entity_id is None and agreement is not None:
+            legal_entity_id = agreement.legal_entity_id
+        if legal_entity_id is not None and await self._session.get(
+            LegalEntity, legal_entity_id
         ) is None:
-            raise ApiError(status_code=404, code="EMPLOYMENT_NOT_FOUND", message="劳动关系不存在")
-        if payload.legal_entity_id is not None and await self._session.get(
-            LegalEntity, payload.legal_entity_id
-        ) is None:
-            raise ApiError(status_code=404, code="LEGAL_ENTITY_NOT_FOUND", message="法人主体不存在")
+            raise ApiError(
+                status_code=404,
+                code="LEGAL_ENTITY_NOT_FOUND",
+                message="legal entity not found",
+            )
         if await self._session.scalar(
             select(ContractRecord.id).where(ContractRecord.contract_number == payload.contract_number)
         ) is not None:
-            raise ApiError(status_code=409, code="CONTRACT_NUMBER_EXISTS", message="合同编号已存在")
-        contract = ContractRecord(**payload.model_dump(), status="active")
+            raise ApiError(
+                status_code=409,
+                code="CONTRACT_NUMBER_EXISTS",
+                message="contract number already exists",
+            )
+        values = payload.model_dump(exclude={"change_reason"})
+        values["legal_entity_id"] = legal_entity_id
+        contract = ContractRecord(
+            **values,
+            predecessor_contract_id=None,
+            version=1,
+            status="active",
+        )
         self._session.add(contract)
         await self._session.flush()
         self._audit(
             action="create",
             object_type="contract",
             object_id=contract.id,
-            after={"contract_number": contract.contract_number},
+            reason=payload.change_reason,
+            after={
+                "contract_number": contract.contract_number,
+                "employment_id": str(contract.employment_id) if contract.employment_id else None,
+                "agreement_relationship_id": (
+                    str(contract.agreement_relationship_id)
+                    if contract.agreement_relationship_id
+                    else None
+                ),
+                "version": contract.version,
+            },
         )
         return contract
 
@@ -732,12 +804,15 @@ class LifecycleService:
         if contract is None:
             raise ApiError(status_code=404, code="CONTRACT_NOT_FOUND", message="contract not found")
         changes = payload.model_dump(exclude={"change_reason"}, exclude_unset=True)
-        next_end = changes.get("effective_to", contract.effective_to)
-        if next_end is not None and next_end < contract.effective_from:
+        legal_entity_id = changes.get("legal_entity_id")
+        if legal_entity_id is not None and await self._session.get(
+            LegalEntity,
+            legal_entity_id,
+        ) is None:
             raise ApiError(
-                status_code=422,
-                code="CONTRACT_EFFECTIVE_PERIOD_INVALID",
-                message="contract end date cannot be earlier than its start date",
+                status_code=404,
+                code="LEGAL_ENTITY_NOT_FOUND",
+                message="legal entity not found",
             )
         before = {
             field: value.isoformat() if isinstance(value, date) else value
@@ -746,6 +821,7 @@ class LifecycleService:
         }
         for field, value in changes.items():
             setattr(contract, field, value)
+        contract.version += 1
         await self._session.flush()
         self._audit(
             action="update",
@@ -756,9 +832,114 @@ class LifecycleService:
             after={
                 field: value.isoformat() if isinstance(value, date) else value
                 for field, value in changes.items()
-            },
+            } | {"version": contract.version},
         )
         return contract
+
+    async def create_contract_action(
+        self,
+        contract_id: UUID,
+        payload: ContractActionCreate,
+    ) -> HrEvent:
+        event_types = {
+            "amendment": "CONTRACT_AMENDMENT",
+            "renewal": "CONTRACT_RENEWAL",
+            "termination": "CONTRACT_TERMINATION",
+            "cancellation": "CONTRACT_CANCELLATION",
+        }
+        planned_payload: dict[str, Any] = {}
+        if payload.amendment is not None:
+            planned_payload = payload.amendment.model_dump(
+                mode="json",
+                exclude_unset=True,
+            )
+        elif payload.renewal is not None:
+            planned_payload = payload.renewal.model_dump(mode="json")
+        return await self.create_hr_event(
+            HrEventCreate(
+                idempotency_key=payload.idempotency_key,
+                event_type=event_types[payload.action_type],
+                object_type="contract",
+                object_id=contract_id,
+                effective_date=payload.effective_date,
+                execution_mode=payload.execution_mode,
+                reason=payload.reason,
+                planned_payload=planned_payload,
+                workflow_instance_id=payload.workflow_instance_id,
+            )
+        )
+
+    async def list_contract_expiry_alerts(
+        self,
+        *,
+        as_of: date | None,
+        days_ahead: int,
+    ) -> tuple[list[dict[str, Any]], date]:
+        alert_date = as_of or self._business_today()
+        contracts = list(
+            (
+                await self._session.scalars(
+                    select(ContractRecord)
+                    .where(
+                        ContractRecord.status == "active",
+                        ContractRecord.effective_to.is_not(None),
+                        ContractRecord.effective_to >= alert_date,
+                        ContractRecord.effective_to <= alert_date + timedelta(days=days_ahead),
+                    )
+                    .order_by(ContractRecord.effective_to, ContractRecord.contract_number)
+                )
+            ).all()
+        )
+        items = []
+        for contract in contracts:
+            assert contract.effective_to is not None
+            days_remaining = (contract.effective_to - alert_date).days
+            if days_remaining > contract.expiry_notice_days:
+                continue
+            items.append(
+                {
+                    "contract_id": contract.id,
+                    "contract_number": contract.contract_number,
+                    "person_id": contract.person_id,
+                    "effective_to": contract.effective_to,
+                    "expiry_notice_days": contract.expiry_notice_days,
+                    "days_remaining": days_remaining,
+                    "status": contract.status,
+                }
+            )
+        return items, alert_date
+
+    async def process_contract_statuses(self, as_of: date | None) -> list[UUID]:
+        process_date = as_of or self._business_today()
+        contracts = list(
+            (
+                await self._session.scalars(
+                    select(ContractRecord)
+                    .where(
+                        ContractRecord.status == "active",
+                        ContractRecord.effective_to.is_not(None),
+                        ContractRecord.effective_to < process_date,
+                    )
+                    .with_for_update()
+                )
+            ).all()
+        )
+        processed: list[UUID] = []
+        for contract in contracts:
+            before = self._contract_snapshot(contract)
+            contract.status = "expired"
+            contract.version += 1
+            processed.append(contract.id)
+            self._audit(
+                action="expire",
+                object_type="contract",
+                object_id=contract.id,
+                reason=f"status refresh as of {process_date.isoformat()}",
+                before=before,
+                after=self._contract_snapshot(contract),
+            )
+        await self._session.flush()
+        return processed
 
     async def publish_workflow(self, definition_id: UUID) -> tuple[int, str]:
         definition = await self._session.get(WorkflowDefinition, definition_id, with_for_update=True)
@@ -1050,10 +1231,10 @@ class LifecycleService:
 
     @staticmethod
     def _business_today() -> date:
-        return datetime.now(ZoneInfo("Asia/Shanghai")).date()
+        return datetime.now(ZoneInfo(get_settings().business_timezone)).date()
 
     async def _validate_hr_event(self, payload: HrEventCreate) -> None:
-        supported = {
+        employment_events = {
             "ONBOARDING",
             "CONFIRMATION",
             "TERMINATION",
@@ -1064,23 +1245,173 @@ class LifecycleService:
             "SECONDMENT",
             "END_ASSIGNMENT",
         }
-        if payload.event_type not in supported:
-            raise ApiError(status_code=422, code="HR_EVENT_TYPE_UNSUPPORTED", message="人事事件类型尚未注册执行器")
-        if payload.object_type != "employment":
-            raise ApiError(status_code=422, code="HR_EVENT_OBJECT_TYPE_INVALID", message="当前人事事件执行器只接受employment对象")
-        if await self._session.get(Employment, payload.object_id) is None:
-            raise ApiError(status_code=404, code="EMPLOYMENT_NOT_FOUND", message="劳动关系不存在")
-        if payload.event_type in {"TRANSFER", "CONCURRENT_ASSIGNMENT", "SECONDMENT"}:
-            if not payload.planned_payload.get("organization_id") or not payload.planned_payload.get("job_id"):
-                raise ApiError(status_code=422, code="HR_EVENT_ASSIGNMENT_TARGET_REQUIRED", message="组织职务事件必须提供目标组织和职务")
-        if payload.event_type == "END_ASSIGNMENT" and not payload.planned_payload.get("assignment_id"):
-            raise ApiError(status_code=422, code="HR_EVENT_ASSIGNMENT_REQUIRED", message="结束关系必须提供assignment_id")
+        contract_events = {
+            "CONTRACT_AMENDMENT",
+            "CONTRACT_RENEWAL",
+            "CONTRACT_TERMINATION",
+            "CONTRACT_CANCELLATION",
+        }
+        if payload.object_type == "employment":
+            if payload.event_type not in employment_events:
+                raise ApiError(
+                    status_code=422,
+                    code="HR_EVENT_TYPE_UNSUPPORTED",
+                    message="event type is not registered for employment",
+                )
+            if await self._session.get(Employment, payload.object_id) is None:
+                raise ApiError(
+                    status_code=404,
+                    code="EMPLOYMENT_NOT_FOUND",
+                    message="employment not found",
+                )
+            if payload.event_type in {"TRANSFER", "CONCURRENT_ASSIGNMENT", "SECONDMENT"}:
+                if not payload.planned_payload.get("organization_id") or not payload.planned_payload.get("job_id"):
+                    raise ApiError(
+                        status_code=422,
+                        code="HR_EVENT_ASSIGNMENT_TARGET_REQUIRED",
+                        message="organization and job are required",
+                    )
+            if payload.event_type == "END_ASSIGNMENT" and not payload.planned_payload.get(
+                "assignment_id"
+            ):
+                raise ApiError(
+                    status_code=422,
+                    code="HR_EVENT_ASSIGNMENT_REQUIRED",
+                    message="assignment_id is required",
+                )
+            return
+        if payload.object_type != "contract":
+            raise ApiError(
+                status_code=422,
+                code="HR_EVENT_OBJECT_TYPE_INVALID",
+                message="event object must be employment or contract",
+            )
+        if payload.event_type not in contract_events:
+            raise ApiError(
+                status_code=422,
+                code="HR_EVENT_TYPE_UNSUPPORTED",
+                message="event type is not registered for contract",
+            )
+        contract = await self._session.get(ContractRecord, payload.object_id)
+        if contract is None:
+            raise ApiError(
+                status_code=404,
+                code="CONTRACT_NOT_FOUND",
+                message="contract not found",
+            )
+        if contract.status not in {"active", "expired"}:
+            raise ApiError(
+                status_code=409,
+                code="CONTRACT_ACTION_NOT_ALLOWED",
+                message="contract status does not allow this action",
+            )
+        if payload.effective_date < contract.effective_from:
+            raise ApiError(
+                status_code=422,
+                code="CONTRACT_EVENT_DATE_INVALID",
+                message="contract event date cannot be earlier than contract start date",
+            )
+        planned = payload.planned_payload
+        legal_entity_id = planned.get("legal_entity_id")
+        if legal_entity_id is not None and await self._session.get(
+            LegalEntity,
+            UUID(str(legal_entity_id)),
+        ) is None:
+            raise ApiError(
+                status_code=404,
+                code="LEGAL_ENTITY_NOT_FOUND",
+                message="legal entity not found",
+            )
+        if payload.event_type == "CONTRACT_AMENDMENT":
+            allowed = {
+                "signed_on",
+                "effective_to",
+                "legal_entity_id",
+                "expiry_notice_days",
+                "metadata_payload",
+            }
+            if not planned or set(planned) - allowed:
+                raise ApiError(
+                    status_code=422,
+                    code="CONTRACT_AMENDMENT_INVALID",
+                    message="contract amendment contains unsupported fields",
+                )
+            effective_to = self._date_value(planned.get("effective_to"))
+            if effective_to is not None and effective_to < contract.effective_from:
+                raise ApiError(
+                    status_code=422,
+                    code="CONTRACT_EFFECTIVE_PERIOD_INVALID",
+                    message="contract end date cannot be earlier than its start date",
+                )
+        if payload.event_type == "CONTRACT_RENEWAL":
+            number = str(planned.get("contract_number") or "").strip()
+            if not number:
+                raise ApiError(
+                    status_code=422,
+                    code="CONTRACT_RENEWAL_NUMBER_REQUIRED",
+                    message="renewed contract number is required",
+                )
+            if contract.effective_to is not None and payload.effective_date <= contract.effective_to:
+                raise ApiError(
+                    status_code=422,
+                    code="CONTRACT_RENEWAL_DATE_INVALID",
+                    message="renewal must start after the current contract ends",
+                )
+            renewed_to = self._date_value(planned.get("effective_to"))
+            if renewed_to is not None and renewed_to < payload.effective_date:
+                raise ApiError(
+                    status_code=422,
+                    code="CONTRACT_EFFECTIVE_PERIOD_INVALID",
+                    message="renewed contract end date cannot be earlier than its start date",
+                )
+            if await self._session.scalar(
+                select(ContractRecord.id).where(ContractRecord.contract_number == number)
+            ) is not None:
+                raise ApiError(
+                    status_code=409,
+                    code="CONTRACT_NUMBER_EXISTS",
+                    message="contract number already exists",
+                )
+        if (
+            payload.event_type in {"CONTRACT_TERMINATION", "CONTRACT_CANCELLATION"}
+            and contract.effective_to is not None
+            and payload.effective_date > contract.effective_to
+        ):
+            raise ApiError(
+                status_code=422,
+                code="CONTRACT_EVENT_DATE_AFTER_END",
+                message="contract close date cannot be later than the current contract end date",
+            )
 
     @staticmethod
     def _date_value(value: Any) -> date | None:
         if value is None or isinstance(value, date):
             return value
         return date.fromisoformat(str(value))
+
+    @staticmethod
+    def _contract_snapshot(contract: ContractRecord) -> dict[str, Any]:
+        fields = (
+            "signed_on",
+            "effective_from",
+            "effective_to",
+            "legal_entity_id",
+            "expiry_notice_days",
+            "status",
+            "metadata_payload",
+            "version",
+        )
+        return {
+            field: (
+                value.isoformat()
+                if isinstance(value, date)
+                else str(value)
+                if isinstance(value, UUID)
+                else value
+            )
+            for field in fields
+            for value in [getattr(contract, field)]
+        }
 
     async def _execute_employment_event(self, event: HrEvent, event_type: str) -> dict[str, Any]:
         employment = await self._session.get(Employment, event.object_id, with_for_update=True)
@@ -1246,6 +1577,209 @@ class LifecycleService:
             "version": assignment.version,
         }
 
+    @staticmethod
+    def _restore_contract_snapshot(
+        contract: ContractRecord,
+        snapshot: dict[str, Any],
+    ) -> None:
+        for field in (
+            "signed_on",
+            "effective_from",
+            "effective_to",
+            "legal_entity_id",
+            "expiry_notice_days",
+            "status",
+            "metadata_payload",
+        ):
+            if field not in snapshot:
+                continue
+            value = snapshot[field]
+            if field in {"signed_on", "effective_from", "effective_to"}:
+                value = LifecycleService._date_value(value)
+            elif field == "legal_entity_id" and value is not None:
+                value = UUID(str(value))
+            setattr(contract, field, value)
+
+    async def _execute_contract_event(
+        self,
+        event: HrEvent,
+        event_type: str,
+    ) -> dict[str, Any]:
+        contract = await self._session.get(
+            ContractRecord,
+            event.object_id,
+            with_for_update=True,
+        )
+        if contract is None:
+            raise ApiError(
+                status_code=404,
+                code="CONTRACT_NOT_FOUND",
+                message="contract not found",
+            )
+        if event.event_type.startswith("ROLLBACK_"):
+            original = (
+                await self._session.get(HrEvent, event.related_event_id)
+                if event.related_event_id
+                else None
+            )
+            if original is None:
+                raise ApiError(
+                    status_code=422,
+                    code="CONTRACT_ROLLBACK_SOURCE_MISSING",
+                    message="original contract event not found",
+                )
+            expected_version = original.actual_payload.get("version")
+            if expected_version is not None and contract.version != int(expected_version):
+                raise ApiError(
+                    status_code=409,
+                    code="CONTRACT_ROLLBACK_NOT_LATEST",
+                    message="rollback contract events in reverse order of execution",
+                )
+            event.before_payload = self._contract_snapshot(contract)
+            if event_type == "CONTRACT_RENEWAL":
+                successor_id = original.actual_payload.get("new_contract_id")
+                successor = (
+                    await self._session.get(
+                        ContractRecord,
+                        UUID(str(successor_id)),
+                        with_for_update=True,
+                    )
+                    if successor_id
+                    else None
+                )
+                if successor is None:
+                    raise ApiError(
+                        status_code=422,
+                        code="CONTRACT_RENEWAL_SUCCESSOR_MISSING",
+                        message="renewed contract not found",
+                    )
+                if successor.status != "active" or successor.version != 1:
+                    raise ApiError(
+                        status_code=409,
+                        code="CONTRACT_ROLLBACK_SUCCESSOR_CHANGED",
+                        message="renewed contract has later changes and cannot be cancelled directly",
+                    )
+                successor_before = self._contract_snapshot(successor)
+                self._restore_contract_snapshot(contract, original.before_payload)
+                contract.version += 1
+                successor.status = "cancelled"
+                successor.version += 1
+                actual = self._contract_snapshot(contract) | {
+                    "cancelled_contract_id": str(successor.id)
+                }
+                self._audit(
+                    action="rollback_renewal",
+                    object_type="contract",
+                    object_id=contract.id,
+                    reason=event.reason,
+                    before=event.before_payload,
+                    after=actual,
+                )
+                self._audit(
+                    action="cancel_renewal",
+                    object_type="contract",
+                    object_id=successor.id,
+                    reason=event.reason,
+                    before=successor_before,
+                    after=self._contract_snapshot(successor),
+                )
+                return actual
+            self._restore_contract_snapshot(contract, original.before_payload)
+            contract.version += 1
+            actual = self._contract_snapshot(contract)
+            self._audit(
+                action=f"rollback_{event_type.lower()}",
+                object_type="contract",
+                object_id=contract.id,
+                reason=event.reason,
+                before=event.before_payload,
+                after=actual,
+            )
+            return actual
+
+        before = self._contract_snapshot(contract)
+        event.before_payload = before
+        if event_type == "CONTRACT_AMENDMENT":
+            changes = dict(event.planned_payload)
+            for field, value in changes.items():
+                if field in {"signed_on", "effective_to"}:
+                    value = self._date_value(value)
+                elif field == "legal_entity_id" and value is not None:
+                    value = UUID(str(value))
+                setattr(contract, field, value)
+            contract.version += 1
+            actual = self._contract_snapshot(contract)
+        elif event_type in {"CONTRACT_TERMINATION", "CONTRACT_CANCELLATION"}:
+            contract.effective_to = event.effective_date
+            contract.status = (
+                "terminated" if event_type == "CONTRACT_TERMINATION" else "cancelled"
+            )
+            contract.version += 1
+            actual = self._contract_snapshot(contract)
+        elif event_type == "CONTRACT_RENEWAL":
+            planned = event.planned_payload
+            number = str(planned["contract_number"])
+            if await self._session.scalar(
+                select(ContractRecord.id).where(ContractRecord.contract_number == number)
+            ) is not None:
+                raise ApiError(
+                    status_code=409,
+                    code="CONTRACT_NUMBER_EXISTS",
+                    message="contract number already exists",
+                )
+            legal_entity_id = planned.get("legal_entity_id") or contract.legal_entity_id
+            successor = ContractRecord(
+                person_id=contract.person_id,
+                employment_id=contract.employment_id,
+                agreement_relationship_id=contract.agreement_relationship_id,
+                predecessor_contract_id=contract.id,
+                contract_type_code=contract.contract_type_code,
+                contract_number=number,
+                legal_entity_id=(
+                    UUID(str(legal_entity_id)) if legal_entity_id is not None else None
+                ),
+                signed_on=self._date_value(planned.get("signed_on")),
+                effective_from=event.effective_date,
+                effective_to=self._date_value(planned.get("effective_to")),
+                expiry_notice_days=int(planned.get("expiry_notice_days", 30)),
+                version=1,
+                status="active",
+                metadata_payload=dict(planned.get("metadata_payload") or {}),
+            )
+            if contract.effective_to is None:
+                contract.effective_to = event.effective_date - timedelta(days=1)
+            contract.status = "renewed"
+            contract.version += 1
+            self._session.add(successor)
+            await self._session.flush()
+            actual = self._contract_snapshot(contract) | {
+                "new_contract_id": str(successor.id),
+                "new_contract_number": successor.contract_number,
+            }
+            self._audit(
+                action="create_renewal",
+                object_type="contract",
+                object_id=successor.id,
+                reason=event.reason,
+                after=self._contract_snapshot(successor)
+                | {"predecessor_contract_id": str(contract.id)},
+            )
+        else:
+            raise ApiError(
+                status_code=422,
+                code="HR_EVENT_TYPE_UNSUPPORTED",
+                message="contract event type is not supported",
+            )
+        self._audit(
+            action=event_type.lower(),
+            object_type="contract",
+            object_id=contract.id,
+            reason=event.reason,
+            before=before,
+            after=actual,
+        )
+        return actual
+
     async def _execute_hr_event_if_due(self, event: HrEvent, as_of: date | None = None) -> bool:
         process_date = as_of or self._business_today()
         if event.effective_date > process_date:
@@ -1254,7 +1788,9 @@ class LifecycleService:
         if event.status not in {"ready", "scheduled", "failed"}:
             return False
         event_type = event.event_type.removeprefix("ROLLBACK_")
-        if event_type in {
+        if event.object_type == "contract":
+            actual = await self._execute_contract_event(event, event_type)
+        elif event_type in {
             "ONBOARDING",
             "CONFIRMATION",
             "TERMINATION",
@@ -1284,10 +1820,16 @@ class LifecycleService:
         self,
         *,
         status: str | None,
+        object_type: str | None,
+        object_id: UUID | None,
         limit: int,
         offset: int,
     ) -> tuple[list[HrEvent], int]:
         filters = [HrEvent.status == status] if status else []
+        if object_type is not None:
+            filters.append(HrEvent.object_type == object_type)
+        if object_id is not None:
+            filters.append(HrEvent.object_id == object_id)
         total = await self._session.scalar(select(func.count()).select_from(HrEvent).where(*filters))
         items = list(
             (
@@ -1341,6 +1883,20 @@ class LifecycleService:
         return processed, failed
 
     async def create_hr_event(self, payload: HrEventCreate) -> HrEvent:
+        checksum = self._hr_event_checksum("create", payload.model_dump(mode="json"))
+        if payload.idempotency_key is not None:
+            await self._lock_idempotency(payload.idempotency_key)
+            existing = await self._session.scalar(
+                select(HrEvent).where(HrEvent.idempotency_key == payload.idempotency_key)
+            )
+            if existing is not None:
+                if existing.request_checksum != checksum:
+                    raise ApiError(
+                        status_code=409,
+                        code="HR_EVENT_IDEMPOTENCY_CONFLICT",
+                        message="idempotency key was used with different event data",
+                    )
+                return existing
         await self._validate_hr_event(payload)
         number = await next_number(
             self._session,
@@ -1351,6 +1907,8 @@ class LifecycleService:
         )
         event = HrEvent(
             event_number=number,
+            idempotency_key=payload.idempotency_key,
+            request_checksum=checksum if payload.idempotency_key is not None else None,
             event_type=payload.event_type,
             object_type=payload.object_type,
             object_id=payload.object_id,
@@ -1382,11 +1940,69 @@ class LifecycleService:
         event_id: UUID,
         payload: HrEventRollbackCreate,
     ) -> HrEvent:
+        checksum = self._hr_event_checksum(
+            "rollback",
+            {
+                "event_id": str(event_id),
+                **payload.model_dump(mode="json"),
+            },
+        )
+        if payload.idempotency_key is not None:
+            await self._lock_idempotency(payload.idempotency_key)
+            existing = await self._session.scalar(
+                select(HrEvent).where(HrEvent.idempotency_key == payload.idempotency_key)
+            )
+            if existing is not None:
+                if existing.request_checksum != checksum:
+                    raise ApiError(
+                        status_code=409,
+                        code="HR_EVENT_IDEMPOTENCY_CONFLICT",
+                        message="idempotency key was used with different rollback data",
+                    )
+                return existing
         original = await self._session.get(HrEvent, event_id)
         if original is None:
             raise ApiError(status_code=404, code="HR_EVENT_NOT_FOUND", message="人事事件不存在")
         if original.status != "completed":
             raise ApiError(status_code=409, code="HR_EVENT_NOT_COMPLETED", message="只有已生效的人事事件可以回退")
+        if original.object_type == "contract":
+            contract = await self._session.get(
+                ContractRecord,
+                original.object_id,
+                with_for_update=True,
+            )
+            if contract is None:
+                raise ApiError(
+                    status_code=404,
+                    code="CONTRACT_NOT_FOUND",
+                    message="contract not found",
+                )
+            expected_version = original.actual_payload.get("version")
+            if expected_version is not None and contract.version != int(expected_version):
+                raise ApiError(
+                    status_code=409,
+                    code="CONTRACT_ROLLBACK_NOT_LATEST",
+                    message="rollback contract events in reverse order of execution",
+                )
+            if original.event_type == "CONTRACT_RENEWAL":
+                successor_id = original.actual_payload.get("new_contract_id")
+                successor = (
+                    await self._session.get(ContractRecord, UUID(str(successor_id)))
+                    if successor_id
+                    else None
+                )
+                if successor is None:
+                    raise ApiError(
+                        status_code=422,
+                        code="CONTRACT_RENEWAL_SUCCESSOR_MISSING",
+                        message="renewed contract not found",
+                    )
+                if successor.status != "active" or successor.version != 1:
+                    raise ApiError(
+                        status_code=409,
+                        code="CONTRACT_ROLLBACK_SUCCESSOR_CHANGED",
+                        message="renewed contract has later changes and cannot be cancelled directly",
+                    )
         number = await next_number(
             self._session,
             sequence_code="HR_EVENT_NUMBER",
@@ -1396,6 +2012,8 @@ class LifecycleService:
         )
         rollback = HrEvent(
             event_number=number,
+            idempotency_key=payload.idempotency_key,
+            request_checksum=checksum if payload.idempotency_key is not None else None,
             event_type=f"ROLLBACK_{original.event_type}",
             object_type=original.object_type,
             object_id=original.object_id,

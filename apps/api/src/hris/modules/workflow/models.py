@@ -193,6 +193,12 @@ class ContractRecord(UuidPrimaryKeyMixin, TimestampMixin, Base):
             "effective_to IS NULL OR effective_to >= effective_from",
             name="effective_period_order",
         ),
+        CheckConstraint(
+            "employment_id IS NULL OR agreement_relationship_id IS NULL",
+            name="single_relation_type",
+        ),
+        CheckConstraint("expiry_notice_days >= 0", name="expiry_notice_days_nonnegative"),
+        CheckConstraint("version > 0", name="version_positive"),
     )
 
     person_id: Mapped[UUID] = mapped_column(
@@ -205,6 +211,15 @@ class ContractRecord(UuidPrimaryKeyMixin, TimestampMixin, Base):
         Uuid,
         ForeignKey("employments.id"),
     )
+    agreement_relationship_id: Mapped[UUID | None] = mapped_column(
+        Uuid,
+        ForeignKey("agreement_relationships.id"),
+    )
+    predecessor_contract_id: Mapped[UUID | None] = mapped_column(
+        Uuid,
+        ForeignKey("contract_records.id"),
+        index=True,
+    )
     contract_type_code: Mapped[str] = mapped_column(String(50), nullable=False)
     contract_number: Mapped[str] = mapped_column(
         String(100),
@@ -215,8 +230,11 @@ class ContractRecord(UuidPrimaryKeyMixin, TimestampMixin, Base):
         Uuid,
         ForeignKey("legal_entities.id"),
     )
+    signed_on: Mapped[date | None] = mapped_column(Date)
     effective_from: Mapped[date] = mapped_column(Date, nullable=False)
     effective_to: Mapped[date | None] = mapped_column(Date)
+    expiry_notice_days: Mapped[int] = mapped_column(Integer, nullable=False, default=30)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     status: Mapped[str] = mapped_column(String(30), nullable=False)
     metadata_payload: Mapped[dict[str, Any]] = mapped_column(
         JSON,

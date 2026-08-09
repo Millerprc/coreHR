@@ -2,6 +2,7 @@ import { apiRequest } from "../../client"
 import type {
   ApplicationHireConversion,
   Candidate,
+  ContractExpiryAlert,
   ContractRecord,
   HrEvent,
   JobApplication,
@@ -48,8 +49,19 @@ export const lifecycleApi = {
     apiRequest<LifecyclePage<ContractRecord>>("/api/v1/lifecycle/contracts?limit=200&offset=0", token),
   createContract: (token: string, body: unknown) =>
     apiRequest<ContractRecord>("/api/v1/lifecycle/contracts", token, { method: "POST", body }),
-  updateContract: (token: string, contractId: string, body: unknown) =>
-    apiRequest<ContractRecord>(`/api/v1/lifecycle/contracts/${contractId}`, token, { method: "PATCH", body }),
+  contractExpiryAlerts: (token: string, daysAhead = 90) =>
+    apiRequest<{ readonly items: readonly ContractExpiryAlert[]; readonly total: number }>(
+      `/api/v1/lifecycle/contracts/expiry-alerts?days_ahead=${daysAhead}`,
+      token,
+    ),
+  createContractAction: (token: string, contractId: string, body: unknown) =>
+    apiRequest<HrEvent>(`/api/v1/lifecycle/contracts/${contractId}/actions`, token, { method: "POST", body }),
+  processContractStatuses: (token: string) =>
+    apiRequest<{ readonly processed_ids: readonly string[] }>(
+      "/api/v1/lifecycle/contracts/process-statuses",
+      token,
+      { method: "POST", body: {} },
+    ),
   hrEvents: (token: string) =>
     apiRequest<LifecyclePage<HrEvent>>("/api/v1/lifecycle/hr-events?limit=200&offset=0", token),
   createHrEvent: (token: string, body: unknown) =>

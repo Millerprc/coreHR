@@ -177,17 +177,27 @@ class ApplicationHireConversionResponse(BaseModel):
 class ContractCreate(BaseModel):
     person_id: UUID
     employment_id: UUID | None = None
-    contract_type_code: str = Field(min_length=1, max_length=50)
+    agreement_relationship_id: UUID | None = None
+    contract_type_code: str = Field(
+        min_length=1,
+        max_length=50,
+        pattern=r"^[A-Z][A-Z0-9_]*$",
+    )
     contract_number: str = Field(min_length=1, max_length=100)
     legal_entity_id: UUID | None = None
+    signed_on: date | None = None
     effective_from: date
     effective_to: date | None = None
+    expiry_notice_days: int = Field(default=30, ge=0, le=3650)
     metadata_payload: dict[str, Any] = Field(default_factory=dict)
+    change_reason: str = Field(min_length=1, max_length=500)
 
     @model_validator(mode="after")
     def validate_dates(self) -> "ContractCreate":
+        if self.employment_id is not None and self.agreement_relationship_id is not None:
+            raise ValueError("a contract can link to employment or agreement, not both")
         if self.effective_to is not None and self.effective_to < self.effective_from:
-            raise ValueError("effective_to不能早于effective_from")
+            raise ValueError("effective_to cannot be earlier than effective_from")
         return self
 
 
@@ -197,18 +207,24 @@ class ContractResponse(BaseModel):
     id: UUID
     person_id: UUID
     employment_id: UUID | None
+    agreement_relationship_id: UUID | None
+    predecessor_contract_id: UUID | None
     contract_type_code: str
     contract_number: str
     legal_entity_id: UUID | None
+    signed_on: date | None
     effective_from: date
     effective_to: date | None
+    expiry_notice_days: int
+    version: int
     status: str
     metadata_payload: dict[str, Any]
 
 
 class ContractUpdate(BaseModel):
-    effective_to: date | None = None
-    status: Literal["active", "expired", "terminated", "cancelled"] | None = None
+    signed_on: date | None = None
+    legal_entity_id: UUID | None = None
+    expiry_notice_days: int | None = Field(default=None, ge=0, le=3650)
     metadata_payload: dict[str, Any] | None = None
     change_reason: str = Field(min_length=1, max_length=500)
 
@@ -219,6 +235,77 @@ class ContractUpdate(BaseModel):
         return self
 
 
+class ContractAmendment(BaseModel):
+    signed_on: date | None = None
+    effective_to: date | None = None
+    legal_entity_id: UUID | None = None
+    expiry_notice_days: int | None = Field(default=None, ge=0, le=3650)
+    metadata_payload: dict[str, Any] | None = None
+
+    @model_validator(mode="after")
+    def validate_change(self) -> "ContractAmendment":
+        if not self.model_dump(exclude_unset=True):
+            raise ValueError("at least one amendment field must be changed")
+        return self
+
+
+class ContractRenewal(BaseModel):
+    contract_number: str = Field(min_length=1, max_length=100)
+    effective_to: date | None = None
+    signed_on: date | None = None
+    legal_entity_id: UUID | None = None
+    expiry_notice_days: int = Field(default=30, ge=0, le=3650)
+    metadata_payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class ContractActionCreate(BaseModel):
+    idempotency_key: UUID
+    action_type: Literal["amendment", "renewal", "termination", "cancellation"]
+    effective_date: date
+    execution_mode: Literal["direct", "approval"] = "direct"
+    reason: str = Field(min_length=1, max_length=500)
+    workflow_instance_id: UUID | None = None
+    amendment: ContractAmendment | None = None
+    renewal: ContractRenewal | None = None
+
+    @model_validator(mode="after")
+    def validate_action_payload(self) -> "ContractActionCreate":
+        if self.action_type == "amendment" and self.amendment is None:
+            raise ValueError("amendment payload is required for amendment action")
+        if self.action_type != "amendment" and self.amendment is not None:
+            raise ValueError("amendment payload is only valid for amendment action")
+        if self.action_type == "renewal" and self.renewal is None:
+            raise ValueError("renewal payload is required for renewal action")
+        if self.action_type != "renewal" and self.renewal is not None:
+            raise ValueError("renewal payload is only valid for renewal action")
+        return self
+
+
+class ContractExpiryAlert(BaseModel):
+    contract_id: UUID
+    contract_number: str
+    person_id: UUID
+    effective_to: date
+    expiry_notice_days: int
+    days_remaining: int
+    status: str
+
+
+class ContractExpiryAlertPage(BaseModel):
+    items: list[ContractExpiryAlert]
+    total: int
+    as_of: date
+    days_ahead: int
+
+
+class ContractStatusProcessRequest(BaseModel):
+    as_of: date | None = None
+
+
+class ContractStatusProcessResponse(BaseModel):
+    processed_ids: list[UUID]
+
+
 class ContractPage(BaseModel):
     items: list[ContractResponse]
     total: int
@@ -227,6 +314,7 @@ class ContractPage(BaseModel):
 
 
 class HrEventCreate(BaseModel):
+    idempotency_key: UUID | None = None
     event_type: str = Field(min_length=1, max_length=50)
     object_type: str = Field(min_length=1, max_length=50)
     object_id: UUID
@@ -239,6 +327,7 @@ class HrEventCreate(BaseModel):
 
 
 class HrEventRollbackCreate(BaseModel):
+    idempotency_key: UUID | None = None
     execution_mode: Literal["direct", "approval"] = "approval"
     effective_date: date
     reason: str = Field(min_length=1, max_length=500)
@@ -249,6 +338,7 @@ class HrEventResponse(BaseModel):
 
     id: UUID
     event_number: str
+    idempotency_key: UUID | None
     event_type: str
     object_type: str
     object_id: UUID

@@ -90,13 +90,29 @@ export interface ContractRecord {
   readonly id: string
   readonly person_id: string
   readonly employment_id: string | null
+  readonly agreement_relationship_id: string | null
+  readonly predecessor_contract_id: string | null
   readonly contract_type_code: string
   readonly contract_number: string
   readonly legal_entity_id: string | null
+  readonly signed_on: string | null
   readonly effective_from: string
   readonly effective_to: string | null
+  readonly expiry_notice_days: number
+  readonly version: number
   readonly status: string
   readonly metadata_payload: Record<string, unknown>
+}
+
+
+export interface ContractExpiryAlert {
+  readonly contract_id: string
+  readonly contract_number: string
+  readonly person_id: string
+  readonly effective_to: string
+  readonly expiry_notice_days: number
+  readonly days_remaining: number
+  readonly status: string
 }
 
 

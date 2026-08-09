@@ -122,20 +122,23 @@ async def test_candidate_application_and_contract_admin_lifecycle(
             "legal_entity_id": str(legal.id),
             "effective_from": today.isoformat(),
             "metadata_payload": {"source": "synthetic"},
+            "change_reason": "Synthetic contract creation",
         },
     )
     assert contract.status_code == 201, contract.text
     contract_id = contract.json()["id"]
-    terminated = await business_client.patch(
-        f"/api/v1/lifecycle/contracts/{contract_id}",
+    terminated = await business_client.post(
+        f"/api/v1/lifecycle/contracts/{contract_id}/actions",
         headers=_auth(admin_token),
         json={
-            "status": "terminated",
-            "effective_to": today.isoformat(),
-            "change_reason": "Synthetic contract close",
+            "idempotency_key": str(uuid4()),
+            "action_type": "termination",
+            "effective_date": today.isoformat(),
+            "execution_mode": "direct",
+            "reason": "Synthetic contract close",
         },
     )
-    assert terminated.status_code == 200, terminated.text
+    assert terminated.status_code == 201, terminated.text
     contract_page = await business_client.get(
         f"/api/v1/lifecycle/contracts?person_id={person.id}",
         headers=_auth(admin_token),

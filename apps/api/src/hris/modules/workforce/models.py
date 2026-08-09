@@ -589,6 +589,8 @@ class HrEvent(UuidPrimaryKeyMixin, TimestampMixin, Base):
     )
 
     event_number: Mapped[str] = mapped_column(String(50), nullable=False)
+    idempotency_key: Mapped[UUID | None] = mapped_column(Uuid, unique=True)
+    request_checksum: Mapped[str | None] = mapped_column(String(64))
     event_type: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
     object_type: Mapped[str] = mapped_column(String(50), nullable=False)
     object_id: Mapped[UUID] = mapped_column(Uuid, nullable=False, index=True)
