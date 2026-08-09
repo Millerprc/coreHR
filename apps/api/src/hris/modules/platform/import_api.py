@@ -1,7 +1,7 @@
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, Request, status
+from fastapi import APIRouter, Depends, Query, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from hris.core.database import get_db
@@ -18,6 +18,7 @@ from hris.modules.platform.import_schemas import (
     ImportTemplateResponse,
 )
 from hris.modules.platform.import_service import ImportService
+from hris.modules.platform.master_data_export import MasterDataExportService
 from hris.modules.platform.models import UserAccount
 
 
@@ -46,6 +47,28 @@ def _detail(batch: ImportBatch, rows: list[ImportBatchRow]) -> ImportBatchRespon
     return ImportBatchResponse(
         **summary,
         rows=[ImportBatchRowResponse.model_validate(row) for row in rows],
+    )
+
+
+@router.get("/exports/{entity_type}")
+async def export_current_master_data(
+    entity_type: ImportEntityType,
+    db: DbSession,
+    user: GovernanceViewer,
+    request: Request,
+) -> Response:
+    content, filename, row_count = await MasterDataExportService(
+        db,
+        actor_id=user.id,
+        trace_id=str(request.state.trace_id),
+    ).export(entity_type)
+    return Response(
+        content=content,
+        media_type="text/csv",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "X-Export-Row-Count": str(row_count),
+        },
     )
 
 

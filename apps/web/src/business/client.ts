@@ -68,6 +68,30 @@ export async function apiRequest<T>(
 }
 
 
+export interface ApiDownload {
+  readonly blob: Blob
+  readonly filename: string
+}
+
+
+export async function apiDownload(
+  path: string,
+  token: string,
+): Promise<ApiDownload> {
+  const response = await fetch(path, {
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  if (!response.ok) {
+    const body = (await response.json().catch(() => null)) as ApiErrorBody | null
+    throw new ApiClientError(response, body)
+  }
+  const disposition = response.headers.get("Content-Disposition") ?? ""
+  const filename = disposition.match(/filename="?([^";]+)"?/i)?.[1]
+    ?? "master-data-current.csv"
+  return { blob: await response.blob(), filename }
+}
+
+
 export function storedToken(): string | null {
   return sessionStorage.getItem(TOKEN_KEY)
 }

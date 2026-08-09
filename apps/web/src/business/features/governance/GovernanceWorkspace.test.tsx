@@ -77,4 +77,14 @@ describe("GovernanceWorkspace", () => {
     expect(screen.getByText("仅接受主数据代码和名称，不要上传人员、证件、薪酬或联系方式")).toBeInTheDocument()
     expect(screen.getByRole("button", { name: "下载CSV模板" })).toBeInTheDocument()
   })
+
+  it("opens a current non-sensitive master data export form", async () => {
+    render(<GovernanceWorkspace token="synthetic-token" canAdmin />)
+    await screen.findByText("synthetic_dictionary_items")
+
+    fireEvent.click(screen.getByRole("button", { name: "导出当前主数据" }))
+    expect(screen.getByRole("button", { name: "下载CSV" })).toBeInTheDocument()
+    expect(screen.getByText("只导出当前有效的非敏感主数据")).toBeInTheDocument()
+    expect(screen.getByText(/不包含人员、证件、薪酬或联系方式/)).toBeInTheDocument()
+  })
 })

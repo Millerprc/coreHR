@@ -83,6 +83,9 @@ export function GovernanceWorkspace({ token, canAdmin }: GovernanceWorkspaceProp
   const [error, setError] = useState<string | null>(null)
   const [forbidden, setForbidden] = useState(false)
   const [editorOpen, setEditorOpen] = useState(false)
+  const [exportOpen, setExportOpen] = useState(false)
+  const [exportType, setExportType] = useState<ImportEntityType>("dictionary_item")
+  const [exporting, setExporting] = useState(false)
   const [template, setTemplate] = useState<ImportTemplate | null>(null)
   const [fileName, setFileName] = useState("")
   const [rows, setRows] = useState<readonly CsvImportRow[]>([])
@@ -134,6 +137,25 @@ export function GovernanceWorkspace({ token, canAdmin }: GovernanceWorkspaceProp
     })
     setEditorOpen(true)
     void loadTemplate(entityType)
+  }
+
+  async function exportCurrent(): Promise<void> {
+    setExporting(true)
+    setError(null)
+    try {
+      const download = await governanceApi.exportCurrent(token, exportType)
+      const url = URL.createObjectURL(download.blob)
+      const anchor = document.createElement("a")
+      anchor.href = url
+      anchor.download = download.filename
+      anchor.click()
+      URL.revokeObjectURL(url)
+      setExportOpen(false)
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "当前主数据导出失败")
+    } finally {
+      setExporting(false)
+    }
   }
 
   async function readFile(file: File | undefined): Promise<void> {
@@ -236,7 +258,10 @@ export function GovernanceWorkspace({ token, canAdmin }: GovernanceWorkspaceProp
             主数据先校验、后执行。非法行进入拒绝报告，重复来源不会重复创建目标记录。
           </Typography.Paragraph>
         </div>
-        {canAdmin && <Button type="primary" onClick={openEditor}>新建导入批次</Button>}
+        <Space wrap>
+          <Button onClick={() => setExportOpen(true)}>导出当前主数据</Button>
+          {canAdmin && <Button type="primary" onClick={openEditor}>新建导入批次</Button>}
+        </Space>
       </div>
       <Alert
         type="info"
@@ -286,6 +311,33 @@ export function GovernanceWorkspace({ token, canAdmin }: GovernanceWorkspaceProp
           ]}
         />
       )}
+
+      <Modal
+        title="导出当前主数据"
+        open={exportOpen}
+        okText="下载CSV"
+        confirmLoading={exporting}
+        onOk={() => void exportCurrent()}
+        onCancel={() => setExportOpen(false)}
+      >
+        <Space orientation="vertical" size="middle" className="full-width">
+          <Alert
+            type="info"
+            showIcon
+            title="只导出当前有效的非敏感主数据"
+            description="按业务时区当天生效口径导出，不包含人员、证件、薪酬或联系方式。文件用于核对与审阅。"
+          />
+          <label className="field-label" htmlFor="master-data-export-type">主数据类型</label>
+          <Select
+            id="master-data-export-type"
+            aria-label="主数据类型"
+            className="full-width"
+            value={exportType}
+            options={Object.entries(entityLabels).map(([value, label]) => ({ value, label }))}
+            onChange={(value: ImportEntityType) => setExportType(value)}
+          />
+        </Space>
+      </Modal>
 
       <Modal
         title="新建主数据导入"

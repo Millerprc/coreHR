@@ -1,4 +1,4 @@
-import { apiRequest } from "../../client"
+import { apiDownload, apiRequest } from "../../client"
 import type { CsvImportRow } from "./csv"
 import type {
   ImportBatch,
@@ -9,6 +9,10 @@ import type {
 
 
 export const governanceApi = {
+  exportCurrent(token: string, entityType: ImportEntityType) {
+    return apiDownload(`/api/v1/governance/exports/${entityType}`, token)
+  },
+
   listBatches(token: string): Promise<ImportBatchList> {
     return apiRequest("/api/v1/governance/import-batches?limit=200&offset=0", token)
   },
