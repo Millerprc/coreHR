@@ -49,6 +49,7 @@ const entityLabels: Readonly<Record<ImportEntityType, string>> = {
   organization_type: "组织类型",
   legal_entity: "法人主体",
   job: "职务",
+  organization: "组织",
 }
 
 
@@ -241,7 +242,7 @@ export function GovernanceWorkspace({ token, canAdmin }: GovernanceWorkspaceProp
         type="info"
         showIcon
         title="当前只开放无人员敏感信息的主数据初始化"
-        description="支持数据字典、字典项、组织类型、法人和职务；人员、证件、薪酬及联系方式不会由该入口接收。"
+        description="支持数据字典、字典项、组织类型、法人、职务和组织；人员、证件、薪酬及联系方式不会由该入口接收。"
       />
       {error && <Alert closable onClose={() => setError(null)} type="error" showIcon title={error} />}
       {loading ? <Skeleton active paragraph={{ rows: 8 }} /> : (

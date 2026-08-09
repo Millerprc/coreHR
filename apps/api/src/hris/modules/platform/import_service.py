@@ -1,22 +1,26 @@
 import hashlib
 import json
 from collections import defaultdict
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Any
-from uuid import UUID
+from uuid import NAMESPACE_URL, UUID, uuid5
+from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from hris.core.config import get_settings
 from hris.core.errors import ApiError
 from hris.modules.platform.configuration_schemas import DictionaryCreate
+from hris.modules.platform.governance_models import OutboxEvent
 from hris.modules.platform.import_models import ImportBatch, ImportBatchRow
 from hris.modules.platform.import_schemas import (
     DictionaryItemImport,
     ImportBatchValidate,
     ImportEntityType,
+    OrganizationImport,
 )
 from hris.modules.platform.models import (
     DataDictionary,
@@ -24,7 +28,15 @@ from hris.modules.platform.models import (
     ExternalRecordLink,
 )
 from hris.modules.workforce.extended_schemas import JobCreate, LegalEntityCreate
-from hris.modules.workforce.models import AuditLog, JobCatalog, LegalEntity, OrganizationType
+from hris.modules.workforce.models import (
+    AuditLog,
+    JobCatalog,
+    LegalEntity,
+    Organization,
+    OrganizationType,
+    OrganizationVersion,
+)
+from hris.modules.workforce.organization_models import OrganizationEvent
 from hris.modules.workforce.organization_schemas import OrganizationTypeCreate
 
 
@@ -34,6 +46,7 @@ _TARGET_TYPES: dict[str, str] = {
     "organization_type": "organization_type",
     "legal_entity": "legal_entity",
     "job": "job",
+    "organization": "organization",
 }
 
 _TEMPLATES: dict[str, tuple[list[str], list[str]]] = {
@@ -81,6 +94,18 @@ _TEMPLATES: dict[str, tuple[list[str], list[str]]] = {
             "effective_to",
         ],
         ["code", "name", "effective_from"],
+    ),
+    "organization": (
+        [
+            "code",
+            "name",
+            "organization_type_code",
+            "parent_code",
+            "country_code",
+            "effective_from",
+            "effective_to",
+        ],
+        ["code", "name", "organization_type_code", "effective_from"],
     ),
 }
 
@@ -151,6 +176,8 @@ class ImportService:
         existing_targets = await self._existing_targets(payload.entity_type, parsed)
         if payload.entity_type == "dictionary_item":
             await self._validate_dictionary_item_relations(parsed, existing_targets, errors)
+        elif payload.entity_type == "organization":
+            await self._validate_organization_relations(parsed, existing_targets, errors)
 
         links = await self._existing_links(payload)
         rows: list[ImportBatchRow] = []
@@ -254,6 +281,8 @@ class ImportService:
         valid_rows = [row for row in rows if row.status == "valid"]
         if batch.entity_type == "dictionary_item":
             valid_rows = await self._order_dictionary_item_rows(valid_rows)
+        elif batch.entity_type == "organization":
+            valid_rows = await self._order_organization_rows(valid_rows)
 
         for row in valid_rows:
             try:
@@ -364,6 +393,7 @@ class ImportService:
             "organization_type": OrganizationTypeCreate,
             "legal_entity": LegalEntityCreate,
             "job": JobCreate,
+            "organization": OrganizationImport,
         }[payload.entity_type]
         parsed: dict[int, BaseModel] = {}
         errors: defaultdict[int, list[dict[str, Any]]] = defaultdict(list)
@@ -477,6 +507,42 @@ class ImportService:
             )
             return result
 
+        if entity_type == "organization":
+            organization_codes = {
+                code
+                for model in parsed.values()
+                if isinstance(model, OrganizationImport)
+                for code in (model.code, model.parent_code)
+                if code is not None
+            }
+            type_codes = {
+                model.organization_type_code
+                for model in parsed.values()
+                if isinstance(model, OrganizationImport)
+            }
+            organizations = list(
+                (
+                    await self._session.scalars(
+                        select(Organization).where(Organization.code.in_(organization_codes))
+                    )
+                ).all()
+            )
+            organization_types = list(
+                (
+                    await self._session.scalars(
+                        select(OrganizationType).where(
+                            OrganizationType.code.in_(type_codes),
+                            OrganizationType.is_active.is_(True),
+                        )
+                    )
+                ).all()
+            )
+            result = {item.code: item for item in organizations}
+            result.update(
+                {f"organization_type:{item.code}": item for item in organization_types}
+            )
+            return result
+
         model_type: type[Any] = {
             "dictionary": DataDictionary,
             "organization_type": OrganizationType,
@@ -565,6 +631,27 @@ class ImportService:
         for key in incoming:
             visit(key, [key])
 
+        dependency_changed = True
+        while dependency_changed:
+            dependency_changed = False
+            invalid_keys = {
+                key for key, index in index_by_key.items() if errors[index]
+            }
+            for key, model in incoming.items():
+                index = index_by_key[key]
+                if errors[index] or model.parent_item_code is None:
+                    continue
+                parent_key = f"{model.dictionary_code}:{model.parent_item_code}"
+                if parent_key in invalid_keys:
+                    errors[index].append(
+                        self._error(
+                            "DICTIONARY_PARENT_REJECTED",
+                            "parent_item_code",
+                            "父字典项未通过当前批次校验",
+                        )
+                    )
+                    dependency_changed = True
+
     async def _order_dictionary_item_rows(
         self,
         rows: list[ImportBatchRow],
@@ -602,6 +689,168 @@ class ImportService:
                     status_code=409,
                     code="IMPORT_DICTIONARY_DEPENDENCY_INVALID",
                     message="字典项依赖顺序无法解析，请重新校验批次",
+                )
+        return ordered
+
+    async def _validate_organization_relations(
+        self,
+        parsed: dict[int, BaseModel],
+        existing: dict[str, Any],
+        errors: defaultdict[int, list[dict[str, Any]]],
+    ) -> None:
+        incoming: dict[str, OrganizationImport] = {}
+        index_by_code: dict[str, int] = {}
+        for index, model in parsed.items():
+            if not isinstance(model, OrganizationImport):
+                continue
+            incoming[model.code] = model
+            index_by_code[model.code] = index
+            if f"organization_type:{model.organization_type_code}" not in existing:
+                errors[index].append(
+                    self._error(
+                        "ORGANIZATION_TYPE_NOT_FOUND",
+                        "organization_type_code",
+                        "组织类型不存在或未启用，请先导入组织类型",
+                    )
+                )
+            if model.parent_code is None:
+                continue
+            parent = incoming.get(model.parent_code)
+            if parent is None:
+                parent = next(
+                    (
+                        candidate
+                        for candidate in parsed.values()
+                        if isinstance(candidate, OrganizationImport)
+                        and candidate.code == model.parent_code
+                    ),
+                    None,
+                )
+            if parent is not None:
+                if (
+                    parent.effective_from > model.effective_from
+                    or (
+                        parent.effective_to is not None
+                        and parent.effective_to < model.effective_from
+                    )
+                ):
+                    errors[index].append(
+                        self._error(
+                            "ORGANIZATION_PARENT_NOT_EFFECTIVE",
+                            "parent_code",
+                            "上级组织在当前组织生效日期无有效版本",
+                        )
+                    )
+            elif model.parent_code not in existing:
+                errors[index].append(
+                    self._error(
+                        "ORGANIZATION_PARENT_NOT_FOUND",
+                        "parent_code",
+                        "上级组织不存在且不在当前批次",
+                    )
+                )
+            elif not await self._organization_effective_at(
+                existing[model.parent_code].id,
+                model.effective_from,
+            ):
+                errors[index].append(
+                    self._error(
+                        "ORGANIZATION_PARENT_NOT_EFFECTIVE",
+                        "parent_code",
+                        "上级组织在当前组织生效日期无有效版本",
+                    )
+                )
+
+        visiting: set[str] = set()
+        visited: set[str] = set()
+
+        def visit(code: str, path: list[str]) -> None:
+            if code in visited:
+                return
+            if code in visiting:
+                cycle = path[path.index(code) :]
+                for cycle_code in cycle:
+                    errors[index_by_code[cycle_code]].append(
+                        self._error(
+                            "ORGANIZATION_PARENT_CYCLE",
+                            "parent_code",
+                            "组织父子关系不能形成循环",
+                        )
+                    )
+                return
+            model = incoming.get(code)
+            if model is None or model.parent_code not in incoming:
+                visited.add(code)
+                return
+            visiting.add(code)
+            visit(model.parent_code, [*path, model.parent_code])
+            visiting.discard(code)
+            visited.add(code)
+
+        for code in incoming:
+            visit(code, [code])
+
+        dependency_changed = True
+        while dependency_changed:
+            dependency_changed = False
+            invalid_codes = {
+                code for code, index in index_by_code.items() if errors[index]
+            }
+            for code, model in incoming.items():
+                index = index_by_code[code]
+                if errors[index] or model.parent_code is None:
+                    continue
+                if model.parent_code in invalid_codes:
+                    errors[index].append(
+                        self._error(
+                            "ORGANIZATION_PARENT_REJECTED",
+                            "parent_code",
+                            "上级组织未通过当前批次校验",
+                        )
+                    )
+                    dependency_changed = True
+
+    async def _organization_effective_at(
+        self,
+        organization_id: UUID,
+        effective_at: date,
+    ) -> bool:
+        return (
+            await self._session.scalar(
+                select(OrganizationVersion.id).where(
+                    OrganizationVersion.organization_id == organization_id,
+                    OrganizationVersion.effective_from <= effective_at,
+                    (
+                        OrganizationVersion.effective_to.is_(None)
+                        | (OrganizationVersion.effective_to >= effective_at)
+                    ),
+                    OrganizationVersion.status == "active",
+                )
+            )
+        ) is not None
+
+    async def _order_organization_rows(
+        self,
+        rows: list[ImportBatchRow],
+    ) -> list[ImportBatchRow]:
+        pending = {row.id: row for row in rows}
+        available = set((await self._session.scalars(select(Organization.code))).all())
+        ordered: list[ImportBatchRow] = []
+        while pending:
+            progressed = False
+            for row_id, row in list(pending.items()):
+                model = OrganizationImport.model_validate(row.payload)
+                if model.parent_code is not None and model.parent_code not in available:
+                    continue
+                ordered.append(row)
+                available.add(model.code)
+                del pending[row_id]
+                progressed = True
+            if not progressed:
+                raise ApiError(
+                    status_code=409,
+                    code="IMPORT_ORGANIZATION_DEPENDENCY_INVALID",
+                    message="组织父级依赖顺序无法解析，请重新校验批次",
                 )
         return ordered
 
@@ -670,6 +919,87 @@ class ImportService:
             target = JobCatalog(
                 **payload.model_dump(),
                 status="active",
+            )
+        elif batch.entity_type == "organization":
+            payload = OrganizationImport.model_validate(row.payload)
+            organization_type = await self._session.scalar(
+                select(OrganizationType).where(
+                    OrganizationType.code == payload.organization_type_code,
+                    OrganizationType.is_active.is_(True),
+                )
+            )
+            if organization_type is None:
+                raise ApiError(
+                    status_code=409,
+                    code="ORGANIZATION_TYPE_NOT_FOUND",
+                    message="执行时组织类型不存在或未启用",
+                )
+            parent: Organization | None = None
+            if payload.parent_code is not None:
+                parent = await self._session.scalar(
+                    select(Organization).where(Organization.code == payload.parent_code)
+                )
+                if parent is None or not await self._organization_effective_at(
+                    parent.id,
+                    payload.effective_from,
+                ):
+                    raise ApiError(
+                        status_code=409,
+                        code="ORGANIZATION_PARENT_NOT_EFFECTIVE",
+                        message="执行时上级组织不存在或在生效日期无有效版本",
+                    )
+            target = Organization(code=payload.code)
+            self._session.add(target)
+            await self._session.flush()
+            business_date = datetime.now(
+                ZoneInfo(get_settings().business_timezone)
+            ).date()
+            version = OrganizationVersion(
+                organization_id=target.id,
+                version=1,
+                name=payload.name,
+                organization_type_id=organization_type.id,
+                parent_organization_id=parent.id if parent else None,
+                country_code=payload.country_code,
+                status="active",
+                effective_from=payload.effective_from,
+                effective_to=payload.effective_to,
+                is_current=(
+                    payload.effective_from <= business_date
+                    and (
+                        payload.effective_to is None
+                        or payload.effective_to >= business_date
+                    )
+                ),
+                change_reason="主数据初始化导入",
+            )
+            self._session.add(version)
+            event_idempotency = uuid5(
+                NAMESPACE_URL,
+                f"corehr:organization-import:{batch.id}:{row.id}",
+            )
+            self._session.add_all(
+                [
+                    OrganizationEvent(
+                        organization_id=target.id,
+                        event_type="CREATE",
+                        effective_date=payload.effective_from,
+                        status="applied",
+                        payload={"organization_id": str(target.id), "version": 1},
+                        expected_version=1,
+                        idempotency_key=event_idempotency,
+                        change_reason="主数据初始化导入",
+                        applied_at=datetime.now(UTC),
+                    ),
+                    OutboxEvent(
+                        event_type="organization.created",
+                        aggregate_type="organization",
+                        aggregate_id=target.id,
+                        payload={"organization_id": str(target.id), "version": 1},
+                        occurred_at=datetime.now(UTC),
+                        attempt_count=0,
+                    ),
+                ]
             )
         else:
             raise ApiError(

@@ -6,6 +6,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from hris.modules.platform.import_models import ImportBatchRow
+from hris.modules.platform.governance_models import OutboxEvent
 from hris.modules.platform.models import (
     DataDictionary,
     DataDictionaryItem,
@@ -15,8 +16,11 @@ from hris.modules.workforce.models import (
     AuditLog,
     JobCatalog,
     LegalEntity,
+    Organization,
     OrganizationType,
+    OrganizationVersion,
 )
+from hris.modules.workforce.organization_models import OrganizationEvent
 
 
 pytestmark = pytest.mark.asyncio
@@ -56,6 +60,15 @@ async def _create_dictionary(client: AsyncClient, token: str) -> None:
             "name": "合成员工类型",
             "description": "仅用于自动化测试",
         },
+    )
+    assert response.status_code == 201, response.text
+
+
+async def _create_organization_type(client: AsyncClient, token: str) -> None:
+    response = await client.post(
+        "/api/v1/organization-types",
+        headers=_headers(token),
+        json={"code": "BU", "name": "合成业务单元", "sort_order": 30},
     )
     assert response.status_code == 201, response.text
 
@@ -450,6 +463,59 @@ async def test_dictionary_item_import_rejects_parent_cycle(
     )
 
 
+async def test_dictionary_item_import_rejects_child_of_rejected_parent(
+    business_client: AsyncClient,
+    admin_token: str,
+) -> None:
+    await _create_dictionary(business_client, admin_token)
+    response = await business_client.post(
+        "/api/v1/governance/import-batches/validate",
+        headers=_headers(admin_token),
+        json={
+            "entity_type": "dictionary_item",
+            "source_system": "synthetic_ehr",
+            "source_table": "synthetic_rejected_dictionary_parent",
+            "idempotency_key": str(uuid4()),
+            "rows": [
+                {
+                    "source_record_id": "duplicate-parent-1",
+                    "data": {
+                        "dictionary_code": "EMPLOYEE_TYPE",
+                        "code": "DUPLICATE_PARENT",
+                        "name": "合成重复父项一",
+                    },
+                },
+                {
+                    "source_record_id": "duplicate-parent-2",
+                    "data": {
+                        "dictionary_code": "EMPLOYEE_TYPE",
+                        "code": "DUPLICATE_PARENT",
+                        "name": "合成重复父项二",
+                    },
+                },
+                {
+                    "source_record_id": "dependent-child",
+                    "data": {
+                        "dictionary_code": "EMPLOYEE_TYPE",
+                        "code": "DEPENDENT_CHILD",
+                        "name": "合成依赖子项",
+                        "parent_item_code": "DUPLICATE_PARENT",
+                    },
+                },
+            ],
+        },
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["rejected_rows"] == 3
+    child = next(
+        row for row in body["rows"] if row["source_record_id"] == "dependent-child"
+    )
+    assert "DICTIONARY_PARENT_REJECTED" in {
+        error["code"] for error in child["errors"]
+    }
+
+
 async def test_new_batch_skips_same_source_and_rejects_changed_source(
     business_client: AsyncClient,
     db_session: AsyncSession,
@@ -541,3 +607,166 @@ async def test_invalid_sensitive_column_is_rejected_without_storing_raw_payload(
     )
     assert stored is not None
     assert stored.payload == {}
+
+
+async def test_organization_import_orders_parent_before_child_and_preserves_codes(
+    business_client: AsyncClient,
+    db_session: AsyncSession,
+    admin_token: str,
+) -> None:
+    await _create_organization_type(business_client, admin_token)
+    validated = await business_client.post(
+        "/api/v1/governance/import-batches/validate",
+        headers=_headers(admin_token),
+        json={
+            "entity_type": "organization",
+            "source_system": "synthetic_ehr",
+            "source_table": "synthetic_organizations",
+            "idempotency_key": str(uuid4()),
+            "rows": [
+                {
+                    "source_record_id": "child-org",
+                    "data": {
+                        "code": "HIST-CHILD-001",
+                        "name": "合成子组织",
+                        "organization_type_code": "BU",
+                        "parent_code": "HIST-PARENT-001",
+                        "country_code": "CN",
+                        "effective_from": "2026-01-01",
+                    },
+                },
+                {
+                    "source_record_id": "parent-org",
+                    "data": {
+                        "code": "HIST-PARENT-001",
+                        "name": "合成父组织",
+                        "organization_type_code": "BU",
+                        "country_code": "CN",
+                        "effective_from": "2025-01-01",
+                    },
+                },
+            ],
+        },
+    )
+    assert validated.status_code == 201, validated.text
+    assert validated.json()["status"] == "validated"
+    assert validated.json()["valid_rows"] == 2
+
+    executed = await business_client.post(
+        f"/api/v1/governance/import-batches/{validated.json()['id']}/execute",
+        headers=_headers(admin_token),
+        json={"reason": "导入合成历史组织编码"},
+    )
+    assert executed.status_code == 200, executed.text
+    assert executed.json()["status"] == "completed"
+    assert executed.json()["imported_rows"] == 2
+
+    parent = await db_session.scalar(
+        select(Organization).where(Organization.code == "HIST-PARENT-001")
+    )
+    child = await db_session.scalar(
+        select(Organization).where(Organization.code == "HIST-CHILD-001")
+    )
+    assert parent is not None and child is not None
+    child_version = await db_session.scalar(
+        select(OrganizationVersion).where(
+            OrganizationVersion.organization_id == child.id
+        )
+    )
+    assert child_version is not None
+    assert child_version.parent_organization_id == parent.id
+    assert await db_session.scalar(
+        select(func.count()).select_from(OrganizationEvent).where(
+            OrganizationEvent.organization_id.in_([parent.id, child.id]),
+            OrganizationEvent.event_type == "CREATE",
+        )
+    ) == 2
+    assert await db_session.scalar(
+        select(func.count()).select_from(OutboxEvent).where(
+            OutboxEvent.aggregate_id.in_([parent.id, child.id]),
+            OutboxEvent.event_type == "organization.created",
+        )
+    ) == 2
+
+
+async def test_organization_import_rejects_unknown_relations_and_cycles(
+    business_client: AsyncClient,
+    admin_token: str,
+) -> None:
+    await _create_organization_type(business_client, admin_token)
+    response = await business_client.post(
+        "/api/v1/governance/import-batches/validate",
+        headers=_headers(admin_token),
+        json={
+            "entity_type": "organization",
+            "source_system": "synthetic_ehr",
+            "source_table": "synthetic_invalid_organizations",
+            "idempotency_key": str(uuid4()),
+            "rows": [
+                {
+                    "source_record_id": "unknown-type",
+                    "data": {
+                        "code": "UNKNOWN-TYPE",
+                        "name": "合成未知类型组织",
+                        "organization_type_code": "UNKNOWN",
+                        "effective_from": "2026-01-01",
+                    },
+                },
+                {
+                    "source_record_id": "cycle-a",
+                    "data": {
+                        "code": "CYCLE-A",
+                        "name": "合成循环A",
+                        "organization_type_code": "BU",
+                        "parent_code": "CYCLE-B",
+                        "effective_from": "2026-01-01",
+                    },
+                },
+                {
+                    "source_record_id": "cycle-b",
+                    "data": {
+                        "code": "CYCLE-B",
+                        "name": "合成循环B",
+                        "organization_type_code": "BU",
+                        "parent_code": "CYCLE-A",
+                        "effective_from": "2026-01-01",
+                    },
+                },
+                {
+                    "source_record_id": "missing-parent",
+                    "data": {
+                        "code": "MISSING-PARENT",
+                        "name": "合成缺失上级组织",
+                        "organization_type_code": "BU",
+                        "parent_code": "NOT-FOUND",
+                        "effective_from": "2026-01-01",
+                    },
+                },
+                {
+                    "source_record_id": "child-of-rejected-parent",
+                    "data": {
+                        "code": "CHILD-OF-REJECTED",
+                        "name": "合成被拒父级的子组织",
+                        "organization_type_code": "BU",
+                        "parent_code": "UNKNOWN-TYPE",
+                        "effective_from": "2026-01-01",
+                    },
+                },
+            ],
+        },
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["status"] == "validated_with_errors"
+    assert body["rejected_rows"] == 5
+    errors_by_source = {
+        row["source_record_id"]: {error["code"] for error in row["errors"]}
+        for row in body["rows"]
+    }
+    assert "ORGANIZATION_TYPE_NOT_FOUND" in errors_by_source["unknown-type"]
+    assert "ORGANIZATION_PARENT_CYCLE" in errors_by_source["cycle-a"]
+    assert "ORGANIZATION_PARENT_CYCLE" in errors_by_source["cycle-b"]
+    assert "ORGANIZATION_PARENT_NOT_FOUND" in errors_by_source["missing-parent"]
+    assert "ORGANIZATION_PARENT_REJECTED" in errors_by_source[
+        "child-of-rejected-parent"
+    ]

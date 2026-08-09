@@ -4,6 +4,7 @@ export type ImportEntityType =
   | "organization_type"
   | "legal_entity"
   | "job"
+  | "organization"
 
 
 export interface ImportTemplate {

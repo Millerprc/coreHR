@@ -1,5 +1,5 @@
 import json
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, Literal
 from uuid import UUID
 
@@ -12,6 +12,7 @@ ImportEntityType = Literal[
     "organization_type",
     "legal_entity",
     "job",
+    "organization",
 ]
 
 
@@ -61,6 +62,25 @@ class DictionaryItemImport(ImportRequest):
     )
     sort_order: int = Field(default=0, ge=0)
     description: str | None = Field(default=None, max_length=1000)
+
+
+class OrganizationImport(ImportRequest):
+    code: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,49}$")
+    name: str = Field(min_length=1, max_length=200)
+    organization_type_code: str = Field(pattern=r"^[A-Z][A-Z0-9_]{0,49}$")
+    parent_code: str | None = Field(
+        default=None,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,49}$",
+    )
+    country_code: str | None = Field(default=None, pattern=r"^[A-Z]{2,3}$")
+    effective_from: date
+    effective_to: date | None = None
+
+    @model_validator(mode="after")
+    def validate_effective_period(self) -> "OrganizationImport":
+        if self.effective_to is not None and self.effective_to < self.effective_from:
+            raise ValueError("effective_to不能早于effective_from")
+        return self
 
 
 class ImportRowError(BaseModel):
