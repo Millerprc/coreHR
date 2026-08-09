@@ -270,6 +270,19 @@ async def set_bp_service_scopes(
 
 
 @router.get(
+    "/api/v1/bp-memberships/{membership_id}",
+    response_model=BpMembershipView,
+)
+async def get_bp_membership(
+    membership_id: UUID,
+    request: Request,
+    db: DbSession,
+    user: OrganizationViewer,
+) -> BpMembershipView:
+    return await service(db, user, request).get_bp_membership(membership_id)
+
+
+@router.get(
     "/api/v1/organizations/{organization_id}/relations",
     response_model=OrganizationRelationsView,
 )

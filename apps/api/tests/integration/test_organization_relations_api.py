@@ -211,6 +211,14 @@ async def test_legal_leader_and_bp_relations_are_effective_dated(
     assert future_scopes.json()["version"] == 3
     assert future_scopes.json()["organization_ids"] == [str(second_org.id)]
 
+    membership_view = await business_client.get(
+        f"/api/v1/bp-memberships/{membership.json()['id']}",
+        headers=_auth(restricted_token),
+    )
+    assert membership_view.status_code == 200
+    assert membership_view.json()["version"] == 3
+    assert membership_view.json()["organization_ids"] == [str(second_org.id)]
+
     cleared = await business_client.put(
         f"/api/v1/organizations/{first_org.id}/legal-entities",
         headers=_auth(admin_token),

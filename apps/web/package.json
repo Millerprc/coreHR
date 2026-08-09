@@ -7,7 +7,7 @@
     "dev": "vite --host 0.0.0.0",
     "build": "tsc -b && vite build",
     "test": "vitest",
-    "test:run": "vitest run --maxWorkers=1 --minWorkers=1"
+    "test:run": "vitest run --config vitest.config.ts --maxWorkers=1 --minWorkers=1"
   },
   "dependencies": {
     "antd": "6.5.2",
@@ -26,4 +26,3 @@
     "vitest": "3.2.7"
   }
 }
-

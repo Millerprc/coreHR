@@ -1,0 +1,45 @@
+export type WorkspaceKey =
+  | "dashboard"
+  | "configuration"
+  | "organization"
+  | "people"
+  | "headcount"
+  | "recruitment"
+  | "governance"
+
+
+export interface WorkspaceDefinition {
+  readonly key: WorkspaceKey
+  readonly label: string
+  readonly permission?: string
+  readonly available: boolean
+}
+
+
+export const workspaces: readonly WorkspaceDefinition[] = [
+  { key: "dashboard", label: "工作台", available: true },
+  {
+    key: "configuration",
+    label: "配置中心",
+    permission: "CONFIGURATION_VIEW",
+    available: true,
+  },
+  {
+    key: "organization",
+    label: "组织中心",
+    permission: "ORGANIZATION_VIEW",
+    available: true,
+  },
+  { key: "people", label: "人员中心", available: false },
+  { key: "headcount", label: "人力与编制", available: false },
+  { key: "recruitment", label: "招聘需求", available: false },
+  { key: "governance", label: "数据治理", available: false },
+]
+
+
+export function workspaceFromHash(hash: string): WorkspaceKey {
+  const key = hash.replace(/^#/, "") as WorkspaceKey
+  return workspaces.some((workspace) => workspace.key === key && workspace.available)
+    ? key
+    : "dashboard"
+}

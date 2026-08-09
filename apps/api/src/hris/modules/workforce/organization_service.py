@@ -963,8 +963,6 @@ class OrganizationService:
                 or existing_event.payload.get("membership_id") != str(membership_id)
             ):
                 self._raise_idempotency_conflict()
-            return await self._bp_membership_view(membership_id)
-
         membership = await self._session.get(PersonBpMembership, membership_id)
         if membership is None or membership.status != "active":
             raise ApiError(
@@ -1053,6 +1051,12 @@ class OrganizationService:
             },
         )
         return await self._bp_membership_view(membership.id)
+
+    async def get_bp_membership(
+        self,
+        membership_id: UUID,
+    ) -> BpMembershipView:
+        return await self._bp_membership_view(membership_id)
 
     async def get_relations(
         self,

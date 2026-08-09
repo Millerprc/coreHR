@@ -17,10 +17,17 @@ export default defineConfig({
       },
     },
   },
+  build: {
+    rollupOptions: {
+      input: {
+        overview: "index.html",
+        business: "business.html",
+      },
+    },
+  },
   test: {
     environment: "jsdom",
     setupFiles: ["./src/test/setup.ts"],
     globals: true,
   },
 })
-
