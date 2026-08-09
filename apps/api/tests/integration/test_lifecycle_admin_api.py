@@ -1,0 +1,142 @@
+from datetime import date, timedelta
+
+import pytest
+from httpx import AsyncClient
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from hris.modules.workforce.models import JobCatalog, LegalEntity, Organization, Person
+
+
+pytestmark = pytest.mark.asyncio
+
+
+def _auth(token: str) -> dict[str, str]:
+    return {"Authorization": f"Bearer {token}"}
+
+
+async def test_candidate_application_and_contract_admin_lifecycle(
+    business_client: AsyncClient,
+    admin_token: str,
+    db_session: AsyncSession,
+) -> None:
+    today = date.today()
+    organization = Organization(code="735001")
+    job = JobCatalog(
+        code="JOB-LIFECYCLE",
+        name="Synthetic lifecycle job",
+        status="active",
+        effective_from=today - timedelta(days=1),
+        attributes={},
+    )
+    legal = LegalEntity(
+        code="LE-LIFECYCLE",
+        name="Synthetic lifecycle legal entity",
+        country_code="CN",
+        status="active",
+        effective_from=today - timedelta(days=1),
+    )
+    person = Person(employee_number="990004", display_name="Synthetic lifecycle person", status="active")
+    db_session.add_all([organization, job, legal, person])
+    await db_session.flush()
+
+    recruitment = await business_client.post(
+        "/api/v1/lifecycle/recruitment-requests",
+        headers=_auth(admin_token),
+        json={
+            "organization_id": str(organization.id),
+            "job_id": str(job.id),
+            "requested_count": 1,
+            "target_month": today.replace(day=1).isoformat(),
+            "reason": "Synthetic lifecycle recruitment",
+        },
+    )
+    assert recruitment.status_code == 201, recruitment.text
+
+    candidate = await business_client.post(
+        "/api/v1/lifecycle/candidates",
+        headers=_auth(admin_token),
+        json={
+            "display_name": "Synthetic candidate",
+            "contact_payload": {"mobile": "13800000000"},
+        },
+    )
+    assert candidate.status_code == 201, candidate.text
+    candidate_id = candidate.json()["id"]
+    candidate_page = await business_client.get(
+        "/api/v1/lifecycle/candidates?search=Synthetic",
+        headers=_auth(admin_token),
+    )
+    assert candidate_page.status_code == 200
+    assert candidate_page.json()["total"] == 1
+    converted = await business_client.patch(
+        f"/api/v1/lifecycle/candidates/{candidate_id}",
+        headers=_auth(admin_token),
+        json={
+            "status": "converted",
+            "linked_person_id": str(person.id),
+            "change_reason": "Candidate hired",
+        },
+    )
+    assert converted.status_code == 200, converted.text
+    assert converted.json()["linked_person_id"] == str(person.id)
+
+    application = await business_client.post(
+        "/api/v1/lifecycle/applications",
+        headers=_auth(admin_token),
+        json={
+            "candidate_id": candidate_id,
+            "recruitment_request_id": recruitment.json()["id"],
+            "current_stage": "screening",
+        },
+    )
+    assert application.status_code == 201, application.text
+    application_id = application.json()["id"]
+    for next_status in ("screening", "interview", "offer", "hired"):
+        updated = await business_client.patch(
+            f"/api/v1/lifecycle/applications/{application_id}",
+            headers=_auth(admin_token),
+            json={
+                "status": next_status,
+                "current_stage": next_status,
+                "offer_payload": {"result": "accepted"} if next_status == "hired" else {},
+                "change_reason": f"Move to {next_status}",
+            },
+        )
+        assert updated.status_code == 200, updated.text
+    application_page = await business_client.get(
+        "/api/v1/lifecycle/applications?status=hired",
+        headers=_auth(admin_token),
+    )
+    assert application_page.status_code == 200
+    assert application_page.json()["total"] == 1
+
+    contract = await business_client.post(
+        "/api/v1/lifecycle/contracts",
+        headers=_auth(admin_token),
+        json={
+            "person_id": str(person.id),
+            "contract_type_code": "LABOR",
+            "contract_number": "SYN-LC-001",
+            "legal_entity_id": str(legal.id),
+            "effective_from": today.isoformat(),
+            "metadata_payload": {"source": "synthetic"},
+        },
+    )
+    assert contract.status_code == 201, contract.text
+    contract_id = contract.json()["id"]
+    terminated = await business_client.patch(
+        f"/api/v1/lifecycle/contracts/{contract_id}",
+        headers=_auth(admin_token),
+        json={
+            "status": "terminated",
+            "effective_to": today.isoformat(),
+            "change_reason": "Synthetic contract close",
+        },
+    )
+    assert terminated.status_code == 200, terminated.text
+    contract_page = await business_client.get(
+        f"/api/v1/lifecycle/contracts?person_id={person.id}",
+        headers=_auth(admin_token),
+    )
+    assert contract_page.status_code == 200
+    assert contract_page.json()["items"][0]["status"] == "terminated"

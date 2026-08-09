@@ -1,21 +1,26 @@
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from hris.core.errors import ApiError
 from hris.modules.platform.numbering import next_number
 from hris.modules.workflow.extended_schemas import (
     CandidateCreate,
+    CandidateUpdate,
     ContractCreate,
+    ContractUpdate,
     HrEventCreate,
     HrEventRollbackCreate,
     JobApplicationCreate,
+    JobApplicationUpdate,
     RecruitmentRequestCreate,
     RecruitmentRequestUpdate,
     WorkflowInstanceCreate,
+    WorkflowTaskDecision,
 )
 from hris.modules.workflow.models import (
     Candidate,
@@ -23,11 +28,13 @@ from hris.modules.workflow.models import (
     JobApplication,
     WorkflowDefinition,
     WorkflowInstance,
+    WorkflowTask,
     WorkflowVersion,
 )
 from hris.modules.workforce.models import (
     AuditLog,
     Employment,
+    EmploymentAssignment,
     HrEvent,
     JobCatalog,
     LegalEntity,
@@ -93,6 +100,74 @@ class LifecycleService:
             object_type="candidate",
             object_id=candidate.id,
             after={"candidate_number": candidate.candidate_number},
+        )
+        return candidate
+
+    async def list_candidates(
+        self,
+        *,
+        status: str | None,
+        search: str | None,
+        limit: int,
+        offset: int,
+    ) -> tuple[list[Candidate], int]:
+        filters = []
+        if status is not None:
+            filters.append(Candidate.status == status)
+        if search:
+            term = f"%{search.strip()}%"
+            filters.append(
+                or_(
+                    Candidate.candidate_number.ilike(term),
+                    Candidate.display_name.ilike(term),
+                )
+            )
+        total = await self._session.scalar(
+            select(func.count()).select_from(Candidate).where(*filters)
+        )
+        items = list(
+            (
+                await self._session.scalars(
+                    select(Candidate)
+                    .where(*filters)
+                    .order_by(Candidate.created_at.desc())
+                    .limit(limit)
+                    .offset(offset)
+                )
+            ).all()
+        )
+        return items, total or 0
+
+    async def get_candidate(self, candidate_id: UUID) -> Candidate:
+        candidate = await self._session.get(Candidate, candidate_id)
+        if candidate is None:
+            raise ApiError(status_code=404, code="CANDIDATE_NOT_FOUND", message="candidate not found")
+        return candidate
+
+    async def update_candidate(
+        self,
+        candidate_id: UUID,
+        payload: CandidateUpdate,
+    ) -> Candidate:
+        candidate = await self._session.get(Candidate, candidate_id, with_for_update=True)
+        if candidate is None:
+            raise ApiError(status_code=404, code="CANDIDATE_NOT_FOUND", message="candidate not found")
+        changes = payload.model_dump(exclude={"change_reason"}, exclude_unset=True)
+        linked_person_id = changes.get("linked_person_id")
+        if linked_person_id is not None and await self._session.get(Person, linked_person_id) is None:
+            raise ApiError(status_code=404, code="PERSON_NOT_FOUND", message="person not found")
+        before = {field: getattr(candidate, field) for field in changes}
+        for field, value in changes.items():
+            setattr(candidate, field, value)
+        await self._session.flush()
+        await self._session.refresh(candidate)
+        self._audit(
+            action="update",
+            object_type="candidate",
+            object_id=candidate.id,
+            reason=payload.change_reason,
+            before={field: str(value) if isinstance(value, UUID) else value for field, value in before.items()},
+            after={field: str(value) if isinstance(value, UUID) else value for field, value in changes.items()},
         )
         return candidate
 
@@ -259,6 +334,83 @@ class LifecycleService:
         )
         return application
 
+    async def list_applications(
+        self,
+        *,
+        status: str | None,
+        candidate_id: UUID | None,
+        recruitment_request_id: UUID | None,
+        limit: int,
+        offset: int,
+    ) -> tuple[list[JobApplication], int]:
+        filters = []
+        if status is not None:
+            filters.append(JobApplication.status == status)
+        if candidate_id is not None:
+            filters.append(JobApplication.candidate_id == candidate_id)
+        if recruitment_request_id is not None:
+            filters.append(JobApplication.recruitment_request_id == recruitment_request_id)
+        total = await self._session.scalar(
+            select(func.count()).select_from(JobApplication).where(*filters)
+        )
+        items = list(
+            (
+                await self._session.scalars(
+                    select(JobApplication)
+                    .where(*filters)
+                    .order_by(JobApplication.created_at.desc())
+                    .limit(limit)
+                    .offset(offset)
+                )
+            ).all()
+        )
+        return items, total or 0
+
+    async def get_application(self, application_id: UUID) -> JobApplication:
+        application = await self._session.get(JobApplication, application_id)
+        if application is None:
+            raise ApiError(status_code=404, code="APPLICATION_NOT_FOUND", message="application not found")
+        return application
+
+    async def update_application(
+        self,
+        application_id: UUID,
+        payload: JobApplicationUpdate,
+    ) -> JobApplication:
+        application = await self._session.get(JobApplication, application_id, with_for_update=True)
+        if application is None:
+            raise ApiError(status_code=404, code="APPLICATION_NOT_FOUND", message="application not found")
+        changes = payload.model_dump(exclude={"change_reason"}, exclude_unset=True)
+        allowed_transitions = {
+            "active": {"active", "screening", "interview", "rejected", "withdrawn"},
+            "screening": {"screening", "interview", "rejected", "withdrawn"},
+            "interview": {"interview", "offer", "rejected", "withdrawn"},
+            "offer": {"offer", "hired", "rejected", "withdrawn"},
+            "hired": {"hired"},
+            "rejected": {"rejected"},
+            "withdrawn": {"withdrawn"},
+        }
+        next_status = changes.get("status")
+        if next_status is not None and next_status not in allowed_transitions.get(application.status, set()):
+            raise ApiError(
+                status_code=409,
+                code="APPLICATION_STATUS_TRANSITION_INVALID",
+                message="application status transition is not allowed",
+            )
+        before = {field: getattr(application, field) for field in changes}
+        for field, value in changes.items():
+            setattr(application, field, value)
+        await self._session.flush()
+        self._audit(
+            action="update",
+            object_type="job_application",
+            object_id=application.id,
+            reason=payload.change_reason,
+            before=before,
+            after=changes,
+        )
+        return application
+
     async def create_contract(self, payload: ContractCreate) -> ContractRecord:
         if await self._session.get(Person, payload.person_id) is None:
             raise ApiError(status_code=404, code="PERSON_NOT_FOUND", message="人员不存在")
@@ -282,6 +434,78 @@ class LifecycleService:
             object_type="contract",
             object_id=contract.id,
             after={"contract_number": contract.contract_number},
+        )
+        return contract
+
+    async def list_contracts(
+        self,
+        *,
+        status: str | None,
+        person_id: UUID | None,
+        limit: int,
+        offset: int,
+    ) -> tuple[list[ContractRecord], int]:
+        filters = []
+        if status is not None:
+            filters.append(ContractRecord.status == status)
+        if person_id is not None:
+            filters.append(ContractRecord.person_id == person_id)
+        total = await self._session.scalar(
+            select(func.count()).select_from(ContractRecord).where(*filters)
+        )
+        items = list(
+            (
+                await self._session.scalars(
+                    select(ContractRecord)
+                    .where(*filters)
+                    .order_by(ContractRecord.created_at.desc())
+                    .limit(limit)
+                    .offset(offset)
+                )
+            ).all()
+        )
+        return items, total or 0
+
+    async def get_contract(self, contract_id: UUID) -> ContractRecord:
+        contract = await self._session.get(ContractRecord, contract_id)
+        if contract is None:
+            raise ApiError(status_code=404, code="CONTRACT_NOT_FOUND", message="contract not found")
+        return contract
+
+    async def update_contract(
+        self,
+        contract_id: UUID,
+        payload: ContractUpdate,
+    ) -> ContractRecord:
+        contract = await self._session.get(ContractRecord, contract_id, with_for_update=True)
+        if contract is None:
+            raise ApiError(status_code=404, code="CONTRACT_NOT_FOUND", message="contract not found")
+        changes = payload.model_dump(exclude={"change_reason"}, exclude_unset=True)
+        next_end = changes.get("effective_to", contract.effective_to)
+        if next_end is not None and next_end < contract.effective_from:
+            raise ApiError(
+                status_code=422,
+                code="CONTRACT_EFFECTIVE_PERIOD_INVALID",
+                message="contract end date cannot be earlier than its start date",
+            )
+        before = {
+            field: value.isoformat() if isinstance(value, date) else value
+            for field in changes
+            for value in [getattr(contract, field)]
+        }
+        for field, value in changes.items():
+            setattr(contract, field, value)
+        await self._session.flush()
+        self._audit(
+            action="update",
+            object_type="contract",
+            object_id=contract.id,
+            reason=payload.change_reason,
+            before=before,
+            after={
+                field: value.isoformat() if isinstance(value, date) else value
+                for field, value in changes.items()
+            },
         )
         return contract
 
@@ -349,6 +573,14 @@ class LifecycleService:
         )
         self._session.add(instance)
         await self._session.flush()
+        if payload.business_object_type == "hr_event":
+            event = await self._session.get(HrEvent, payload.business_object_id, with_for_update=True)
+            if event is None:
+                raise ApiError(status_code=404, code="HR_EVENT_NOT_FOUND", message="人事事件不存在")
+            if event.status != "pending_approval":
+                raise ApiError(status_code=409, code="HR_EVENT_NOT_PENDING_APPROVAL", message="人事事件不在待审批状态")
+            event.workflow_instance_id = instance.id
+        await self._advance_workflow(instance, version, instance.current_node_code)
         self._audit(
             action="start",
             object_type="workflow_instance",
@@ -357,7 +589,508 @@ class LifecycleService:
         )
         return instance
 
+    async def list_workflow_instances(
+        self,
+        *,
+        status: str | None,
+        limit: int,
+        offset: int,
+    ) -> tuple[list[WorkflowInstance], int]:
+        filters = [WorkflowInstance.status == status] if status else []
+        total = await self._session.scalar(
+            select(func.count()).select_from(WorkflowInstance).where(*filters)
+        )
+        items = list(
+            (
+                await self._session.scalars(
+                    select(WorkflowInstance)
+                    .where(*filters)
+                    .order_by(WorkflowInstance.started_at.desc())
+                    .limit(limit)
+                    .offset(offset)
+                )
+            ).all()
+        )
+        return items, total or 0
+
+    async def workflow_instance_detail(
+        self,
+        instance_id: UUID,
+    ) -> tuple[WorkflowInstance, list[WorkflowTask]]:
+        instance = await self._session.get(WorkflowInstance, instance_id)
+        if instance is None:
+            raise ApiError(status_code=404, code="WORKFLOW_INSTANCE_NOT_FOUND", message="流程实例不存在")
+        tasks = list(
+            (
+                await self._session.scalars(
+                    select(WorkflowTask)
+                    .where(WorkflowTask.workflow_instance_id == instance_id)
+                    .order_by(WorkflowTask.created_at, WorkflowTask.id)
+                )
+            ).all()
+        )
+        return instance, tasks
+
+    async def list_workflow_tasks(
+        self,
+        *,
+        status: str | None,
+        assignee_ref: str | None,
+        limit: int,
+        offset: int,
+    ) -> tuple[list[WorkflowTask], int]:
+        filters = []
+        if status is not None:
+            filters.append(WorkflowTask.status == status)
+        if assignee_ref is not None:
+            filters.append(WorkflowTask.assignee_ref == assignee_ref)
+        total = await self._session.scalar(
+            select(func.count()).select_from(WorkflowTask).where(*filters)
+        )
+        items = list(
+            (
+                await self._session.scalars(
+                    select(WorkflowTask)
+                    .where(*filters)
+                    .order_by(WorkflowTask.created_at.desc())
+                    .limit(limit)
+                    .offset(offset)
+                )
+            ).all()
+        )
+        return items, total or 0
+
+    async def _advance_workflow(
+        self,
+        instance: WorkflowInstance,
+        version: WorkflowVersion,
+        from_node_code: str | None,
+    ) -> None:
+        nodes = {node["code"]: node for node in version.definition.get("nodes", [])}
+        edges = version.definition.get("edges", [])
+        current_code = from_node_code
+        while current_code is not None:
+            current = nodes.get(current_code)
+            if current is None:
+                raise ApiError(status_code=422, code="WORKFLOW_NODE_NOT_FOUND", message="流程实例引用了无效节点")
+            if current.get("node_type") == "end":
+                instance.status = "completed"
+                instance.current_node_code = current_code
+                instance.completed_at = datetime.now(UTC)
+                await self._finish_workflow_business_object(instance, approved=True)
+                return
+            outgoing = [edge for edge in edges if edge.get("source") == current_code]
+            if not outgoing:
+                raise ApiError(status_code=422, code="WORKFLOW_ROUTE_MISSING", message="当前节点没有后续连线")
+            if len(outgoing) == 1:
+                next_code = outgoing[0].get("target")
+            else:
+                requested_routes = instance.context.get("route_targets", {})
+                next_code = requested_routes.get(current_code)
+                if next_code not in {edge.get("target") for edge in outgoing}:
+                    raise ApiError(
+                        status_code=422,
+                        code="WORKFLOW_ROUTE_REQUIRED",
+                        message="多分支节点必须在流程上下文中明确route_targets",
+                    )
+            next_node = nodes.get(next_code)
+            if next_node is None:
+                raise ApiError(status_code=422, code="WORKFLOW_NODE_NOT_FOUND", message="后续节点不存在")
+            instance.current_node_code = next_code
+            if next_node.get("node_type") == "approval":
+                configured = next_node.get("assignees") or (
+                    instance.context.get("assignees", {}).get(next_code, [])
+                )
+                assignees = configured or [
+                    {"assignee_type": "role", "assignee_ref": "SYSTEM_ADMIN"}
+                ]
+                self._session.add_all(
+                    [
+                        WorkflowTask(
+                            workflow_instance_id=instance.id,
+                            node_code=next_code,
+                            sign_mode=next_node.get("sign_mode") or "all",
+                            assignee_type=item["assignee_type"],
+                            assignee_ref=item["assignee_ref"],
+                            status="pending",
+                        )
+                        for item in assignees
+                    ]
+                )
+                await self._session.flush()
+                return
+            current_code = next_code
+
+    async def decide_workflow_task(
+        self,
+        task_id: UUID,
+        payload: WorkflowTaskDecision,
+    ) -> WorkflowTask:
+        task = await self._session.get(WorkflowTask, task_id, with_for_update=True)
+        if task is None:
+            raise ApiError(status_code=404, code="WORKFLOW_TASK_NOT_FOUND", message="审批任务不存在")
+        if task.status != "pending":
+            if task.decision == payload.decision:
+                return task
+            raise ApiError(status_code=409, code="WORKFLOW_TASK_ALREADY_DECIDED", message="审批任务已处理")
+        instance = await self._session.get(
+            WorkflowInstance,
+            task.workflow_instance_id,
+            with_for_update=True,
+        )
+        if instance is None or instance.status != "running":
+            raise ApiError(status_code=409, code="WORKFLOW_INSTANCE_NOT_RUNNING", message="流程实例不在运行中")
+        task.status = "completed"
+        task.decision = payload.decision
+        task.comment = payload.comment
+        task.decided_by = self._actor_id
+        task.decided_at = datetime.now(UTC)
+        await self._session.flush()
+        sibling_tasks = list(
+            (
+                await self._session.scalars(
+                    select(WorkflowTask).where(
+                        WorkflowTask.workflow_instance_id == instance.id,
+                        WorkflowTask.node_code == task.node_code,
+                    )
+                )
+            ).all()
+        )
+        if payload.decision == "reject":
+            for sibling in sibling_tasks:
+                if sibling.status == "pending":
+                    sibling.status = "cancelled"
+            instance.status = "rejected"
+            instance.completed_at = datetime.now(UTC)
+            await self._finish_workflow_business_object(instance, approved=False)
+        else:
+            pending = [item for item in sibling_tasks if item.status == "pending"]
+            if task.sign_mode == "any":
+                for sibling in pending:
+                    sibling.status = "cancelled"
+                pending = []
+            if not pending:
+                version = await self._session.get(WorkflowVersion, instance.workflow_version_id)
+                if version is None:
+                    raise ApiError(status_code=422, code="WORKFLOW_VERSION_MISSING", message="流程版本不存在")
+                await self._advance_workflow(instance, version, task.node_code)
+        self._audit(
+            action="decide",
+            object_type="workflow_task",
+            object_id=task.id,
+            after={"decision": task.decision, "instance_status": instance.status},
+        )
+        return task
+
+    async def _finish_workflow_business_object(
+        self,
+        instance: WorkflowInstance,
+        *,
+        approved: bool,
+    ) -> None:
+        if instance.business_object_type != "hr_event":
+            return
+        event = await self._session.get(HrEvent, instance.business_object_id, with_for_update=True)
+        if event is None:
+            raise ApiError(status_code=422, code="HR_EVENT_NOT_FOUND", message="流程关联的人事事件不存在")
+        event.status = "ready" if approved else "rejected"
+        if approved:
+            await self._execute_hr_event_if_due(event)
+
+    @staticmethod
+    def _business_today() -> date:
+        return datetime.now(ZoneInfo("Asia/Shanghai")).date()
+
+    async def _validate_hr_event(self, payload: HrEventCreate) -> None:
+        supported = {
+            "ONBOARDING",
+            "CONFIRMATION",
+            "TERMINATION",
+            "WITHDRAWAL",
+            "EMPLOYMENT_CORRECTION",
+            "TRANSFER",
+            "CONCURRENT_ASSIGNMENT",
+            "SECONDMENT",
+            "END_ASSIGNMENT",
+        }
+        if payload.event_type not in supported:
+            raise ApiError(status_code=422, code="HR_EVENT_TYPE_UNSUPPORTED", message="人事事件类型尚未注册执行器")
+        if payload.object_type != "employment":
+            raise ApiError(status_code=422, code="HR_EVENT_OBJECT_TYPE_INVALID", message="当前人事事件执行器只接受employment对象")
+        if await self._session.get(Employment, payload.object_id) is None:
+            raise ApiError(status_code=404, code="EMPLOYMENT_NOT_FOUND", message="劳动关系不存在")
+        if payload.event_type in {"TRANSFER", "CONCURRENT_ASSIGNMENT", "SECONDMENT"}:
+            if not payload.planned_payload.get("organization_id") or not payload.planned_payload.get("job_id"):
+                raise ApiError(status_code=422, code="HR_EVENT_ASSIGNMENT_TARGET_REQUIRED", message="组织职务事件必须提供目标组织和职务")
+        if payload.event_type == "END_ASSIGNMENT" and not payload.planned_payload.get("assignment_id"):
+            raise ApiError(status_code=422, code="HR_EVENT_ASSIGNMENT_REQUIRED", message="结束关系必须提供assignment_id")
+
+    @staticmethod
+    def _date_value(value: Any) -> date | None:
+        if value is None or isinstance(value, date):
+            return value
+        return date.fromisoformat(str(value))
+
+    async def _execute_employment_event(self, event: HrEvent, event_type: str) -> dict[str, Any]:
+        employment = await self._session.get(Employment, event.object_id, with_for_update=True)
+        if employment is None:
+            raise ApiError(status_code=404, code="EMPLOYMENT_NOT_FOUND", message="劳动关系不存在")
+        tracked_fields = [
+            "employee_type_code",
+            "status",
+            "planned_start_date",
+            "actual_start_date",
+            "probation_end_date",
+            "end_date",
+            "end_reason_code",
+            "contract_legal_entity_id",
+            "payroll_legal_entity_id",
+            "social_insurance_legal_entity_id",
+            "tax_legal_entity_id",
+        ]
+        before = {
+            field: (
+                value.isoformat() if isinstance(value, date) else str(value) if isinstance(value, UUID) else value
+            )
+            for field in tracked_fields
+            for value in [getattr(employment, field)]
+        }
+        changes: dict[str, Any]
+        if event.event_type.startswith("ROLLBACK_"):
+            changes = dict(event.planned_payload)
+        elif event_type == "ONBOARDING":
+            changes = {"status": "active", "actual_start_date": event.effective_date}
+        elif event_type == "CONFIRMATION":
+            changes = {"status": "active", "probation_end_date": event.effective_date}
+        elif event_type == "TERMINATION":
+            changes = {
+                "status": "terminated",
+                "end_date": event.effective_date,
+                "end_reason_code": event.planned_payload.get("end_reason_code"),
+            }
+        elif event_type == "WITHDRAWAL":
+            changes = {"status": "withdrawn"}
+            if event.effective_date >= employment.planned_start_date:
+                changes["end_date"] = event.effective_date
+        else:
+            changes = dict(event.planned_payload)
+        allowed_fields = set(tracked_fields)
+        invalid = set(changes) - allowed_fields
+        if invalid:
+            raise ApiError(status_code=422, code="HR_EVENT_FIELD_NOT_ALLOWED", message="人事事件包含不可修改字段")
+        date_fields = {"planned_start_date", "actual_start_date", "probation_end_date", "end_date"}
+        uuid_fields = {
+            "contract_legal_entity_id",
+            "payroll_legal_entity_id",
+            "social_insurance_legal_entity_id",
+            "tax_legal_entity_id",
+        }
+        for field, value in changes.items():
+            if field in date_fields:
+                value = self._date_value(value)
+            elif field in uuid_fields and value is not None:
+                value = UUID(str(value))
+            setattr(employment, field, value)
+        employment.version += 1
+        event.before_payload = before
+        return {
+            field: (
+                value.isoformat() if isinstance(value, date) else str(value) if isinstance(value, UUID) else value
+            )
+            for field in changes
+            if (value := getattr(employment, field)) is not None
+        } | {"version": employment.version}
+
+    async def _execute_assignment_event(self, event: HrEvent, event_type: str) -> dict[str, Any]:
+        if event.event_type.startswith("ROLLBACK_") and event_type in {
+            "CONCURRENT_ASSIGNMENT",
+            "SECONDMENT",
+            "END_ASSIGNMENT",
+        }:
+            original = await self._session.get(HrEvent, event.related_event_id) if event.related_event_id else None
+            assignment_id = original.actual_payload.get("assignment_id") if original else None
+            assignment = await self._session.get(EmploymentAssignment, UUID(str(assignment_id))) if assignment_id else None
+            if assignment is None:
+                raise ApiError(status_code=422, code="ASSIGNMENT_ROLLBACK_TARGET_MISSING", message="找不到要回退的组织职务关系")
+            event.before_payload = {"effective_to": assignment.effective_to.isoformat() if assignment.effective_to else None}
+            assignment.effective_to = event.effective_date
+            return {"assignment_id": str(assignment.id), "effective_to": event.effective_date.isoformat()}
+
+        payload = event.planned_payload
+        if event_type == "END_ASSIGNMENT":
+            assignment = await self._session.get(
+                EmploymentAssignment,
+                UUID(str(payload["assignment_id"])),
+                with_for_update=True,
+            )
+            if assignment is None or assignment.employment_id != event.object_id:
+                raise ApiError(status_code=404, code="ASSIGNMENT_NOT_FOUND", message="组织职务关系不存在")
+            event.before_payload = {"effective_to": assignment.effective_to.isoformat() if assignment.effective_to else None}
+            assignment.effective_to = event.effective_date
+            return {"assignment_id": str(assignment.id), "effective_to": event.effective_date.isoformat()}
+
+        relation_type = {
+            "TRANSFER": "primary",
+            "CONCURRENT_ASSIGNMENT": "concurrent",
+            "SECONDMENT": "secondment",
+        }[event_type]
+        organization_id = UUID(str(payload["organization_id"]))
+        job_id = UUID(str(payload["job_id"]))
+        if await self._session.get(Organization, organization_id) is None:
+            raise ApiError(status_code=404, code="ORGANIZATION_NOT_FOUND", message="组织不存在")
+        if await self._session.get(JobCatalog, job_id) is None:
+            raise ApiError(status_code=404, code="JOB_NOT_FOUND", message="职务不存在")
+        before: dict[str, Any] = {}
+        if relation_type == "primary":
+            current = await self._session.scalar(
+                select(EmploymentAssignment)
+                .where(
+                    EmploymentAssignment.employment_id == event.object_id,
+                    EmploymentAssignment.relation_type == "primary",
+                    EmploymentAssignment.effective_from <= event.effective_date,
+                    or_(
+                        EmploymentAssignment.effective_to.is_(None),
+                        EmploymentAssignment.effective_to >= event.effective_date,
+                    ),
+                )
+                .order_by(EmploymentAssignment.version.desc())
+                .limit(1)
+                .with_for_update()
+            )
+            if current is not None:
+                if current.effective_from >= event.effective_date:
+                    raise ApiError(status_code=409, code="ASSIGNMENT_EVENT_DATE_NOT_FORWARD", message="变更生效日期必须晚于当前主关系生效日期")
+                before = {
+                    "organization_id": str(current.organization_id),
+                    "job_id": str(current.job_id) if current.job_id else None,
+                    "effective_from": current.effective_from.isoformat(),
+                }
+                current.effective_to = event.effective_date - timedelta(days=1)
+        version = (
+            await self._session.scalar(
+                select(func.max(EmploymentAssignment.version)).where(
+                    EmploymentAssignment.employment_id == event.object_id
+                )
+            )
+            or 0
+        ) + 1
+        assignment = EmploymentAssignment(
+            employment_id=event.object_id,
+            organization_id=organization_id,
+            job_id=job_id,
+            relation_type=relation_type,
+            effective_from=event.effective_date,
+            effective_to=self._date_value(payload.get("effective_to")),
+            source_event_id=event.id,
+            version=version,
+        )
+        self._session.add(assignment)
+        await self._session.flush()
+        event.before_payload = before
+        return {
+            "assignment_id": str(assignment.id),
+            "organization_id": str(assignment.organization_id),
+            "job_id": str(assignment.job_id),
+            "relation_type": assignment.relation_type,
+            "version": assignment.version,
+        }
+
+    async def _execute_hr_event_if_due(self, event: HrEvent, as_of: date | None = None) -> bool:
+        process_date = as_of or self._business_today()
+        if event.effective_date > process_date:
+            event.status = "scheduled"
+            return False
+        if event.status not in {"ready", "scheduled", "failed"}:
+            return False
+        event_type = event.event_type.removeprefix("ROLLBACK_")
+        if event_type in {
+            "ONBOARDING",
+            "CONFIRMATION",
+            "TERMINATION",
+            "WITHDRAWAL",
+            "EMPLOYMENT_CORRECTION",
+        }:
+            actual = await self._execute_employment_event(event, event_type)
+        else:
+            actual = await self._execute_assignment_event(event, event_type)
+        event.actual_payload = actual
+        event.status = "completed"
+        event.attempts += 1
+        event.last_error = None
+        event.executed_at = datetime.now(UTC)
+        await self._session.flush()
+        self._audit(
+            action="execute",
+            object_type="hr_event",
+            object_id=event.id,
+            reason=event.reason,
+            before=event.before_payload,
+            after=event.actual_payload,
+        )
+        return True
+
+    async def list_hr_events(
+        self,
+        *,
+        status: str | None,
+        limit: int,
+        offset: int,
+    ) -> tuple[list[HrEvent], int]:
+        filters = [HrEvent.status == status] if status else []
+        total = await self._session.scalar(select(func.count()).select_from(HrEvent).where(*filters))
+        items = list(
+            (
+                await self._session.scalars(
+                    select(HrEvent)
+                    .where(*filters)
+                    .order_by(HrEvent.created_at.desc())
+                    .limit(limit)
+                    .offset(offset)
+                )
+            ).all()
+        )
+        return items, total or 0
+
+    async def get_hr_event(self, event_id: UUID) -> HrEvent:
+        event = await self._session.get(HrEvent, event_id)
+        if event is None:
+            raise ApiError(status_code=404, code="HR_EVENT_NOT_FOUND", message="人事事件不存在")
+        return event
+
+    async def process_due_hr_events(
+        self,
+        as_of: date | None,
+    ) -> tuple[list[UUID], list[dict[str, str]]]:
+        process_date = as_of or self._business_today()
+        event_ids = list(
+            (
+                await self._session.scalars(
+                    select(HrEvent.id).where(
+                        HrEvent.status.in_(("ready", "scheduled", "failed")),
+                        HrEvent.effective_date <= process_date,
+                    )
+                )
+            ).all()
+        )
+        processed: list[UUID] = []
+        failed: list[dict[str, str]] = []
+        for event_id in event_ids:
+            try:
+                async with self._session.begin_nested():
+                    event = await self._session.get(HrEvent, event_id, with_for_update=True)
+                    if event is not None and await self._execute_hr_event_if_due(event, process_date):
+                        processed.append(event.id)
+            except (ApiError, ValueError) as caught:
+                event = await self._session.get(HrEvent, event_id, with_for_update=True)
+                if event is not None:
+                    event.status = "failed"
+                    event.attempts += 1
+                    event.last_error = str(caught)
+                failed.append({"event_id": str(event_id), "error": str(caught)})
+        return processed, failed
+
     async def create_hr_event(self, payload: HrEventCreate) -> HrEvent:
+        await self._validate_hr_event(payload)
         number = await next_number(
             self._session,
             sequence_code="HR_EVENT_NUMBER",
@@ -383,6 +1116,8 @@ class LifecycleService:
         )
         self._session.add(event)
         await self._session.flush()
+        if payload.execution_mode == "direct":
+            await self._execute_hr_event_if_due(event)
         self._audit(
             action="create",
             object_type="hr_event",
@@ -399,6 +1134,8 @@ class LifecycleService:
         original = await self._session.get(HrEvent, event_id)
         if original is None:
             raise ApiError(status_code=404, code="HR_EVENT_NOT_FOUND", message="人事事件不存在")
+        if original.status != "completed":
+            raise ApiError(status_code=409, code="HR_EVENT_NOT_COMPLETED", message="只有已生效的人事事件可以回退")
         number = await next_number(
             self._session,
             sequence_code="HR_EVENT_NUMBER",
@@ -424,6 +1161,8 @@ class LifecycleService:
         )
         self._session.add(rollback)
         await self._session.flush()
+        if payload.execution_mode == "direct":
+            await self._execute_hr_event_if_due(rollback)
         self._audit(
             action="rollback_requested",
             object_type="hr_event",

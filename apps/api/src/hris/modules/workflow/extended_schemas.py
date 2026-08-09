@@ -24,6 +24,27 @@ class CandidateResponse(BaseModel):
     updated_at: datetime
 
 
+class CandidateUpdate(BaseModel):
+    display_name: str | None = Field(default=None, min_length=1, max_length=200)
+    contact_payload: dict[str, Any] | None = None
+    status: Literal["active", "converted", "inactive"] | None = None
+    linked_person_id: UUID | None = None
+    change_reason: str = Field(min_length=1, max_length=500)
+
+    @model_validator(mode="after")
+    def validate_change(self) -> "CandidateUpdate":
+        if not self.model_dump(exclude={"change_reason"}, exclude_unset=True):
+            raise ValueError("at least one candidate field must be changed")
+        return self
+
+
+class CandidatePage(BaseModel):
+    items: list[CandidateResponse]
+    total: int
+    limit: int
+    offset: int
+
+
 class RecruitmentRequestCreate(BaseModel):
     request_number: str | None = Field(default=None, max_length=50)
     organization_id: UUID
@@ -86,6 +107,34 @@ class JobApplicationResponse(BaseModel):
     offer_payload: dict[str, Any]
 
 
+class JobApplicationUpdate(BaseModel):
+    status: Literal[
+        "active",
+        "screening",
+        "interview",
+        "offer",
+        "hired",
+        "rejected",
+        "withdrawn",
+    ] | None = None
+    current_stage: str | None = Field(default=None, max_length=50)
+    offer_payload: dict[str, Any] | None = None
+    change_reason: str = Field(min_length=1, max_length=500)
+
+    @model_validator(mode="after")
+    def validate_change(self) -> "JobApplicationUpdate":
+        if not self.model_dump(exclude={"change_reason"}, exclude_unset=True):
+            raise ValueError("at least one application field must be changed")
+        return self
+
+
+class JobApplicationPage(BaseModel):
+    items: list[JobApplicationResponse]
+    total: int
+    limit: int
+    offset: int
+
+
 class ContractCreate(BaseModel):
     person_id: UUID
     employment_id: UUID | None = None
@@ -116,6 +165,26 @@ class ContractResponse(BaseModel):
     effective_to: date | None
     status: str
     metadata_payload: dict[str, Any]
+
+
+class ContractUpdate(BaseModel):
+    effective_to: date | None = None
+    status: Literal["active", "expired", "terminated", "cancelled"] | None = None
+    metadata_payload: dict[str, Any] | None = None
+    change_reason: str = Field(min_length=1, max_length=500)
+
+    @model_validator(mode="after")
+    def validate_change(self) -> "ContractUpdate":
+        if not self.model_dump(exclude={"change_reason"}, exclude_unset=True):
+            raise ValueError("at least one contract field must be changed")
+        return self
+
+
+class ContractPage(BaseModel):
+    items: list[ContractResponse]
+    total: int
+    limit: int
+    offset: int
 
 
 class HrEventCreate(BaseModel):
@@ -159,6 +228,22 @@ class HrEventResponse(BaseModel):
     version: int
 
 
+class HrEventPage(BaseModel):
+    items: list[HrEventResponse]
+    total: int
+    limit: int
+    offset: int
+
+
+class HrEventProcessRequest(BaseModel):
+    as_of: date | None = None
+
+
+class HrEventProcessResponse(BaseModel):
+    processed_ids: list[UUID]
+    failed: list[dict[str, str]]
+
+
 class WorkflowPublishResponse(BaseModel):
     definition_id: UUID
     version: int
@@ -186,3 +271,43 @@ class WorkflowInstanceResponse(BaseModel):
     started_at: datetime
     completed_at: datetime | None
     context: dict[str, Any]
+
+
+class WorkflowTaskResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    workflow_instance_id: UUID
+    node_code: str
+    sign_mode: str
+    assignee_type: str
+    assignee_ref: str
+    status: str
+    decision: str | None
+    comment: str | None
+    decided_by: UUID | None
+    decided_at: datetime | None
+
+
+class WorkflowTaskPage(BaseModel):
+    items: list[WorkflowTaskResponse]
+    total: int
+    limit: int
+    offset: int
+
+
+class WorkflowInstanceDetailResponse(BaseModel):
+    instance: WorkflowInstanceResponse
+    tasks: list[WorkflowTaskResponse]
+
+
+class WorkflowInstancePage(BaseModel):
+    items: list[WorkflowInstanceResponse]
+    total: int
+    limit: int
+    offset: int
+
+
+class WorkflowTaskDecision(BaseModel):
+    decision: Literal["approve", "reject"]
+    comment: str | None = Field(default=None, max_length=2000)
