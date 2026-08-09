@@ -179,3 +179,10 @@ button, input, textarea, select { font: inherit; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; }
 }
+.full-width {
+  width: 100%;
+}
+
+.drawer-primary-action {
+  margin-top: 12px;
+}

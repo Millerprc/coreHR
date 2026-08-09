@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from hris.core.config import get_settings
 from hris.shared.db.base import Base
-from hris.shared.db import models as registered_models
+from hris.shared.db import business_models as registered_models
 
 
 config = context.config
@@ -57,4 +57,3 @@ if context.is_offline_mode():
     run_migrations_offline()
 else:
     run(run_async_migrations())
-

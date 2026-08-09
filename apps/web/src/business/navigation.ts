@@ -37,7 +37,12 @@ export const workspaces: readonly WorkspaceDefinition[] = [
   { key: "recruitment", label: "招聘需求", permission: "LIFECYCLE_ADMIN", available: true },
   { key: "lifecycle", label: "员工生命周期", permission: "LIFECYCLE_ADMIN", available: true },
   { key: "attendance", label: "考勤管理", permission: "ATTENDANCE_ADMIN", available: true },
-  { key: "governance", label: "数据治理", available: false },
+  {
+    key: "governance",
+    label: "数据治理",
+    permission: "DATA_GOVERNANCE_VIEW",
+    available: true,
+  },
 ]
 
 

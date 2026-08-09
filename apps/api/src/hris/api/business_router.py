@@ -5,6 +5,7 @@ from hris.modules.attendance.extended_api import router as attendance_operations
 from hris.modules.platform.api import router as auth_router
 from hris.modules.platform.configuration_api import router as configuration_router
 from hris.modules.platform.dependencies import require_permission
+from hris.modules.platform.import_api import router as import_router
 from hris.modules.system.api import router as system_router
 from hris.modules.workflow.api import router as workflow_configuration_router
 from hris.modules.workflow.extended_api import router as lifecycle_router
@@ -16,6 +17,7 @@ business_router = APIRouter()
 business_router.include_router(system_router)
 business_router.include_router(auth_router)
 business_router.include_router(configuration_router)
+business_router.include_router(import_router)
 business_router.include_router(organization_router)
 business_router.include_router(workforce_operations_router)
 business_router.include_router(

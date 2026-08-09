@@ -14,6 +14,7 @@ from hris.modules.platform.models import (
     UserSession,
 )
 from hris.modules.platform.governance_models import OutboxEvent
+from hris.modules.platform.import_models import ImportBatch, ImportBatchRow
 from hris.modules.workforce.organization_models import (
     BpServiceScope,
     OrganizationEvent,
@@ -26,6 +27,8 @@ __all__ = [
     "DataDictionary",
     "DataDictionaryItem",
     "ExternalRecordLink",
+    "ImportBatch",
+    "ImportBatchRow",
     "NumberSequence",
     "OutboxEvent",
     "Permission",

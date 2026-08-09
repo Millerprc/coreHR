@@ -1,0 +1,783 @@
+import hashlib
+import json
+from collections import defaultdict
+from datetime import UTC, datetime
+from typing import Any
+from uuid import UUID
+
+from pydantic import BaseModel, ValidationError
+from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from hris.core.errors import ApiError
+from hris.modules.platform.configuration_schemas import DictionaryCreate
+from hris.modules.platform.import_models import ImportBatch, ImportBatchRow
+from hris.modules.platform.import_schemas import (
+    DictionaryItemImport,
+    ImportBatchValidate,
+    ImportEntityType,
+)
+from hris.modules.platform.models import (
+    DataDictionary,
+    DataDictionaryItem,
+    ExternalRecordLink,
+)
+from hris.modules.workforce.extended_schemas import JobCreate, LegalEntityCreate
+from hris.modules.workforce.models import AuditLog, JobCatalog, LegalEntity, OrganizationType
+from hris.modules.workforce.organization_schemas import OrganizationTypeCreate
+
+
+_TARGET_TYPES: dict[str, str] = {
+    "dictionary": "data_dictionary",
+    "dictionary_item": "data_dictionary_item",
+    "organization_type": "organization_type",
+    "legal_entity": "legal_entity",
+    "job": "job",
+}
+
+_TEMPLATES: dict[str, tuple[list[str], list[str]]] = {
+    "dictionary": (
+        ["code", "name", "english_name", "description"],
+        ["code", "name"],
+    ),
+    "dictionary_item": (
+        [
+            "dictionary_code",
+            "code",
+            "name",
+            "english_name",
+            "parent_item_code",
+            "sort_order",
+            "description",
+        ],
+        ["dictionary_code", "code", "name"],
+    ),
+    "organization_type": (
+        ["code", "name", "sort_order"],
+        ["code", "name"],
+    ),
+    "legal_entity": (
+        [
+            "code",
+            "name",
+            "registered_name",
+            "country_code",
+            "registration_number",
+            "effective_from",
+            "effective_to",
+        ],
+        ["code", "name", "country_code", "effective_from"],
+    ),
+    "job": (
+        [
+            "code",
+            "name",
+            "level_code",
+            "grade_code",
+            "class_code",
+            "sequence_code",
+            "effective_from",
+            "effective_to",
+        ],
+        ["code", "name", "effective_from"],
+    ),
+}
+
+
+class ImportService:
+    def __init__(
+        self,
+        session: AsyncSession,
+        *,
+        actor_id: UUID,
+        trace_id: str,
+    ) -> None:
+        self._session = session
+        self._actor_id = actor_id
+        self._trace_id = trace_id
+
+    @staticmethod
+    def template(entity_type: ImportEntityType) -> tuple[list[str], list[str]]:
+        return _TEMPLATES[entity_type]
+
+    async def validate_batch(
+        self,
+        payload: ImportBatchValidate,
+    ) -> tuple[ImportBatch, list[ImportBatchRow]]:
+        request_checksum = self._checksum(payload.model_dump(mode="json"))
+        existing = await self._session.scalar(
+            select(ImportBatch).where(
+                ImportBatch.idempotency_key == payload.idempotency_key
+            )
+        )
+        if existing is not None:
+            if existing.request_checksum != request_checksum:
+                raise ApiError(
+                    status_code=409,
+                    code="IMPORT_IDEMPOTENCY_CONFLICT",
+                    message="相同幂等键已用于不同导入内容",
+                )
+            return existing, await self._rows(existing.id)
+
+        batch = ImportBatch(
+            entity_type=payload.entity_type,
+            source_system=payload.source_system,
+            source_table=payload.source_table,
+            file_name=payload.file_name,
+            idempotency_key=payload.idempotency_key,
+            request_checksum=request_checksum,
+            status="validating",
+            total_rows=len(payload.rows),
+            valid_rows=0,
+            rejected_rows=0,
+            imported_rows=0,
+            skipped_rows=0,
+            created_by=self._actor_id,
+        )
+        self._session.add(batch)
+        try:
+            await self._session.flush()
+        except IntegrityError as exc:
+            raise ApiError(
+                status_code=409,
+                code="IMPORT_IDEMPOTENCY_CONFLICT",
+                message="导入幂等键已经存在",
+            ) from exc
+
+        parsed, errors = self._parse_rows(payload)
+        target_keys = self._target_keys(payload.entity_type, parsed)
+        self._mark_duplicate_targets(target_keys, errors)
+        existing_targets = await self._existing_targets(payload.entity_type, parsed)
+        if payload.entity_type == "dictionary_item":
+            await self._validate_dictionary_item_relations(parsed, existing_targets, errors)
+
+        links = await self._existing_links(payload)
+        rows: list[ImportBatchRow] = []
+        target_type = _TARGET_TYPES[payload.entity_type]
+        for index, source_row in enumerate(payload.rows, start=1):
+            parsed_row = parsed.get(index)
+            normalized = (
+                parsed_row.model_dump(mode="json", exclude_none=True)
+                if parsed_row is not None
+                else {}
+            )
+            checksum = self._checksum(
+                normalized if parsed_row is not None else source_row.data
+            )
+            row_errors = errors[index]
+            target_key = self._target_key(payload.entity_type, parsed.get(index))
+            target = existing_targets.get(target_key) if target_key else None
+            link = links.get(source_row.source_record_id)
+            status = "valid"
+            target_id: UUID | None = None
+            if not row_errors and link is not None:
+                if link.source_checksum != checksum:
+                    row_errors.append(
+                        self._error(
+                            "SOURCE_RECORD_CHANGED",
+                            None,
+                            "来源记录内容已变化，必须先确认更新策略",
+                        )
+                    )
+                elif target is None or target.id != link.target_id:
+                    row_errors.append(
+                        self._error(
+                            "EXTERNAL_LINK_TARGET_INVALID",
+                            None,
+                            "来源追踪记录指向的目标已不存在或代码不一致",
+                        )
+                    )
+                else:
+                    status = "skipped"
+                    target_id = link.target_id
+            if not row_errors and link is None and target is not None:
+                row_errors.append(
+                    self._error(
+                        "TARGET_CODE_CONFLICT",
+                        "code",
+                        "目标稳定代码已存在，但没有对应来源追踪记录",
+                    )
+                )
+            if row_errors:
+                status = "rejected"
+            row = ImportBatchRow(
+                batch_id=batch.id,
+                row_number=index,
+                source_record_id=source_row.source_record_id,
+                source_checksum=checksum,
+                payload=normalized,
+                status=status,
+                errors=row_errors,
+                target_type=target_type if target_id else None,
+                target_id=target_id,
+            )
+            self._session.add(row)
+            rows.append(row)
+
+        await self._session.flush()
+        self._refresh_counts(batch, rows)
+        batch.status = (
+            "validated_with_errors" if batch.rejected_rows else "validated"
+        )
+        await self._audit_batch(
+            batch,
+            action="governance.import_batch.validate",
+            reason=None,
+        )
+        return batch, rows
+
+    async def execute_batch(
+        self,
+        batch_id: UUID,
+        *,
+        reason: str,
+    ) -> tuple[ImportBatch, list[ImportBatchRow]]:
+        batch = await self._session.get(ImportBatch, batch_id, with_for_update=True)
+        if batch is None:
+            raise ApiError(
+                status_code=404,
+                code="IMPORT_BATCH_NOT_FOUND",
+                message="导入批次不存在",
+            )
+        rows = await self._rows(batch.id)
+        if batch.status in {"completed", "completed_with_errors"}:
+            return batch, rows
+        if batch.status not in {"validated", "validated_with_errors"}:
+            raise ApiError(
+                status_code=409,
+                code="IMPORT_BATCH_NOT_EXECUTABLE",
+                message="导入批次尚未完成校验或当前状态不可执行",
+            )
+
+        batch.status = "executing"
+        valid_rows = [row for row in rows if row.status == "valid"]
+        if batch.entity_type == "dictionary_item":
+            valid_rows = await self._order_dictionary_item_rows(valid_rows)
+
+        for row in valid_rows:
+            try:
+                async with self._session.begin_nested():
+                    target = await self._create_target(batch, row)
+                    await self._session.flush()
+                    self._session.add(
+                        ExternalRecordLink(
+                            source_system=batch.source_system,
+                            source_table=batch.source_table,
+                            source_record_id=row.source_record_id,
+                            target_type=_TARGET_TYPES[batch.entity_type],
+                            target_id=target.id,
+                            source_updated_at=None,
+                            source_checksum=row.source_checksum,
+                        )
+                    )
+                    await self._session.flush()
+            except IntegrityError:
+                row.status = "rejected"
+                row.errors = [
+                    self._error(
+                        "IMPORT_TARGET_CONFLICT",
+                        "code",
+                        "执行时目标代码或来源追踪记录发生冲突",
+                    )
+                ]
+                row.target_type = None
+                row.target_id = None
+                continue
+
+            row.status = "imported"
+            row.target_type = _TARGET_TYPES[batch.entity_type]
+            row.target_id = target.id
+            await self._audit_target(batch, row, target)
+
+        await self._session.flush()
+        self._refresh_counts(batch, rows)
+        batch.status = (
+            "completed_with_errors" if batch.rejected_rows else "completed"
+        )
+        batch.executed_at = datetime.now(UTC)
+        await self._audit_batch(
+            batch,
+            action="governance.import_batch.execute",
+            reason=reason,
+        )
+        await self._session.flush()
+        await self._session.refresh(batch)
+        return batch, rows
+
+    async def get_batch(
+        self,
+        batch_id: UUID,
+    ) -> tuple[ImportBatch, list[ImportBatchRow]]:
+        batch = await self._session.get(ImportBatch, batch_id)
+        if batch is None:
+            raise ApiError(
+                status_code=404,
+                code="IMPORT_BATCH_NOT_FOUND",
+                message="导入批次不存在",
+            )
+        return batch, await self._rows(batch.id)
+
+    async def list_batches(
+        self,
+        *,
+        limit: int,
+        offset: int,
+    ) -> tuple[list[ImportBatch], int]:
+        total = await self._session.scalar(
+            select(func.count()).select_from(ImportBatch)
+        )
+        items = list(
+            (
+                await self._session.scalars(
+                    select(ImportBatch)
+                    .order_by(ImportBatch.created_at.desc(), ImportBatch.id.desc())
+                    .limit(limit)
+                    .offset(offset)
+                )
+            ).all()
+        )
+        return items, total or 0
+
+    async def _existing_links(
+        self,
+        payload: ImportBatchValidate,
+    ) -> dict[str, ExternalRecordLink]:
+        source_ids = [row.source_record_id for row in payload.rows]
+        result = await self._session.scalars(
+            select(ExternalRecordLink).where(
+                ExternalRecordLink.source_system == payload.source_system,
+                ExternalRecordLink.source_table == payload.source_table,
+                ExternalRecordLink.source_record_id.in_(source_ids),
+                ExternalRecordLink.target_type == _TARGET_TYPES[payload.entity_type],
+            )
+        )
+        return {link.source_record_id: link for link in result.all()}
+
+    def _parse_rows(
+        self,
+        payload: ImportBatchValidate,
+    ) -> tuple[dict[int, BaseModel], defaultdict[int, list[dict[str, Any]]]]:
+        schema_type: type[BaseModel] = {
+            "dictionary": DictionaryCreate,
+            "dictionary_item": DictionaryItemImport,
+            "organization_type": OrganizationTypeCreate,
+            "legal_entity": LegalEntityCreate,
+            "job": JobCreate,
+        }[payload.entity_type]
+        parsed: dict[int, BaseModel] = {}
+        errors: defaultdict[int, list[dict[str, Any]]] = defaultdict(list)
+        allowed_fields = set(_TEMPLATES[payload.entity_type][0])
+        for index, row in enumerate(payload.rows, start=1):
+            unexpected_fields = sorted(set(row.data) - allowed_fields)
+            if unexpected_fields:
+                for field in unexpected_fields:
+                    errors[index].append(
+                        self._error(
+                            "ROW_FIELD_NOT_ALLOWED",
+                            field,
+                            "字段不在当前主数据导入模板中",
+                        )
+                    )
+                continue
+            try:
+                parsed[index] = schema_type.model_validate(row.data)
+            except ValidationError as exc:
+                for error in exc.errors():
+                    errors[index].append(
+                        self._error(
+                            "ROW_SCHEMA_INVALID",
+                            ".".join(str(part) for part in error["loc"]),
+                            error["msg"],
+                        )
+                    )
+        return parsed, errors
+
+    def _target_keys(
+        self,
+        entity_type: str,
+        parsed: dict[int, BaseModel],
+    ) -> defaultdict[str, list[int]]:
+        result: defaultdict[str, list[int]] = defaultdict(list)
+        for index, model in parsed.items():
+            key = self._target_key(entity_type, model)
+            if key is not None:
+                result[key].append(index)
+        return result
+
+    def _mark_duplicate_targets(
+        self,
+        target_keys: dict[str, list[int]],
+        errors: defaultdict[int, list[dict[str, Any]]],
+    ) -> None:
+        for indexes in target_keys.values():
+            if len(indexes) < 2:
+                continue
+            for index in indexes:
+                errors[index].append(
+                    self._error(
+                        "TARGET_CODE_DUPLICATE",
+                        "code",
+                        "同一批次不能重复使用目标稳定代码",
+                    )
+                )
+
+    async def _existing_targets(
+        self,
+        entity_type: str,
+        parsed: dict[int, BaseModel],
+    ) -> dict[str, Any]:
+        if not parsed:
+            return {}
+        if entity_type == "dictionary_item":
+            dictionary_codes = {
+                model.dictionary_code
+                for model in parsed.values()
+                if isinstance(model, DictionaryItemImport)
+            }
+            dictionaries = list(
+                (
+                    await self._session.scalars(
+                        select(DataDictionary).where(
+                            DataDictionary.code.in_(dictionary_codes),
+                            DataDictionary.is_active.is_(True),
+                        )
+                    )
+                ).all()
+            )
+            dictionary_by_id = {item.id: item.code for item in dictionaries}
+            item_codes = {
+                code
+                for model in parsed.values()
+                if isinstance(model, DictionaryItemImport)
+                for code in (model.code, model.parent_item_code)
+                if code is not None
+            }
+            items = []
+            if dictionary_by_id and item_codes:
+                items = list(
+                    (
+                        await self._session.scalars(
+                            select(DataDictionaryItem).where(
+                                DataDictionaryItem.dictionary_id.in_(dictionary_by_id),
+                                DataDictionaryItem.code.in_(item_codes),
+                                DataDictionaryItem.is_active.is_(True),
+                            )
+                        )
+                    ).all()
+                )
+            result: dict[str, Any] = {
+                f"dictionary:{item.code}": item for item in dictionaries
+            }
+            result.update(
+                {
+                    f"{dictionary_by_id[item.dictionary_id]}:{item.code}": item
+                    for item in items
+                }
+            )
+            return result
+
+        model_type: type[Any] = {
+            "dictionary": DataDictionary,
+            "organization_type": OrganizationType,
+            "legal_entity": LegalEntity,
+            "job": JobCatalog,
+        }[entity_type]
+        codes = {str(getattr(model, "code")) for model in parsed.values()}
+        items = list(
+            (
+                await self._session.scalars(
+                    select(model_type).where(model_type.code.in_(codes))
+                )
+            ).all()
+        )
+        return {item.code: item for item in items}
+
+    async def _validate_dictionary_item_relations(
+        self,
+        parsed: dict[int, BaseModel],
+        existing: dict[str, Any],
+        errors: defaultdict[int, list[dict[str, Any]]],
+    ) -> None:
+        incoming: dict[str, DictionaryItemImport] = {}
+        index_by_key: dict[str, int] = {}
+        for index, model in parsed.items():
+            if not isinstance(model, DictionaryItemImport):
+                continue
+            dictionary_key = f"dictionary:{model.dictionary_code}"
+            if dictionary_key not in existing:
+                errors[index].append(
+                    self._error(
+                        "DICTIONARY_NOT_FOUND",
+                        "dictionary_code",
+                        "目标数据字典不存在，请先导入字典定义",
+                    )
+                )
+                continue
+            key = f"{model.dictionary_code}:{model.code}"
+            incoming[key] = model
+            index_by_key[key] = index
+            if model.parent_item_code is not None:
+                parent_key = f"{model.dictionary_code}:{model.parent_item_code}"
+                if parent_key not in existing and parent_key not in {
+                    f"{candidate.dictionary_code}:{candidate.code}"
+                    for candidate in parsed.values()
+                    if isinstance(candidate, DictionaryItemImport)
+                }:
+                    errors[index].append(
+                        self._error(
+                            "DICTIONARY_PARENT_NOT_FOUND",
+                            "parent_item_code",
+                            "父字典项不存在且不在当前批次",
+                        )
+                    )
+
+        visiting: set[str] = set()
+        visited: set[str] = set()
+
+        def visit(key: str, path: list[str]) -> None:
+            if key in visited:
+                return
+            if key in visiting:
+                cycle = path[path.index(key) :]
+                for cycle_key in cycle:
+                    errors[index_by_key[cycle_key]].append(
+                        self._error(
+                            "DICTIONARY_PARENT_CYCLE",
+                            "parent_item_code",
+                            "字典项父子关系不能形成循环",
+                        )
+                    )
+                return
+            model = incoming.get(key)
+            if model is None or model.parent_item_code is None:
+                visited.add(key)
+                return
+            parent_key = f"{model.dictionary_code}:{model.parent_item_code}"
+            if parent_key not in incoming:
+                visited.add(key)
+                return
+            visiting.add(key)
+            visit(parent_key, [*path, parent_key])
+            visiting.discard(key)
+            visited.add(key)
+
+        for key in incoming:
+            visit(key, [key])
+
+    async def _order_dictionary_item_rows(
+        self,
+        rows: list[ImportBatchRow],
+    ) -> list[ImportBatchRow]:
+        pending = {row.id: row for row in rows}
+        ordered: list[ImportBatchRow] = []
+        available = {
+            (dictionary.code, item.code)
+            for dictionary, item in (
+                await self._session.execute(
+                    select(DataDictionary, DataDictionaryItem).join(
+                        DataDictionaryItem,
+                        DataDictionaryItem.dictionary_id == DataDictionary.id,
+                    )
+                )
+            ).all()
+        }
+        while pending:
+            progressed = False
+            for row_id, row in list(pending.items()):
+                model = DictionaryItemImport.model_validate(row.payload)
+                parent = (
+                    (model.dictionary_code, model.parent_item_code)
+                    if model.parent_item_code
+                    else None
+                )
+                if parent is not None and parent not in available:
+                    continue
+                ordered.append(row)
+                available.add((model.dictionary_code, model.code))
+                del pending[row_id]
+                progressed = True
+            if not progressed:
+                raise ApiError(
+                    status_code=409,
+                    code="IMPORT_DICTIONARY_DEPENDENCY_INVALID",
+                    message="字典项依赖顺序无法解析，请重新校验批次",
+                )
+        return ordered
+
+    async def _create_target(self, batch: ImportBatch, row: ImportBatchRow) -> Any:
+        if batch.entity_type == "dictionary":
+            payload = DictionaryCreate.model_validate(row.payload)
+            target = DataDictionary(
+                **payload.model_dump(),
+                source=batch.source_system,
+                is_active=True,
+            )
+        elif batch.entity_type == "dictionary_item":
+            payload = DictionaryItemImport.model_validate(row.payload)
+            dictionary = await self._session.scalar(
+                select(DataDictionary).where(
+                    DataDictionary.code == payload.dictionary_code,
+                    DataDictionary.is_active.is_(True),
+                )
+            )
+            if dictionary is None:
+                raise ApiError(
+                    status_code=409,
+                    code="DICTIONARY_NOT_FOUND",
+                    message="执行时目标数据字典不存在或已停用",
+                )
+            parent: DataDictionaryItem | None = None
+            if payload.parent_item_code is not None:
+                parent = await self._session.scalar(
+                    select(DataDictionaryItem).where(
+                        DataDictionaryItem.dictionary_id == dictionary.id,
+                        DataDictionaryItem.code == payload.parent_item_code,
+                        DataDictionaryItem.is_active.is_(True),
+                    )
+                )
+                if parent is None:
+                    raise ApiError(
+                        status_code=409,
+                        code="DICTIONARY_PARENT_NOT_FOUND",
+                        message="执行时父字典项不存在或已停用",
+                    )
+            target = DataDictionaryItem(
+                dictionary_id=dictionary.id,
+                parent_item_id=parent.id if parent else None,
+                code=payload.code,
+                name=payload.name,
+                english_name=payload.english_name,
+                sort_order=payload.sort_order,
+                level=(parent.level + 1) if parent else 0,
+                description=payload.description,
+                is_active=True,
+            )
+        elif batch.entity_type == "organization_type":
+            payload = OrganizationTypeCreate.model_validate(row.payload)
+            target = OrganizationType(
+                **payload.model_dump(),
+                is_active=True,
+            )
+        elif batch.entity_type == "legal_entity":
+            payload = LegalEntityCreate.model_validate(row.payload)
+            target = LegalEntity(
+                **payload.model_dump(),
+                status="active",
+            )
+        elif batch.entity_type == "job":
+            payload = JobCreate.model_validate(row.payload)
+            target = JobCatalog(
+                **payload.model_dump(),
+                status="active",
+            )
+        else:
+            raise ApiError(
+                status_code=422,
+                code="IMPORT_ENTITY_UNSUPPORTED",
+                message="当前导入实体类型没有执行器",
+            )
+        self._session.add(target)
+        return target
+
+    async def _rows(self, batch_id: UUID) -> list[ImportBatchRow]:
+        return list(
+            (
+                await self._session.scalars(
+                    select(ImportBatchRow)
+                    .where(ImportBatchRow.batch_id == batch_id)
+                    .order_by(ImportBatchRow.row_number)
+                )
+            ).all()
+        )
+
+    @staticmethod
+    def _target_key(entity_type: str, model: BaseModel | None) -> str | None:
+        if model is None:
+            return None
+        if entity_type == "dictionary_item" and isinstance(
+            model, DictionaryItemImport
+        ):
+            return f"{model.dictionary_code}:{model.code}"
+        return str(getattr(model, "code"))
+
+    @staticmethod
+    def _refresh_counts(batch: ImportBatch, rows: list[ImportBatchRow]) -> None:
+        batch.total_rows = len(rows)
+        batch.valid_rows = sum(
+            row.status in {"valid", "imported", "skipped"} for row in rows
+        )
+        batch.rejected_rows = sum(row.status == "rejected" for row in rows)
+        batch.imported_rows = sum(row.status == "imported" for row in rows)
+        batch.skipped_rows = sum(row.status == "skipped" for row in rows)
+
+    async def _audit_batch(
+        self,
+        batch: ImportBatch,
+        *,
+        action: str,
+        reason: str | None,
+    ) -> None:
+        self._session.add(
+            AuditLog(
+                occurred_at=datetime.now(UTC),
+                actor_id=self._actor_id,
+                trace_id=self._trace_id,
+                action=action,
+                object_type="import_batch",
+                object_id=batch.id,
+                reason=reason,
+                before_payload={},
+                after_payload={
+                    "entity_type": batch.entity_type,
+                    "source_system": batch.source_system,
+                    "source_table": batch.source_table,
+                    "status": batch.status,
+                    "total_rows": batch.total_rows,
+                    "valid_rows": batch.valid_rows,
+                    "rejected_rows": batch.rejected_rows,
+                    "imported_rows": batch.imported_rows,
+                    "skipped_rows": batch.skipped_rows,
+                },
+                source="import",
+            )
+        )
+
+    async def _audit_target(
+        self,
+        batch: ImportBatch,
+        row: ImportBatchRow,
+        target: Any,
+    ) -> None:
+        self._session.add(
+            AuditLog(
+                occurred_at=datetime.now(UTC),
+                actor_id=self._actor_id,
+                trace_id=self._trace_id,
+                action="governance.import_row.create",
+                object_type=_TARGET_TYPES[batch.entity_type],
+                object_id=target.id,
+                reason="主数据初始化导入",
+                before_payload={},
+                after_payload={
+                    "batch_id": str(batch.id),
+                    "source_record_id": row.source_record_id,
+                    "code": str(getattr(target, "code", "")),
+                },
+                source="import",
+            )
+        )
+
+    @staticmethod
+    def _checksum(value: Any) -> str:
+        canonical = json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return hashlib.sha256(canonical).hexdigest()
+
+    @staticmethod
+    def _error(code: str, field: str | None, message: str) -> dict[str, Any]:
+        return {"code": code, "field": field, "message": message}
