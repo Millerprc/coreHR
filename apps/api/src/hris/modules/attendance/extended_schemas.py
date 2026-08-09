@@ -6,6 +6,15 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
+_BALANCE_MODES = {"none", "tracked", "enforced"}
+
+
+def _validate_balance_rules(rules: dict[str, Any]) -> None:
+    balance_mode = rules.get("balance_mode", "none")
+    if balance_mode not in _BALANCE_MODES:
+        raise ValueError("rules.balance_mode must be none, tracked, or enforced")
+
+
 class AttendanceEmploymentOption(BaseModel):
     id: UUID
     person_id: UUID
@@ -156,6 +165,11 @@ class LeaveTypeCreate(BaseModel):
     unit: Literal["day", "hour"]
     rules: dict[str, Any] = Field(default_factory=dict)
 
+    @model_validator(mode="after")
+    def validate_rules(self) -> "LeaveTypeCreate":
+        _validate_balance_rules(self.rules)
+        return self
+
 
 class LeaveTypeResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -178,6 +192,8 @@ class LeaveTypeUpdate(BaseModel):
     def validate_change(self) -> "LeaveTypeUpdate":
         if not self.model_dump(exclude_unset=True):
             raise ValueError("at least one leave-type field must be changed")
+        if self.rules is not None:
+            _validate_balance_rules(self.rules)
         return self
 
 
@@ -232,6 +248,75 @@ class LeaveRequestUpdate(BaseModel):
 
 class LeaveRequestPage(BaseModel):
     items: list[LeaveRequestResponse]
+    total: int
+    limit: int
+    offset: int
+
+
+class LeaveBalanceAccountResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    employment_id: UUID
+    leave_type_id: UUID
+    period_year: int
+    unit: str
+    current_balance: Decimal
+    version: int
+    status: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class LeaveBalanceAccountPage(BaseModel):
+    items: list[LeaveBalanceAccountResponse]
+    total: int
+    limit: int
+    offset: int
+
+
+class LeaveBalanceTransactionCreate(BaseModel):
+    employment_id: UUID
+    leave_type_id: UUID
+    period_year: int = Field(ge=2000, le=2200)
+    transaction_type: Literal["grant", "adjustment", "carryover", "accrual"]
+    amount: Decimal = Field(max_digits=12, decimal_places=2)
+    effective_date: date
+    reason: str = Field(min_length=1, max_length=5000)
+    idempotency_key: UUID
+
+    @model_validator(mode="after")
+    def validate_transaction(self) -> "LeaveBalanceTransactionCreate":
+        if self.amount == 0:
+            raise ValueError("amount must not be zero")
+        if self.transaction_type != "adjustment" and self.amount < 0:
+            raise ValueError("only adjustment transactions may use a negative amount")
+        if self.effective_date.year != self.period_year:
+            raise ValueError("effective_date must be within period_year")
+        return self
+
+
+class LeaveBalanceTransactionResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    account_id: UUID
+    transaction_type: str
+    amount: Decimal
+    effective_date: date
+    balance_before: Decimal
+    balance_after: Decimal
+    account_version: int
+    source_type: str
+    source_id: UUID | None
+    idempotency_key: UUID
+    reason: str
+    actor_id: UUID
+    created_at: datetime
+
+
+class LeaveBalanceTransactionPage(BaseModel):
+    items: list[LeaveBalanceTransactionResponse]
     total: int
     limit: int
     offset: int

@@ -1,7 +1,8 @@
+import hashlib
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
-from uuid import UUID
+from uuid import NAMESPACE_URL, UUID, uuid5
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, or_, select
@@ -13,6 +14,7 @@ from hris.modules.attendance.extended_schemas import (
     AttendanceMonthlyCalculate,
     AttendancePeriodFreezeCreate,
     AttendancePeriodFreezeRelease,
+    LeaveBalanceTransactionCreate,
     LeaveCancellationCreate,
     LeaveRequestCreate,
     LeaveRequestUpdate,
@@ -30,6 +32,8 @@ from hris.modules.attendance.models import (
     AttendancePeriodFreeze,
     AttendancePunch,
     AttendanceRuleSet,
+    LeaveBalanceAccount,
+    LeaveBalanceTransaction,
     LeaveRequest,
     LeaveType,
     ScheduleAssignment,
@@ -501,6 +505,18 @@ class ExtendedAttendanceService:
         if leave_type is None:
             raise ApiError(status_code=404, code="LEAVE_TYPE_NOT_FOUND", message="leave type not found")
         changes = payload.model_dump(exclude_unset=True)
+        if "unit" in changes and changes["unit"] != leave_type.unit:
+            account_exists = await self._session.scalar(
+                select(LeaveBalanceAccount.id).where(
+                    LeaveBalanceAccount.leave_type_id == leave_type.id
+                )
+            )
+            if account_exists is not None:
+                raise ApiError(
+                    status_code=409,
+                    code="LEAVE_BALANCE_UNIT_IN_USE",
+                    message="leave type unit cannot change after balance accounts exist",
+                )
         before = {field: getattr(leave_type, field) for field in changes}
         for field, value in changes.items():
             setattr(leave_type, field, value)
@@ -513,6 +529,365 @@ class ExtendedAttendanceService:
             after=changes,
         )
         return leave_type
+
+    async def create_leave_balance_transaction(
+        self,
+        payload: LeaveBalanceTransactionCreate,
+    ) -> LeaveBalanceTransaction:
+        if await self._session.get(Employment, payload.employment_id) is None:
+            raise ApiError(
+                status_code=404,
+                code="EMPLOYMENT_NOT_FOUND",
+                message="employment not found",
+            )
+        leave_type = await self._session.get(LeaveType, payload.leave_type_id)
+        if leave_type is None:
+            raise ApiError(
+                status_code=404,
+                code="LEAVE_TYPE_NOT_FOUND",
+                message="leave type not found",
+            )
+        if self._leave_balance_mode(leave_type) == "none":
+            raise ApiError(
+                status_code=409,
+                code="LEAVE_BALANCE_NOT_TRACKED",
+                message="leave type is not configured to track a balance",
+            )
+        return await self._apply_balance_delta(
+            employment_id=payload.employment_id,
+            leave_type=leave_type,
+            period_year=payload.period_year,
+            transaction_type=payload.transaction_type,
+            amount=payload.amount,
+            effective_date=payload.effective_date,
+            source_type="manual",
+            source_id=None,
+            idempotency_key=payload.idempotency_key,
+            reason=payload.reason,
+            enforce_nonnegative=False,
+        )
+
+    async def list_leave_balance_accounts(
+        self,
+        *,
+        employment_id: UUID | None,
+        leave_type_id: UUID | None,
+        period_year: int | None,
+        limit: int,
+        offset: int,
+    ) -> tuple[list[LeaveBalanceAccount], int]:
+        filters = []
+        if employment_id is not None:
+            filters.append(LeaveBalanceAccount.employment_id == employment_id)
+        if leave_type_id is not None:
+            filters.append(LeaveBalanceAccount.leave_type_id == leave_type_id)
+        if period_year is not None:
+            filters.append(LeaveBalanceAccount.period_year == period_year)
+        total = await self._session.scalar(
+            select(func.count()).select_from(LeaveBalanceAccount).where(*filters)
+        )
+        accounts = list(
+            (
+                await self._session.scalars(
+                    select(LeaveBalanceAccount)
+                    .where(*filters)
+                    .order_by(
+                        LeaveBalanceAccount.period_year.desc(),
+                        LeaveBalanceAccount.updated_at.desc(),
+                    )
+                    .limit(limit)
+                    .offset(offset)
+                )
+            ).all()
+        )
+        return accounts, total or 0
+
+    async def list_leave_balance_transactions(
+        self,
+        account_id: UUID,
+        *,
+        limit: int,
+        offset: int,
+    ) -> tuple[list[LeaveBalanceTransaction], int]:
+        if await self._session.get(LeaveBalanceAccount, account_id) is None:
+            raise ApiError(
+                status_code=404,
+                code="LEAVE_BALANCE_ACCOUNT_NOT_FOUND",
+                message="leave balance account not found",
+            )
+        total = await self._session.scalar(
+            select(func.count())
+            .select_from(LeaveBalanceTransaction)
+            .where(LeaveBalanceTransaction.account_id == account_id)
+        )
+        transactions = list(
+            (
+                await self._session.scalars(
+                    select(LeaveBalanceTransaction)
+                    .where(LeaveBalanceTransaction.account_id == account_id)
+                    .order_by(
+                        LeaveBalanceTransaction.account_version.desc(),
+                    )
+                    .limit(limit)
+                    .offset(offset)
+                )
+            ).all()
+        )
+        return transactions, total or 0
+
+    async def _apply_balance_delta(
+        self,
+        *,
+        employment_id: UUID,
+        leave_type: LeaveType,
+        period_year: int,
+        transaction_type: str,
+        amount: Decimal,
+        effective_date: date,
+        source_type: str,
+        source_id: UUID | None,
+        idempotency_key: UUID,
+        reason: str,
+        enforce_nonnegative: bool,
+    ) -> LeaveBalanceTransaction:
+        checksum = self._balance_transaction_checksum(
+            employment_id=employment_id,
+            leave_type_id=leave_type.id,
+            period_year=period_year,
+            transaction_type=transaction_type,
+            amount=amount,
+            effective_date=effective_date,
+            source_type=source_type,
+            source_id=source_id,
+            reason=reason,
+        )
+        await self._lock_leave_balance_idempotency(idempotency_key)
+        existing = await self._session.scalar(
+            select(LeaveBalanceTransaction).where(
+                LeaveBalanceTransaction.idempotency_key == idempotency_key
+            )
+        )
+        if existing is not None:
+            if existing.request_checksum != checksum:
+                raise ApiError(
+                    status_code=409,
+                    code="LEAVE_BALANCE_IDEMPOTENCY_CONFLICT",
+                    message="idempotency key has already been used for another transaction",
+                )
+            return existing
+
+        await self._lock_leave_balance_scope(
+            employment_id,
+            leave_type.id,
+            period_year,
+        )
+        account = await self._session.scalar(
+            select(LeaveBalanceAccount)
+            .where(
+                LeaveBalanceAccount.employment_id == employment_id,
+                LeaveBalanceAccount.leave_type_id == leave_type.id,
+                LeaveBalanceAccount.period_year == period_year,
+            )
+            .with_for_update()
+        )
+        if account is None:
+            account = LeaveBalanceAccount(
+                employment_id=employment_id,
+                leave_type_id=leave_type.id,
+                period_year=period_year,
+                unit=leave_type.unit,
+                current_balance=Decimal("0.00"),
+                version=0,
+                status="active",
+            )
+            self._session.add(account)
+            await self._session.flush()
+        if account.status != "active":
+            raise ApiError(
+                status_code=409,
+                code="LEAVE_BALANCE_ACCOUNT_CLOSED",
+                message="leave balance account is closed",
+            )
+
+        balance_before = Decimal(account.current_balance)
+        balance_after = balance_before + Decimal(amount)
+        if enforce_nonnegative and balance_after < 0:
+            raise ApiError(
+                status_code=409,
+                code="LEAVE_BALANCE_INSUFFICIENT",
+                message="available leave balance is insufficient",
+                details=[
+                    {
+                        "available": str(balance_before),
+                        "requested": str(-Decimal(amount)),
+                        "period_year": period_year,
+                    }
+                ],
+            )
+        account.version += 1
+        transaction = LeaveBalanceTransaction(
+            account_id=account.id,
+            transaction_type=transaction_type,
+            amount=amount,
+            effective_date=effective_date,
+            balance_before=balance_before,
+            balance_after=balance_after,
+            account_version=account.version,
+            source_type=source_type,
+            source_id=source_id,
+            idempotency_key=idempotency_key,
+            request_checksum=checksum,
+            reason=reason,
+            actor_id=self._actor_id,
+        )
+        account.current_balance = balance_after
+        self._session.add(transaction)
+        await self._session.flush()
+        self._audit(
+            action="attendance.leave_balance.post",
+            object_type="leave_balance_transaction",
+            object_id=transaction.id,
+            reason=reason,
+            before={"balance": str(balance_before), "version": account.version - 1},
+            after={
+                "account_id": str(account.id),
+                "transaction_type": transaction_type,
+                "amount": str(amount),
+                "balance": str(balance_after),
+                "version": account.version,
+            },
+        )
+        return transaction
+
+    async def _apply_leave_usage(
+        self,
+        request: LeaveRequest,
+        leave_type: LeaveType,
+    ) -> None:
+        balance_mode = self._leave_balance_mode(leave_type)
+        if balance_mode == "none":
+            return
+        if request.start_date.year != request.end_date.year:
+            raise ApiError(
+                status_code=422,
+                code="LEAVE_BALANCE_CROSS_YEAR_UNSUPPORTED",
+                message="managed leave requests must be split by calendar year",
+            )
+        await self._apply_balance_delta(
+            employment_id=request.employment_id,
+            leave_type=leave_type,
+            period_year=request.start_date.year,
+            transaction_type="usage",
+            amount=-Decimal(request.amount),
+            effective_date=request.start_date,
+            source_type="leave_request",
+            source_id=request.id,
+            idempotency_key=uuid5(
+                NAMESPACE_URL,
+                f"corehr:leave-balance:usage:{request.id}",
+            ),
+            reason=f"leave request {request.request_number} approved",
+            enforce_nonnegative=balance_mode == "enforced",
+        )
+
+    async def _reverse_leave_usage(
+        self,
+        original: LeaveRequest,
+    ) -> None:
+        usage = await self._session.scalar(
+            select(LeaveBalanceTransaction).where(
+                LeaveBalanceTransaction.transaction_type == "usage",
+                LeaveBalanceTransaction.source_type == "leave_request",
+                LeaveBalanceTransaction.source_id == original.id,
+            )
+        )
+        if usage is None:
+            return
+        account = await self._session.get(LeaveBalanceAccount, usage.account_id)
+        if account is None:
+            raise ApiError(
+                status_code=422,
+                code="LEAVE_BALANCE_ACCOUNT_MISSING",
+                message="leave balance account for the approved request is missing",
+            )
+        leave_type = await self._session.get(LeaveType, account.leave_type_id)
+        if leave_type is None:
+            raise ApiError(
+                status_code=422,
+                code="LEAVE_TYPE_NOT_FOUND",
+                message="leave type for the approved request is missing",
+            )
+        await self._apply_balance_delta(
+            employment_id=account.employment_id,
+            leave_type=leave_type,
+            period_year=account.period_year,
+            transaction_type="reversal",
+            amount=-Decimal(usage.amount),
+            effective_date=original.start_date,
+            source_type="leave_request",
+            source_id=original.id,
+            idempotency_key=uuid5(
+                NAMESPACE_URL,
+                f"corehr:leave-balance:reversal:{original.id}",
+            ),
+            reason=f"leave request {original.request_number} cancelled",
+            enforce_nonnegative=False,
+        )
+
+    @staticmethod
+    def _leave_balance_mode(leave_type: LeaveType) -> str:
+        balance_mode = leave_type.rules.get("balance_mode", "none")
+        if balance_mode not in {"none", "tracked", "enforced"}:
+            raise ApiError(
+                status_code=422,
+                code="LEAVE_BALANCE_MODE_INVALID",
+                message="leave type has an invalid balance mode",
+            )
+        return str(balance_mode)
+
+    @staticmethod
+    def _balance_transaction_checksum(
+        *,
+        employment_id: UUID,
+        leave_type_id: UUID,
+        period_year: int,
+        transaction_type: str,
+        amount: Decimal,
+        effective_date: date,
+        source_type: str,
+        source_id: UUID | None,
+        reason: str,
+    ) -> str:
+        value = "|".join(
+            [
+                str(employment_id),
+                str(leave_type_id),
+                str(period_year),
+                transaction_type,
+                format(Decimal(amount).quantize(Decimal("0.01")), "f"),
+                effective_date.isoformat(),
+                source_type,
+                str(source_id or ""),
+                reason,
+            ]
+        )
+        return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+    async def _lock_leave_balance_idempotency(self, key: UUID) -> None:
+        lock_key = key.int & ((1 << 63) - 1)
+        await self._session.execute(select(func.pg_advisory_xact_lock(lock_key)))
+
+    async def _lock_leave_balance_scope(
+        self,
+        employment_id: UUID,
+        leave_type_id: UUID,
+        period_year: int,
+    ) -> None:
+        digest = hashlib.sha256(
+            f"{employment_id}:{leave_type_id}:{period_year}".encode("ascii")
+        ).digest()
+        lock_key = int.from_bytes(digest[:8], "big") & ((1 << 63) - 1)
+        await self._session.execute(select(func.pg_advisory_xact_lock(lock_key)))
 
     async def create_leave_request(self, payload: LeaveRequestCreate) -> LeaveRequest:
         if await self._session.get(Employment, payload.employment_id) is None:
@@ -596,7 +971,12 @@ class ExtendedAttendanceService:
                 code="LEAVE_STATUS_TRANSITION_INVALID",
                 message="leave request status transition is not allowed",
             )
-        if payload.status == "approved" and request.cancellation_of_id is None:
+        before_status = request.status
+        if (
+            payload.status == "approved"
+            and request.cancellation_of_id is None
+            and before_status != "approved"
+        ):
             overlap = await self._session.scalar(
                 select(LeaveRequest.id).where(
                     LeaveRequest.employment_id == request.employment_id,
@@ -613,13 +993,31 @@ class ExtendedAttendanceService:
                     code="LEAVE_REQUEST_OVERLAPS",
                     message="approved leave request overlaps an existing approved leave",
                 )
-        before_status = request.status
-        request.status = payload.status
-        if payload.status == "approved" and request.cancellation_of_id is not None:
+            leave_type = await self._session.get(LeaveType, request.leave_type_id)
+            if leave_type is None:
+                raise ApiError(
+                    status_code=422,
+                    code="LEAVE_TYPE_NOT_FOUND",
+                    message="leave type not found",
+                )
+            await self._apply_leave_usage(request, leave_type)
+        if (
+            payload.status == "approved"
+            and request.cancellation_of_id is not None
+            and before_status != "approved"
+        ):
             original = await self._session.get(LeaveRequest, request.cancellation_of_id, with_for_update=True)
             if original is None:
                 raise ApiError(status_code=422, code="LEAVE_ORIGINAL_MISSING", message="original leave request not found")
+            await self._reverse_leave_usage(original)
             original.status = "cancelled"
+        if (
+            payload.status == "cancelled"
+            and request.cancellation_of_id is None
+            and before_status == "approved"
+        ):
+            await self._reverse_leave_usage(request)
+        request.status = payload.status
         await self._session.flush()
         self._audit(
             action="status_change",

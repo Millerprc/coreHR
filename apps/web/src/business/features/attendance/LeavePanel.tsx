@@ -19,11 +19,13 @@ export function LeavePanel({ token, canAdmin }: LeavePanelProps) {
   const [leaveTypes, setLeaveTypes] = useState<readonly LeaveType[]>([])
   const [requests, setRequests] = useState<readonly LeaveRequest[]>([])
   const [typeOpen, setTypeOpen] = useState(false)
+  const [balanceRuleTarget, setBalanceRuleTarget] = useState<LeaveType | null>(null)
   const [requestOpen, setRequestOpen] = useState(false)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [typeForm] = Form.useForm()
+  const [balanceRuleForm] = Form.useForm<{ balance_mode: "none" | "tracked" | "enforced" }>()
   const [requestForm] = Form.useForm()
 
   const load = useCallback(async () => {
@@ -51,7 +53,12 @@ export function LeavePanel({ token, canAdmin }: LeavePanelProps) {
     setSaving(true)
     setError(null)
     try {
-      await attendanceApi.createLeaveType(token, { ...values, code: String(values.code).toUpperCase(), rules: {} })
+      const { balance_mode, ...fields } = values
+      await attendanceApi.createLeaveType(token, {
+        ...fields,
+        code: String(values.code).toUpperCase(),
+        rules: { balance_mode: balance_mode ?? "none" },
+      })
       typeForm.resetFields()
       setTypeOpen(false)
       await load()
@@ -72,6 +79,28 @@ export function LeavePanel({ token, canAdmin }: LeavePanelProps) {
       await load()
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "请假记录创建失败")
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  function openBalanceRule(item: LeaveType): void {
+    balanceRuleForm.setFieldsValue({ balance_mode: (item.rules.balance_mode as "none" | "tracked" | "enforced" | undefined) ?? "none" })
+    setBalanceRuleTarget(item)
+  }
+
+  async function updateBalanceRule(values: { balance_mode: "none" | "tracked" | "enforced" }): Promise<void> {
+    if (!balanceRuleTarget) return
+    setSaving(true)
+    setError(null)
+    try {
+      await attendanceApi.updateLeaveType(token, balanceRuleTarget.id, {
+        rules: { ...balanceRuleTarget.rules, balance_mode: values.balance_mode },
+      })
+      setBalanceRuleTarget(null)
+      await load()
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "余额规则更新失败")
     } finally {
       setSaving(false)
     }
@@ -111,12 +140,14 @@ export function LeavePanel({ token, canAdmin }: LeavePanelProps) {
 
   return <div className="lifecycle-panel-stack">
     {error && <Alert closable onClose={() => setError(null)} type="error" showIcon message={error} />}
-    <div className="panel-heading"><div><Typography.Title level={4}>假期规则</Typography.Title><Typography.Text type="secondary">假期类型按天或小时记录；余额和复杂额度规则后续可继续扩展。</Typography.Text></div>{canAdmin && <Button onClick={() => setTypeOpen(true)}>新建假期类型</Button>}</div>
+    <div className="panel-heading"><div><Typography.Title level={4}>假期规则</Typography.Title><Typography.Text type="secondary">每类假期可选择不跟踪余额、允许负余额或余额不足时阻止批准。</Typography.Text></div>{canAdmin && <Button onClick={() => setTypeOpen(true)}>新建假期类型</Button>}</div>
     <Table size="small" loading={loading} rowKey="id" dataSource={[...leaveTypes]} locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无假期类型" /> }} columns={[
       { title: "代码", dataIndex: "code", width: 160 },
       { title: "名称", dataIndex: "name" },
       { title: "单位", dataIndex: "unit", width: 100, render: (value) => value === "day" ? "天" : "小时" },
+      { title: "余额规则", width: 180, render: (_value, row) => ({ none: "不跟踪", tracked: "记录，可为负", enforced: "余额不足不批准" }[String(row.rules.balance_mode ?? "none")] ?? "不跟踪") },
       { title: "状态", dataIndex: "status", width: 100, render: (value) => <Tag color={value === "active" ? "success" : "default"}>{value}</Tag> },
+      { title: "操作", width: 110, render: (_value, row) => canAdmin ? <Button type="link" onClick={() => openBalanceRule(row)}>设置余额规则</Button> : null },
     ]} />
 
     <div className="panel-heading"><div><Typography.Title level={4}>请假与销假</Typography.Title><Typography.Text type="secondary">主管理员可直接批准；销假以关联记录呈现并保留原申请。</Typography.Text></div>{canAdmin && <Button type="primary" onClick={() => setRequestOpen(true)}>登记请假</Button>}</div>
@@ -143,6 +174,32 @@ export function LeavePanel({ token, canAdmin }: LeavePanelProps) {
         <Form.Item label="类型代码" name="code" rules={[{ required: true }]}><Input /></Form.Item>
         <Form.Item label="类型名称" name="name" rules={[{ required: true }]}><Input /></Form.Item>
         <Form.Item label="计量单位" name="unit" initialValue="day" rules={[{ required: true }]}><Select options={[{ label: "天", value: "day" }, { label: "小时", value: "hour" }]} /></Form.Item>
+        <Form.Item label="余额规则" name="balance_mode" initialValue="none" rules={[{ required: true }]}>
+          <Select options={[
+            { label: "不跟踪余额", value: "none" },
+            { label: "记录余额，允许为负", value: "tracked" },
+            { label: "余额不足时不允许批准", value: "enforced" },
+          ]} />
+        </Form.Item>
+      </Form>
+    </Modal>
+    <Modal
+      title={balanceRuleTarget ? `设置 ${balanceRuleTarget.name} 的余额规则` : "设置余额规则"}
+      open={Boolean(balanceRuleTarget)}
+      okText="保存"
+      confirmLoading={saving}
+      onOk={() => balanceRuleForm.submit()}
+      onCancel={() => setBalanceRuleTarget(null)}
+    >
+      <Alert type="info" showIcon title="规则只影响后续批准和入账，历史流水不会重算" />
+      <Form form={balanceRuleForm} layout="vertical" requiredMark={false} onFinish={(values) => void updateBalanceRule(values)}>
+        <Form.Item label="余额规则" name="balance_mode" rules={[{ required: true }]}>
+          <Select options={[
+            { label: "不跟踪余额", value: "none" },
+            { label: "记录余额，允许为负", value: "tracked" },
+            { label: "余额不足时不允许批准", value: "enforced" },
+          ]} />
+        </Form.Item>
       </Form>
     </Modal>
     <Modal title="登记请假" open={requestOpen} okText="保存草稿" confirmLoading={saving} onOk={() => requestForm.submit()} onCancel={() => setRequestOpen(false)}>

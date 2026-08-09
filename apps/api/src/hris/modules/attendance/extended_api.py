@@ -19,6 +19,11 @@ from hris.modules.attendance.extended_schemas import (
     AttendancePeriodFreezePage,
     AttendancePeriodFreezeRelease,
     AttendancePeriodFreezeResponse,
+    LeaveBalanceAccountPage,
+    LeaveBalanceAccountResponse,
+    LeaveBalanceTransactionCreate,
+    LeaveBalanceTransactionPage,
+    LeaveBalanceTransactionResponse,
     LeaveCancellationCreate,
     LeaveRequestCreate,
     LeaveRequestPage,
@@ -306,6 +311,73 @@ async def update_leave_type(
 ) -> LeaveTypeResponse:
     return LeaveTypeResponse.model_validate(
         await service(db, user, request).update_leave_type(leave_type_id, payload)
+    )
+
+
+@router.post(
+    "/leave-balances/transactions",
+    response_model=LeaveBalanceTransactionResponse,
+    status_code=201,
+)
+async def create_leave_balance_transaction(
+    payload: LeaveBalanceTransactionCreate,
+    request: Request,
+    db: DbSession,
+    user: AdminUser,
+) -> LeaveBalanceTransactionResponse:
+    return LeaveBalanceTransactionResponse.model_validate(
+        await service(db, user, request).create_leave_balance_transaction(payload)
+    )
+
+
+@router.get("/leave-balances", response_model=LeaveBalanceAccountPage)
+async def list_leave_balance_accounts(
+    request: Request,
+    db: DbSession,
+    user: AdminUser,
+    employment_id: UUID | None = Query(default=None),
+    leave_type_id: UUID | None = Query(default=None),
+    period_year: int | None = Query(default=None, ge=2000, le=2200),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+) -> LeaveBalanceAccountPage:
+    items, total = await service(db, user, request).list_leave_balance_accounts(
+        employment_id=employment_id,
+        leave_type_id=leave_type_id,
+        period_year=period_year,
+        limit=limit,
+        offset=offset,
+    )
+    return LeaveBalanceAccountPage(
+        items=[LeaveBalanceAccountResponse.model_validate(item) for item in items],
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.get(
+    "/leave-balances/{account_id}/transactions",
+    response_model=LeaveBalanceTransactionPage,
+)
+async def list_leave_balance_transactions(
+    account_id: UUID,
+    request: Request,
+    db: DbSession,
+    user: AdminUser,
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+) -> LeaveBalanceTransactionPage:
+    items, total = await service(db, user, request).list_leave_balance_transactions(
+        account_id,
+        limit=limit,
+        offset=offset,
+    )
+    return LeaveBalanceTransactionPage(
+        items=[LeaveBalanceTransactionResponse.model_validate(item) for item in items],
+        total=total,
+        limit=limit,
+        offset=offset,
     )
 
 

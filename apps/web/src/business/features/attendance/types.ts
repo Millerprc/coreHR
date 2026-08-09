@@ -87,6 +87,38 @@ export interface LeaveRequest {
 }
 
 
+export interface LeaveBalanceAccount {
+  readonly id: string
+  readonly employment_id: string
+  readonly leave_type_id: string
+  readonly period_year: number
+  readonly unit: "day" | "hour"
+  readonly current_balance: string
+  readonly version: number
+  readonly status: "active" | "closed"
+  readonly created_at: string
+  readonly updated_at: string
+}
+
+
+export interface LeaveBalanceTransaction {
+  readonly id: string
+  readonly account_id: string
+  readonly transaction_type: "grant" | "adjustment" | "carryover" | "accrual" | "usage" | "reversal"
+  readonly amount: string
+  readonly effective_date: string
+  readonly balance_before: string
+  readonly balance_after: string
+  readonly account_version: number
+  readonly source_type: string
+  readonly source_id: string | null
+  readonly idempotency_key: string
+  readonly reason: string
+  readonly actor_id: string
+  readonly created_at: string
+}
+
+
 export interface AttendanceDailyResult {
   readonly id: string
   readonly employment_id: string

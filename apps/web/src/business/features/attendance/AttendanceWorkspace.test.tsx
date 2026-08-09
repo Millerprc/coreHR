@@ -36,6 +36,26 @@ describe("AttendanceWorkspace", () => {
         is_current: true,
       }]))
       if (path.includes("/monthly-results?")) return Response.json(page([]))
+      if (path.includes("/leave-balances?")) return Response.json(page([{
+        id: "balance-1",
+        employment_id: "employment-1",
+        leave_type_id: "leave-type-1",
+        period_year: 2026,
+        unit: "day",
+        current_balance: "8.00",
+        version: 3,
+        status: "active",
+        created_at: "2026-01-01T00:00:00Z",
+        updated_at: "2026-08-09T00:00:00Z",
+      }]))
+      if (path.includes("/leave-types?")) return Response.json(page([{
+        id: "leave-type-1",
+        code: "ANNUAL",
+        name: "年假",
+        unit: "day",
+        status: "active",
+        rules: { balance_mode: "enforced" },
+      }]))
       if (path.includes("/period-freezes?")) return Response.json(page([{
         id: "freeze-1",
         freeze_type: "special",
@@ -83,5 +103,13 @@ describe("AttendanceWorkspace", () => {
     expect(await screen.findByText("合成特殊业务冻结")).toBeInTheDocument()
     expect(screen.getByText("冻结中")).toBeInTheDocument()
     expect(screen.getByRole("button", { name: "解冻" })).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole("tab", { name: "请假与销假" }))
+    expect(await screen.findByRole("button", { name: "设置余额规则" })).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole("tab", { name: "假期余额" }))
+    expect(await screen.findByText("8.00 天")).toBeInTheDocument()
+    expect(screen.getAllByText("年假").length).toBeGreaterThan(0)
+    expect(screen.getByRole("button", { name: "调整额度" })).toBeInTheDocument()
   }, 15_000)
 })

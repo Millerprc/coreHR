@@ -156,6 +156,91 @@ class LeaveRequest(UuidPrimaryKeyMixin, TimestampMixin, Base):
     )
 
 
+class LeaveBalanceAccount(UuidPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "leave_balance_accounts"
+    __table_args__ = (
+        UniqueConstraint(
+            "employment_id",
+            "leave_type_id",
+            "period_year",
+        ),
+        CheckConstraint(
+            "period_year BETWEEN 2000 AND 2200",
+            name="period_year_allowed",
+        ),
+        CheckConstraint("unit IN ('day', 'hour')", name="unit_allowed"),
+        CheckConstraint("status IN ('active', 'closed')", name="status_allowed"),
+        CheckConstraint("version >= 0", name="version_non_negative"),
+    )
+
+    employment_id: Mapped[UUID] = mapped_column(
+        Uuid,
+        ForeignKey("employments.id"),
+        nullable=False,
+        index=True,
+    )
+    leave_type_id: Mapped[UUID] = mapped_column(
+        Uuid,
+        ForeignKey("leave_types.id"),
+        nullable=False,
+        index=True,
+    )
+    period_year: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    unit: Mapped[str] = mapped_column(String(20), nullable=False)
+    current_balance: Mapped[Decimal] = mapped_column(
+        Numeric(12, 2),
+        nullable=False,
+        default=0,
+    )
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="active")
+
+
+class LeaveBalanceTransaction(UuidPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "leave_balance_transactions"
+    __table_args__ = (
+        CheckConstraint(
+            "transaction_type IN "
+            "('grant', 'adjustment', 'carryover', 'accrual', 'usage', 'reversal')",
+            name="transaction_type_allowed",
+        ),
+        CheckConstraint("amount <> 0", name="amount_non_zero"),
+        CheckConstraint("account_version > 0", name="account_version_positive"),
+        CheckConstraint(
+            "balance_after = balance_before + amount",
+            name="balance_math_consistent",
+        ),
+        Index(
+            "ix_leave_balance_transactions_account_version",
+            "account_id",
+            "account_version",
+        ),
+        Index(
+            "ix_leave_balance_transactions_source",
+            "source_type",
+            "source_id",
+        ),
+    )
+
+    account_id: Mapped[UUID] = mapped_column(
+        Uuid,
+        ForeignKey("leave_balance_accounts.id"),
+        nullable=False,
+    )
+    transaction_type: Mapped[str] = mapped_column(String(30), nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    effective_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    balance_before: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    balance_after: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    account_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    source_type: Mapped[str] = mapped_column(String(30), nullable=False)
+    source_id: Mapped[UUID | None] = mapped_column(Uuid)
+    idempotency_key: Mapped[UUID] = mapped_column(Uuid, unique=True, nullable=False)
+    request_checksum: Mapped[str] = mapped_column(String(64), nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    actor_id: Mapped[UUID] = mapped_column(Uuid, nullable=False, index=True)
+
+
 class AttendanceDailyResult(UuidPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "attendance_daily_results"
     __table_args__ = (
