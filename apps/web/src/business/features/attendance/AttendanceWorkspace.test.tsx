@@ -36,6 +36,21 @@ describe("AttendanceWorkspace", () => {
         is_current: true,
       }]))
       if (path.includes("/monthly-results?")) return Response.json(page([]))
+      if (path.includes("/period-freezes?")) return Response.json(page([{
+        id: "freeze-1",
+        freeze_type: "special",
+        date_from: "2026-08-15",
+        date_to: "2026-08-20",
+        status: "active",
+        reason: "合成特殊业务冻结",
+        frozen_by: "user-1",
+        frozen_at: "2026-08-14T00:00:00Z",
+        released_by: null,
+        released_at: null,
+        release_reason: null,
+        created_at: "2026-08-14T00:00:00Z",
+        updated_at: "2026-08-14T00:00:00Z",
+      }]))
       if (path.includes("/rule-sets?")) return Response.json(page([{
         id: "rule-1",
         code: "STANDARD_CN",
@@ -63,5 +78,10 @@ describe("AttendanceWorkspace", () => {
     expect(await screen.findByText("STANDARD_CN")).toBeInTheDocument()
     expect(screen.getByText("中国标准考勤")).toBeInTheDocument()
     expect(screen.getByRole("button", { name: "新版本" })).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole("tab", { name: "期间冻结" }))
+    expect(await screen.findByText("合成特殊业务冻结")).toBeInTheDocument()
+    expect(screen.getByText("冻结中")).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "解冻" })).toBeInTheDocument()
   }, 15_000)
 })

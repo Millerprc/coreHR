@@ -1,4 +1,4 @@
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from typing import Any, Literal
 from uuid import UUID
@@ -298,6 +298,60 @@ class AttendanceMonthlyResultResponse(BaseModel):
 
 class AttendanceMonthlyResultPage(BaseModel):
     items: list[AttendanceMonthlyResultResponse]
+    total: int
+    limit: int
+    offset: int
+
+
+class AttendancePeriodFreezeCreate(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    freeze_type: Literal["monthly", "special"]
+    date_from: date
+    date_to: date
+    reason: str = Field(min_length=1, max_length=500)
+
+    @model_validator(mode="after")
+    def validate_period(self) -> "AttendancePeriodFreezeCreate":
+        if self.date_to < self.date_from:
+            raise ValueError("date_to不能早于date_from")
+        if self.freeze_type == "monthly":
+            next_month = date(
+                self.date_from.year + (self.date_from.month == 12),
+                1 if self.date_from.month == 12 else self.date_from.month + 1,
+                1,
+            )
+            if self.date_from.day != 1 or self.date_to != next_month - timedelta(days=1):
+                raise ValueError("月结冻结必须覆盖一个完整自然月")
+        return self
+
+
+class AttendancePeriodFreezeRelease(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    reason: str = Field(min_length=1, max_length=500)
+
+
+class AttendancePeriodFreezeResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    freeze_type: str
+    date_from: date
+    date_to: date
+    status: str
+    reason: str
+    frozen_by: UUID
+    frozen_at: datetime
+    released_by: UUID | None
+    released_at: datetime | None
+    release_reason: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class AttendancePeriodFreezePage(BaseModel):
+    items: list[AttendancePeriodFreezeResponse]
     total: int
     limit: int
     offset: int

@@ -10,6 +10,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Integer,
+    Index,
     Numeric,
     String,
     Text,
@@ -230,3 +231,41 @@ class AttendanceMonthlyResult(UuidPrimaryKeyMixin, TimestampMixin, Base):
     is_current: Mapped[bool] = mapped_column(nullable=False, default=True)
     status: Mapped[str] = mapped_column(String(30), nullable=False)
 
+
+class AttendancePeriodFreeze(UuidPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "attendance_period_freezes"
+    __table_args__ = (
+        CheckConstraint("date_to >= date_from", name="period_order"),
+        CheckConstraint(
+            "freeze_type IN ('monthly', 'special')",
+            name="freeze_type_allowed",
+        ),
+        CheckConstraint(
+            "status IN ('active', 'released')",
+            name="status_allowed",
+        ),
+        CheckConstraint(
+            "(status = 'active' AND released_at IS NULL AND released_by IS NULL "
+            "AND release_reason IS NULL) OR "
+            "(status = 'released' AND released_at IS NOT NULL "
+            "AND released_by IS NOT NULL AND release_reason IS NOT NULL)",
+            name="release_state_consistent",
+        ),
+        Index(
+            "ix_attendance_period_freezes_status_range",
+            "status",
+            "date_from",
+            "date_to",
+        ),
+    )
+
+    freeze_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    date_from: Mapped[date] = mapped_column(Date, nullable=False)
+    date_to: Mapped[date] = mapped_column(Date, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="active")
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    frozen_by: Mapped[UUID] = mapped_column(Uuid, nullable=False, index=True)
+    frozen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    released_by: Mapped[UUID | None] = mapped_column(Uuid, index=True)
+    released_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    release_reason: Mapped[str | None] = mapped_column(Text)

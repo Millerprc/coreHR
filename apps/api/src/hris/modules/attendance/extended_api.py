@@ -1,4 +1,4 @@
-from typing import Annotated
+from typing import Annotated, Literal
 from datetime import date, datetime
 from uuid import UUID
 
@@ -15,6 +15,10 @@ from hris.modules.attendance.extended_schemas import (
     AttendanceMonthlyCalculate,
     AttendanceMonthlyResultPage,
     AttendanceMonthlyResultResponse,
+    AttendancePeriodFreezeCreate,
+    AttendancePeriodFreezePage,
+    AttendancePeriodFreezeRelease,
+    AttendancePeriodFreezeResponse,
     LeaveCancellationCreate,
     LeaveRequestCreate,
     LeaveRequestPage,
@@ -49,6 +53,67 @@ AdminUser = Annotated[UserAccount, Depends(require_permission("ATTENDANCE_ADMIN"
 
 def service(db: AsyncSession, user: UserAccount, request: Request) -> ExtendedAttendanceService:
     return ExtendedAttendanceService(db, actor_id=user.id, trace_id=str(request.state.trace_id))
+
+
+@router.post(
+    "/period-freezes",
+    response_model=AttendancePeriodFreezeResponse,
+    status_code=201,
+)
+async def create_period_freeze(
+    payload: AttendancePeriodFreezeCreate,
+    request: Request,
+    db: DbSession,
+    user: AdminUser,
+) -> AttendancePeriodFreezeResponse:
+    return AttendancePeriodFreezeResponse.model_validate(
+        await service(db, user, request).create_period_freeze(payload)
+    )
+
+
+@router.get("/period-freezes", response_model=AttendancePeriodFreezePage)
+async def list_period_freezes(
+    request: Request,
+    db: DbSession,
+    user: AdminUser,
+    freeze_status: Literal["active", "released"] | None = Query(
+        default=None,
+        alias="status",
+    ),
+    date_from: date | None = Query(default=None),
+    date_to: date | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+) -> AttendancePeriodFreezePage:
+    items, total = await service(db, user, request).list_period_freezes(
+        status=freeze_status,
+        date_from=date_from,
+        date_to=date_to,
+        limit=limit,
+        offset=offset,
+    )
+    return AttendancePeriodFreezePage(
+        items=[AttendancePeriodFreezeResponse.model_validate(item) for item in items],
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.post(
+    "/period-freezes/{freeze_id}/release",
+    response_model=AttendancePeriodFreezeResponse,
+)
+async def release_period_freeze(
+    freeze_id: UUID,
+    payload: AttendancePeriodFreezeRelease,
+    request: Request,
+    db: DbSession,
+    user: AdminUser,
+) -> AttendancePeriodFreezeResponse:
+    return AttendancePeriodFreezeResponse.model_validate(
+        await service(db, user, request).release_period_freeze(freeze_id, payload)
+    )
 
 
 @router.get("/employment-options", response_model=AttendanceEmploymentOptionPage)

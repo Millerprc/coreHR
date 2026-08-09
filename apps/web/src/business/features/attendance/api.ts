@@ -3,6 +3,7 @@ import type {
   AttendanceDailyResult,
   AttendanceEmploymentOption,
   AttendanceMonthlyResult,
+  AttendancePeriodFreeze,
   AttendancePage,
   AttendancePunch,
   AttendanceRuleSet,
@@ -14,6 +15,9 @@ import type {
 
 
 export const attendanceApi = {
+  periodFreezes: (token: string) => apiRequest<AttendancePage<AttendancePeriodFreeze>>("/api/v1/attendance/period-freezes?limit=200&offset=0", token),
+  createPeriodFreeze: (token: string, body: unknown) => apiRequest<AttendancePeriodFreeze>("/api/v1/attendance/period-freezes", token, { method: "POST", body }),
+  releasePeriodFreeze: (token: string, id: string, body: unknown) => apiRequest<AttendancePeriodFreeze>(`/api/v1/attendance/period-freezes/${id}/release`, token, { method: "POST", body }),
   employmentOptions: (token: string, search = "") => apiRequest<AttendancePage<AttendanceEmploymentOption>>(`/api/v1/attendance/employment-options?limit=200&offset=0${search ? `&search=${encodeURIComponent(search)}` : ""}`, token),
   ruleSets: (token: string) => apiRequest<AttendancePage<AttendanceRuleSet>>("/api/v1/attendance/rule-sets?limit=200&offset=0", token),
   createRuleSet: (token: string, body: unknown) => apiRequest<AttendanceRuleSet>("/api/v1/attendance/rule-sets", token, { method: "POST", body }),

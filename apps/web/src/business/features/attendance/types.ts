@@ -117,3 +117,20 @@ export interface AttendanceMonthlyResult {
   readonly is_current: boolean
   readonly status: string
 }
+
+
+export interface AttendancePeriodFreeze {
+  readonly id: string
+  readonly freeze_type: "monthly" | "special"
+  readonly date_from: string
+  readonly date_to: string
+  readonly status: "active" | "released"
+  readonly reason: string
+  readonly frozen_by: string
+  readonly frozen_at: string
+  readonly released_by: string | null
+  readonly released_at: string | null
+  readonly release_reason: string | null
+  readonly created_at: string
+  readonly updated_at: string
+}

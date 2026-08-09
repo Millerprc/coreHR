@@ -3,6 +3,7 @@
 from hris.modules.attendance.models import (
     AttendanceDailyResult,
     AttendanceMonthlyResult,
+    AttendancePeriodFreeze,
     AttendancePunch,
     AttendanceRuleSet,
     LeaveRequest,
@@ -50,6 +51,7 @@ __all__ = [
     "AgreementRelationship",
     "AttendanceDailyResult",
     "AttendanceMonthlyResult",
+    "AttendancePeriodFreeze",
     "AttendancePunch",
     "AttendanceRuleSet",
     "AuditLog",

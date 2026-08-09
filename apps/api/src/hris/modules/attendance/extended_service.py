@@ -11,6 +11,8 @@ from hris.core.errors import ApiError
 from hris.modules.attendance.extended_schemas import (
     AttendanceDailyCalculate,
     AttendanceMonthlyCalculate,
+    AttendancePeriodFreezeCreate,
+    AttendancePeriodFreezeRelease,
     LeaveCancellationCreate,
     LeaveRequestCreate,
     LeaveRequestUpdate,
@@ -25,6 +27,7 @@ from hris.modules.attendance.extended_schemas import (
 from hris.modules.attendance.models import (
     AttendanceDailyResult,
     AttendanceMonthlyResult,
+    AttendancePeriodFreeze,
     AttendancePunch,
     AttendanceRuleSet,
     LeaveRequest,
@@ -35,6 +38,9 @@ from hris.modules.attendance.models import (
 from hris.modules.platform.numbering import next_number
 from hris.modules.workflow.models import WorkflowInstance
 from hris.modules.workforce.models import AuditLog, Employment, Person
+
+
+_ATTENDANCE_PERIOD_LOCK_NAMESPACE = 1_096_049_732
 
 
 class ExtendedAttendanceService:
@@ -67,6 +73,164 @@ class ExtendedAttendanceService:
                 source="api",
             )
         )
+
+    async def create_period_freeze(
+        self,
+        payload: AttendancePeriodFreezeCreate,
+    ) -> AttendancePeriodFreeze:
+        await self._lock_period(payload.date_from, payload.date_to)
+        freeze = AttendancePeriodFreeze(
+            **payload.model_dump(),
+            status="active",
+            frozen_by=self._actor_id,
+            frozen_at=datetime.now(UTC),
+        )
+        self._session.add(freeze)
+        await self._session.flush()
+        self._audit(
+            action="attendance.period_freeze.create",
+            object_type="attendance_period_freeze",
+            object_id=freeze.id,
+            reason=freeze.reason,
+            after={
+                "freeze_type": freeze.freeze_type,
+                "date_from": freeze.date_from.isoformat(),
+                "date_to": freeze.date_to.isoformat(),
+                "status": freeze.status,
+            },
+        )
+        return freeze
+
+    async def list_period_freezes(
+        self,
+        *,
+        status: str | None,
+        date_from: date | None,
+        date_to: date | None,
+        limit: int,
+        offset: int,
+    ) -> tuple[list[AttendancePeriodFreeze], int]:
+        if date_from is not None and date_to is not None and date_to < date_from:
+            raise ApiError(
+                status_code=422,
+                code="ATTENDANCE_PERIOD_QUERY_INVALID",
+                message="查询结束日期不能早于开始日期",
+            )
+        filters = []
+        if status is not None:
+            filters.append(AttendancePeriodFreeze.status == status)
+        if date_from is not None:
+            filters.append(AttendancePeriodFreeze.date_to >= date_from)
+        if date_to is not None:
+            filters.append(AttendancePeriodFreeze.date_from <= date_to)
+        total = await self._session.scalar(
+            select(func.count()).select_from(AttendancePeriodFreeze).where(*filters)
+        )
+        items = list(
+            (
+                await self._session.scalars(
+                    select(AttendancePeriodFreeze)
+                    .where(*filters)
+                    .order_by(
+                        AttendancePeriodFreeze.date_from.desc(),
+                        AttendancePeriodFreeze.frozen_at.desc(),
+                    )
+                    .limit(limit)
+                    .offset(offset)
+                )
+            ).all()
+        )
+        return items, total or 0
+
+    async def release_period_freeze(
+        self,
+        freeze_id: UUID,
+        payload: AttendancePeriodFreezeRelease,
+    ) -> AttendancePeriodFreeze:
+        freeze = await self._session.get(
+            AttendancePeriodFreeze,
+            freeze_id,
+            with_for_update=True,
+        )
+        if freeze is None:
+            raise ApiError(
+                status_code=404,
+                code="ATTENDANCE_PERIOD_FREEZE_NOT_FOUND",
+                message="考勤冻结记录不存在",
+            )
+        if freeze.status == "released":
+            return freeze
+        await self._lock_period(freeze.date_from, freeze.date_to)
+        freeze.status = "released"
+        freeze.released_by = self._actor_id
+        freeze.released_at = datetime.now(UTC)
+        freeze.release_reason = payload.reason
+        await self._session.flush()
+        await self._session.refresh(freeze)
+        self._audit(
+            action="attendance.period_freeze.release",
+            object_type="attendance_period_freeze",
+            object_id=freeze.id,
+            reason=payload.reason,
+            before={"status": "active"},
+            after={"status": freeze.status},
+        )
+        return freeze
+
+    async def _assert_period_not_frozen(
+        self,
+        date_from: date,
+        date_to: date,
+    ) -> None:
+        await self._lock_period(date_from, date_to)
+        freezes = list(
+            (
+                await self._session.scalars(
+                    select(AttendancePeriodFreeze)
+                    .where(
+                        AttendancePeriodFreeze.status == "active",
+                        AttendancePeriodFreeze.date_from <= date_to,
+                        AttendancePeriodFreeze.date_to >= date_from,
+                    )
+                    .order_by(
+                        AttendancePeriodFreeze.date_from,
+                        AttendancePeriodFreeze.frozen_at,
+                    )
+                    .limit(20)
+                )
+            ).all()
+        )
+        if not freezes:
+            return
+        raise ApiError(
+            status_code=409,
+            code="ATTENDANCE_PERIOD_FROZEN",
+            message="所选日期处于考勤冻结期间，需先填写原因并解冻",
+            details=[
+                {
+                    "freeze_id": str(item.id),
+                    "freeze_type": item.freeze_type,
+                    "date_from": item.date_from.isoformat(),
+                    "date_to": item.date_to.isoformat(),
+                }
+                for item in freezes
+            ],
+        )
+
+    async def _lock_period(self, date_from: date, date_to: date) -> None:
+        cursor = date(date_from.year, date_from.month, 1)
+        last_month = date(date_to.year, date_to.month, 1)
+        while cursor <= last_month:
+            month_key = cursor.year * 100 + cursor.month
+            await self._session.execute(
+                select(
+                    func.pg_advisory_xact_lock(
+                        _ATTENDANCE_PERIOD_LOCK_NAMESPACE,
+                        month_key,
+                    )
+                )
+            )
+            cursor = self._next_month(cursor)
 
     async def list_employment_options(
         self,
@@ -514,6 +678,7 @@ class ExtendedAttendanceService:
     ) -> AttendanceDailyResult:
         if await self._session.get(Employment, payload.employment_id) is None:
             raise ApiError(status_code=404, code="EMPLOYMENT_NOT_FOUND", message="employment not found")
+        await self._assert_period_not_frozen(payload.work_date, payload.work_date)
         schedule = await self._session.scalar(
             select(ScheduleAssignment).where(
                 ScheduleAssignment.employment_id == payload.employment_id,
@@ -712,6 +877,10 @@ class ExtendedAttendanceService:
         if await self._session.get(Employment, payload.employment_id) is None:
             raise ApiError(status_code=404, code="EMPLOYMENT_NOT_FOUND", message="employment not found")
         next_month = self._next_month(payload.period_month)
+        await self._assert_period_not_frozen(
+            payload.period_month,
+            next_month - timedelta(days=1),
+        )
         schedules = list(
             (
                 await self._session.scalars(
