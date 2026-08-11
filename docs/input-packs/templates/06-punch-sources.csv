@@ -1,0 +1,2 @@
+source_code,source_name,direction,interface_type,auth_method,source_timezone,employee_key,event_id_key,event_time_key,event_type_key,batch_limit,history_window_days,normal_peak_events_per_minute,extreme_peak_events_per_minute,contract_location,notes
+WECHAT_WORK_SAMPLE,企业微信示例,push,webhook,to_confirm,Asia/Shanghai,user_id,event_id,event_time,check_type,100,30,1000,10000,本机文档路径或供应商文档编号,示例行可覆盖

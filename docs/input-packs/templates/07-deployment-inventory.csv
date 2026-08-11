@@ -1,0 +1,3 @@
+environment,purpose,host_or_asset_code,cpu_cores,memory_gb,disk_type,disk_capacity_gb,available_capacity_gb,measured_iops,network_mbps,os,container_runtime,tls_entry,dns_mode,backup_destination,monitoring,notes
+MVP_UAT,一至三阶段业务验收,HOST-SYNTHETIC-8G,,8,,,,,,待确认,Docker待确认,待确认,待确认,待确认,待确认,不填写真实地址或凭证
+TARGET_32G,迁移与容量验证,HOST-SYNTHETIC-32G,,32,,,,,,待确认,Docker待确认,待确认,待确认,待确认,待确认,不填写真实地址或凭证

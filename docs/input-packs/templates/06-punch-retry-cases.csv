@@ -1,0 +1,4 @@
+case_code,source_code,scenario,first_attempt,repeat_or_correction,expected_http_class,expected_connector_result,expected_corehr_result,automatic_retry,max_attempts,backoff_policy,manual_action,notes
+PUNCH_IDEMPOTENT,WECHAT_WORK_SAMPLE,同一事件重复发送,成功,相同内容,2xx,DUPLICATE,不新增且返回原记录,N,0,,无需处理,示例
+PUNCH_CONFLICT,WECHAT_WORK_SAMPLE,同一事件ID内容变化,成功,时间或人员变化,4xx,CONFLICT,不覆盖原记录,N,0,,核对来源更正规则,示例
+PUNCH_NETWORK,WECHAT_WORK_SAMPLE,连接超时,超时,原事件重放,2xx,RECOVERED,只新增一次,Y,5,exponential_with_jitter,超过上限进入异常队列,示例

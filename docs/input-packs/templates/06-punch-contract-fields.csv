@@ -1,0 +1,5 @@
+source_code,source_field,normalized_field,data_type,required,example_synthetic,timezone_or_enum,retention_class,validation_rule,notes
+WECHAT_WORK_SAMPLE,event_id,source_record_id,string,Y,evt-000001,,operational,source内永久唯一,示例
+WECHAT_WORK_SAMPLE,user_id,source_employee_id,string,Y,user-synthetic-001,,sensitive_reference,不能为空,不填真实人员
+WECHAT_WORK_SAMPLE,event_time,occurred_at,datetime,Y,2026-08-12T08:55:00+08:00,RFC3339_WITH_OFFSET,operational,必须带UTC偏移,示例
+WECHAT_WORK_SAMPLE,check_type,event_type,string,N,IN,IN|OUT|UNKNOWN,operational,未知值映射UNKNOWN,示例

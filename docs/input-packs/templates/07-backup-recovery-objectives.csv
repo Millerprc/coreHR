@@ -1,0 +1,5 @@
+data_class,scope,backup_method,frequency,rpo_minutes,rto_minutes,retention_days,encryption_required,off_host_copy,restore_test_frequency,integrity_check,owner_role,example_only,notes
+DATABASE,PostgreSQL业务与审计数据,待确认,每日全量示例,1440,240,30,Y,Y,每季度示例,恢复后执行迁移状态与抽样对账,运维角色,Y,示例值不是正式承诺
+ATTACHMENTS,合同协议及人员附件,待确认,每日增量示例,1440,480,30,Y,Y,每季度示例,文件数大小与摘要核对,运维角色,Y,当前附件能力待完善
+CONFIGURATION,部署配置与非密钥版本信息,版本库加受控备份,每次变更,1440,240,90,Y,Y,每季度示例,版本与环境清单核对,运维角色,Y,密钥不得进入版本库
+LOGS,应用与安全日志,待确认,按日归档示例,1440,480,30,Y,Y,每季度示例,可检索性与脱敏抽查,审计角色,Y,不得记录人员敏感字段或凭证

@@ -1,0 +1,4 @@
+scenario_code,phase,action_or_endpoint,active_users,ramp_seconds,steady_seconds,requests_per_user,target_rps,payload_bytes,dataset_size,cache_state,target_p50_ms,target_p95_ms,target_p99_ms,max_error_rate_percent,consistency_requirement,example_only,notes
+PUNCH_BURST_10000,P3,打卡写入,10000,60,60,1,167,,10000名合成人员,cold_then_warm,,500,1000,0.1,每个来源事件最多落一条,Y,约167RPS仅为示例待确认
+ATTENDANCE_QUERY_10000,P3,个人考勤查询,10000,600,600,1,17,,10000名合成人员12个月日报,warm,,1000,2000,0.5,只能看到授权数据,Y,约17RPS仅为示例待确认
+ADMIN_MAINTENANCE,P1-P3,主管理员列表与维护,50,60,600,10,,,10000名合成人员及组织,warm,,1000,2000,0.5,写入审计且无重复提交,Y,示例
