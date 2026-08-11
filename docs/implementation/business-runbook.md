@@ -116,13 +116,15 @@ Linux或macOS：
 ./scripts/check-business-portable.sh
 ```
 
-检查脚本继承Compose中的数据库连接设置，并依次验证：
+检查脚本继承Compose中的数据库连接设置，并为每次运行创建名称含 `test` 的独立临时数据库；结束后自动删除，不读写现有 `corehr` 业务库。脚本依次验证：
 
 1. API和Web镜像构建。
-2. Python语法与后端测试。
+2. 从空测试库升级到最新迁移，并运行全部后端单元/数据库集成测试；任何集成测试被静默跳过都不算通过。
 3. 前端测试和TypeScript严格检查。
 4. `index.html`与`business.html`双入口生产构建。
-5. 完整SQLAlchemy业务模型与PostgreSQL实际结构一致性。
+5. 完整SQLAlchemy业务模型与临时PostgreSQL测试库实际结构一致性。
+
+PowerShell脚本会显式检查每个Docker命令的退出码；镜像构建、依赖启动、测试、构建或模型检查任一失败时，整个检查必须返回失败，不能继续误报成功。
 
 ## 9. 停止
 

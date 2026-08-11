@@ -9,6 +9,7 @@ const { Paragraph, Text, Title } = Typography
 const statusLabels: Record<ModuleStatus["status"], string> = {
   foundation: "基础建设",
   slice_available: "首批切片可用",
+  uat_ready: "工程 MVP 可验收",
   planned: "待建设",
 }
 
@@ -25,16 +26,12 @@ function PhaseCard({ module }: { readonly module: ModuleStatus }): React.JSX.Ele
       extra={<Tag color="blue">{statusLabels[module.status]}</Tag>}
     >
       <Text type="secondary">{module.code}</Text>
-      <Title level={5}>当前可用接口</Title>
+      <Title level={5}>当前已实现</Title>
       <List
         size="small"
-        dataSource={[...module.available_endpoints]}
-        locale={{ emptyText: "尚无可用接口" }}
-        renderItem={(endpoint) => (
-          <List.Item>
-            <code>{endpoint}</code>
-          </List.Item>
-        )}
+        dataSource={[...module.available_capabilities]}
+        locale={{ emptyText: "尚无可验收能力" }}
+        renderItem={(capability) => <List.Item>{capability}</List.Item>}
       />
       <Title level={5}>等待业务资料</Title>
       <List
@@ -82,7 +79,7 @@ export function ModuleOverview(): React.JSX.Element {
         />
       )}
       <Paragraph type="secondary">
-        当前页面展示业务一至三阶段首批可运行切片。未提供的流程图和考勤规则不会被系统猜测。
+        当前页面展示业务一至三阶段主管理员工程 MVP。通用核心链路可进入业务 UAT；未提供的企业规则和正式数据不会被系统猜测。
       </Paragraph>
       <Row gutter={[20, 20]}>
         {modules.map((module) => (
@@ -94,4 +91,3 @@ export function ModuleOverview(): React.JSX.Element {
     </>
   )
 }
-

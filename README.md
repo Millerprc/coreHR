@@ -71,6 +71,8 @@ export COREHR_BOOTSTRAP_TOKEN="一次性随机初始化凭证"
 ./scripts/check-business-portable.ps1
 ```
 
+检查会使用并自动清理独立临时测试库，运行全部后端数据库集成测试，不会读写现有业务数据；任一步失败都会返回失败码。
+
 停止本地服务：
 
 ```powershell

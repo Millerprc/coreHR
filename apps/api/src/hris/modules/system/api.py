@@ -56,38 +56,64 @@ async def list_modules() -> ModuleRegistryResponse:
                 phase=1,
                 code="CORE_HR",
                 name="组织、人事与编制",
-                status="slice_available",
+                status="uat_ready",
+                available_capabilities=[
+                    "数据字典与六类非敏感主数据导入导出",
+                    "有效日期组织、法人、负责人、BP、成本中心与收入目标",
+                    "人员、劳动/协议关系、任职、编制、快照与招聘需求",
+                ],
                 available_endpoints=[
-                    "/api/v1/workforce/organization-types",
                     "/api/v1/workforce/organizations",
+                    "/api/v1/workforce/persons",
+                    "/api/v1/workforce/headcount-results",
+                    "/api/v1/governance/import-batches",
                 ],
                 pending_inputs=[
-                    "企业现有职务体系表",
-                    "员工档案表头和脱敏样例",
+                    "正式稳定编码对照",
+                    "档案字段验收表与脱敏迁移样例",
                 ],
             ),
             ModuleStatus(
                 phase=2,
                 code="WORKFLOW_LIFECYCLE",
                 name="流程与人员生命周期",
-                status="slice_available",
-                available_endpoints=["/api/v1/workflows/definitions"],
+                status="uat_ready",
+                available_capabilities=[
+                    "流程定义、版本发布、会签/或签、实例与审批任务",
+                    "候选人、应聘、Offer确认与待入职衔接",
+                    "入转调离兼事件、未来生效、合同/协议与回退",
+                ],
+                available_endpoints=[
+                    "/api/v1/workflows/definitions",
+                    "/api/v1/lifecycle/applications",
+                    "/api/v1/lifecycle/contracts",
+                    "/api/v1/lifecycle/hr-events",
+                ],
                 pending_inputs=[
-                    "入职、转正、调动、离职、兼岗流程图",
-                    "合同与协议字段表",
+                    "正式流程图与审批人规则",
+                    "合同/协议字段、附件、提醒和电子签章规则",
                 ],
             ),
             ModuleStatus(
                 phase=3,
                 code="ATTENDANCE",
                 name="考勤",
-                status="slice_available",
-                available_endpoints=["/api/v1/attendance/rule-sets"],
+                status="uat_ready",
+                available_capabilities=[
+                    "考勤规则、班次、排班与原始打卡",
+                    "假期类型、请假/销假、年度余额账户与不可变流水",
+                    "日报、月报、月结冻结、业务冻结与受控重算",
+                ],
+                available_endpoints=[
+                    "/api/v1/attendance/rule-sets",
+                    "/api/v1/attendance/leave-requests",
+                    "/api/v1/attendance/daily-results",
+                    "/api/v1/attendance/monthly-results",
+                ],
                 pending_inputs=[
-                    "考勤、排班和假期规则",
-                    "打卡来源和设备接口",
+                    "企业考勤与假期计提规则包",
+                    "打卡接口契约与万人容量流量模型",
                 ],
             ),
         ]
     )
-

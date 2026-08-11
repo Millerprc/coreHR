@@ -27,5 +27,6 @@ async def test_module_registry_exposes_three_business_phases() -> None:
     assert response.status_code == 200
     payload = response.json()
     assert [item["phase"] for item in payload["items"]] == [1, 2, 3]
-    assert all(item["status"] == "slice_available" for item in payload["items"])
-
+    assert all(item["status"] == "uat_ready" for item in payload["items"])
+    assert all(item["available_capabilities"] for item in payload["items"])
+    assert all(item["pending_inputs"] for item in payload["items"])

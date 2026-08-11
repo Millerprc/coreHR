@@ -38,7 +38,8 @@
 | `realname` | `persons.display_name` | 原值仅进入受控目标字段，不写日志 |
 | `gender_id` | `persons.gender_code` | 通过字典映射，禁止使用显示名称作为稳定码 |
 | `birthday` | `persons.birth_date` | 日期 |
-| `nationality_id` | `persons.nationality_code` | 通过国籍字典转换 |
+| `country` | `persons.nationality_code`或`persons.country_code`候选 | 必须先确认字段业务含义，并通过 `country` 表转换为ISO代码 |
+| `nationality_id`、`nationality` | 民族扩展字典候选 | 首行样例为“汉族”，证明源字段实际语义是民族而非国籍；禁止写入 `persons.nationality_code` |
 | `employee_type_id` | `employments.employee_type_code` | 需确认枚举对照 |
 | `employee_status_id` | `employments.status` | 需确认枚举对照 |
 | `on_boarding_date` | `employments.actual_start_date` | 待入职来源为空时使用计划日期 |
@@ -85,7 +86,7 @@
 
 ## 7. 导入前必须补充的对照
 
-1. 员工类型、员工状态、性别、国籍、学历、职级、职类等字典代码。
+1. 员工类型、员工状态、性别、民族、国籍/国家、学历、职级、职类等字典代码；其中源 `nationality*` 已确认不能按国籍直接迁移。
 2. 法人名称到统一法人编码的对照表。
 3. 部门 ID、历史部门编码、父级组织及组织类型对照。
 4. 人事事件类型、状态及新旧记录优先级。

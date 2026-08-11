@@ -1,17 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repository_root="$(cd "$(dirname "$0")/.." && pwd)"
-compose_file="$repository_root/deploy/compose.yaml"
+repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+compose_file="${repository_root}/deploy/compose.yaml"
 
 cleanup() {
-  docker compose -f "$compose_file" down
+  status=$?
+  trap - EXIT
+  if ! docker compose -f "${compose_file}" down; then
+    echo "Docker cleanup failed." >&2
+    if [[ ${status} -eq 0 ]]; then
+      status=1
+    fi
+  fi
+  exit "${status}"
 }
 trap cleanup EXIT
 
-docker compose -f "$compose_file" up -d --build --wait db redis
-docker compose -f "$compose_file" run --rm api alembic upgrade head
-docker compose -f "$compose_file" run --rm api pytest -q
-docker compose -f "$compose_file" run --rm --no-deps web npm run test:run
-docker compose -f "$compose_file" run --rm --no-deps web npm run build
-
+"${repository_root}/scripts/check-business-portable.sh"
