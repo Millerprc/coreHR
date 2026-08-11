@@ -1,5 +1,5 @@
 dimension_type,dimension_code,dimension_name,parent_dimension_type,parent_dimension_code,sort_order,effective_from,effective_to,status,notes
-SEQUENCE,TECH,技术,,,10,2026-01-01,,active,示例行可覆盖或删除
-CLASS,CLASS_02,二级,SEQUENCE,TECH,20,2026-01-01,,active,示例关系按企业实际调整
-GRADE,GRADE_02,二级,CLASS,CLASS_02,20,2026-01-01,,active,示例关系按企业实际调整
-LEVEL,LEVEL_06,6省总/专业总,GRADE,GRADE_02,60,2026-01-01,,active,示例关系按企业实际调整
+SEQUENCE,TECH,技术,,,10,2026-01-01,,active,2026-08-12确认的当前唯一已知组合
+CLASS,CLASS_02,二级,SEQUENCE,TECH,20,2026-01-01,,active,2026-08-12按推荐层级冻结
+GRADE,GRADE_02,二级,CLASS,CLASS_02,20,2026-01-01,,active,2026-08-12按推荐层级冻结
+LEVEL,LEVEL_06,6省总/专业总,GRADE,GRADE_02,60,2026-01-01,,active,2026-08-12按推荐层级冻结

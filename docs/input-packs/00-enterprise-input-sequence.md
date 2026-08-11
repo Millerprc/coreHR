@@ -1,14 +1,14 @@
 # 一至三阶段企业输入顺序
 
 > 目的：一次只补一组资料；每组资料都对应明确开发和验收结果
-> 当前项：`01-职务体系与职务目录`
+> 当前项：`02-人员档案字段验收`
 
 ## 输入顺序
 
 | 顺序 | 输入包 | 当前状态 | 补充后直接交付 |
 |---:|---|---|---|
-| 1 | 职务、职级、职等、职类、序列 | `NOW` | 正式职务体系、导入校验、页面展示和编制/任职引用 |
-| 2 | [人员档案字段验收表](./05-personnel-record-field-acceptance.md) | `NEXT / TEMPLATE_READY` | 完整档案表单、必填/唯一/可编辑/敏感字段规则 |
+| 1 | [职务、职级、职等、职类、序列](./04-job-architecture-input.md) | `FIRST_SAMPLE_CONFIRMED` | 首个正式组合已冻结；后续目录按生效日期扩充 |
+| 2 | [人员档案字段验收表](./05-personnel-record-field-acceptance.md) | `NOW / TEMPLATE_READY` | 完整档案表单、必填/唯一/可编辑/敏感字段规则 |
 | 3 | [入职、转正、调动、兼岗、借调、离职、撤回/更正流程图](./06-hr-workflow-input.md) | `WAIT / TEMPLATE_READY` | 正式流程模板、条件、审批人和超时规则 |
 | 4 | 合同/协议字段、归类、附件和提醒规则 | `WAIT` | 企业合同模板、附件安全与生命周期适配 |
 | 5 | [考勤与假期规则包](./07-attendance-rule-input.md) | `WAIT / TEMPLATE_READY` | 企业日报/月报口径、自动计提/结转和精细核算 |
@@ -17,17 +17,19 @@
 
 ## 当前只需要做什么
 
-至少填写下面两份 CSV：
+先回答[人员档案字段验收包](./05-personnel-record-field-acceptance.md)第6节的8个问题。不需要一次整理完整表头；回答后我会先实现第一批52个第一阶段字段及敏感字段安全边界。
+
+职务体系当前已冻结以下两份首版 CSV，无需重复填写：
 
 1. [职务维度值模板](./templates/01-job-dimensions.csv)
 2. [职务目录模板](./templates/01-job-catalog.csv)
 
-如果同一稳定代码存在多个生效日期版本，再补充：
+以后同一稳定代码出现多个生效日期版本时，再补充：
 
 3. [职务维度历史版本模板](./templates/02-job-dimension-versions.csv)
 4. [职务历史版本模板](./templates/02-job-catalog-versions.csv)
 
-填写说明见[职务体系输入包](./04-job-architecture-input.md)。这一轮不需要同时准备人员字段、流程图或考勤规则。
+职务补充说明见[职务体系输入包](./04-job-architecture-input.md)。当前轮只确认人员字段，不需要同时准备流程图或考勤规则。
 
 ## 处理规则
 

@@ -1,2 +1,2 @@
 job_code,job_name,level_code,grade_code,class_code,sequence_code,effective_from,effective_to,status,source_job_id,notes
-JOB_LABOR_PRODUCT_GM,劳动者产品部总经理,LEVEL_06,GRADE_02,CLASS_02,TECH,2026-01-01,,active,,示例行可覆盖或删除
+JOB_LABOR_PRODUCT_GM,劳动者产品部总经理,LEVEL_06,GRADE_02,CLASS_02,TECH,2026-01-01,,active,,2026-08-12确认的当前唯一已知职务
