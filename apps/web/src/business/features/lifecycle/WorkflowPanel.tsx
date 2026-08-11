@@ -1,8 +1,10 @@
-import { Alert, Button, Empty, Form, Input, Modal, Select, Space, Table, Tag, Typography } from "antd"
+import { Alert, Button, Empty, Form, Input, Modal, Radio, Select, Space, Table, Tag, Typography } from "antd"
 import { useCallback, useEffect, useState } from "react"
 
 import { lifecycleApi } from "./api"
 import type { WorkflowDefinition, WorkflowInstance, WorkflowTask } from "./types"
+import { buildWorkflowDefinition } from "./workflowDefinition"
+import type { WorkflowTemplateValues } from "./workflowDefinition"
 
 
 interface WorkflowPanelProps {
@@ -19,7 +21,11 @@ export function WorkflowPanel({ token, canAdmin }: WorkflowPanelProps) {
   const [saving, setSaving] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [routingMode, setRoutingMode] = useState<"linear" | "conditional">("linear")
+  const [conditionOperator, setConditionOperator] = useState("eq")
   const [form] = Form.useForm()
+  const conditionNeedsValue = conditionOperator !== "exists" && conditionOperator !== "not_exists"
+  const conditionUsesList = conditionOperator === "in" || conditionOperator === "not_in"
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -42,35 +48,15 @@ export function WorkflowPanel({ token, canAdmin }: WorkflowPanelProps) {
 
   useEffect(() => { void load() }, [load])
 
-  async function createDefinition(values: Record<string, string>): Promise<void> {
+  async function createDefinition(values: WorkflowTemplateValues): Promise<void> {
     setSaving(true)
     setError(null)
     try {
-      const assignees = values.assignees.split(",").map((value) => value.trim()).filter(Boolean)
-      await lifecycleApi.createDefinition(token, {
-        code: values.code.toUpperCase(),
-        name: values.name,
-        category: values.category,
-        description: values.description || null,
-        nodes: [
-          { code: "START", name: "开始", node_type: "start" },
-          {
-            code: "APPROVE",
-            name: "主管理员审批",
-            node_type: "approval",
-            sign_mode: values.sign_mode,
-            assignees: assignees.map((assignee_ref) => ({ assignee_type: "role", assignee_ref })),
-          },
-          { code: "END", name: "结束", node_type: "end" },
-        ],
-        edges: [
-          { source: "START", target: "APPROVE" },
-          { source: "APPROVE", target: "END" },
-        ],
-        change_reason: values.change_reason,
-      })
+      await lifecycleApi.createDefinition(token, buildWorkflowDefinition(values))
       setCreateOpen(false)
       form.resetFields()
+      setRoutingMode("linear")
+      setConditionOperator("eq")
       await load()
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "流程模板创建失败")
@@ -112,7 +98,7 @@ export function WorkflowPanel({ token, canAdmin }: WorkflowPanelProps) {
     <div className="panel-heading">
       <div>
         <Typography.Title level={4}>流程模板</Typography.Title>
-        <Typography.Text type="secondary">当前先提供线性审批模板；节点支持会签或或签，后续可继续扩展条件路由。</Typography.Text>
+        <Typography.Text type="secondary">支持统一审批和按业务数据自动分流；节点可选择会签或或签。</Typography.Text>
       </div>
       {canAdmin && <Button type="primary" onClick={() => setCreateOpen(true)}>新建流程模板</Button>}
     </div>
@@ -172,19 +158,83 @@ export function WorkflowPanel({ token, canAdmin }: WorkflowPanelProps) {
     />
 
     <Modal
-      title="新建线性审批模板"
+      title="新建审批流程模板"
       open={createOpen}
       okText="创建草稿"
       confirmLoading={saving}
       onOk={() => form.submit()}
-      onCancel={() => setCreateOpen(false)}
+      onCancel={() => {
+        setCreateOpen(false)
+        form.resetFields()
+        setRoutingMode("linear")
+        setConditionOperator("eq")
+      }}
     >
-      <Form form={form} layout="vertical" requiredMark={false} onFinish={(values) => void createDefinition(values)}>
+      <Form
+        form={form}
+        layout="vertical"
+        requiredMark={false}
+        initialValues={{
+          category: "hr_event",
+          routing_mode: "linear",
+          sign_mode: "any",
+          assignees: "HR_ADMIN",
+          default_assignees: "SSC_ADMIN",
+          condition_operator: "eq",
+          condition_value_type: "text",
+        }}
+        onFinish={(values) => void createDefinition(values as WorkflowTemplateValues)}
+      >
         <Form.Item label="流程代码" name="code" rules={[{ required: true }, { pattern: /^[A-Za-z0-9_]+$/, message: "仅支持字母、数字和下划线" }]}><Input placeholder="例如 TRANSFER_APPROVAL" /></Form.Item>
         <Form.Item label="流程名称" name="name" rules={[{ required: true }]}><Input /></Form.Item>
-        <Form.Item label="业务类别" name="category" initialValue="hr_event" rules={[{ required: true }]}><Input /></Form.Item>
-        <Form.Item label="签署方式" name="sign_mode" initialValue="any" rules={[{ required: true }]}><Select options={[{ label: "或签：任一人通过", value: "any" }, { label: "会签：全部人通过", value: "all" }]} /></Form.Item>
-        <Form.Item label="办理角色" name="assignees" initialValue="HR_ADMIN" rules={[{ required: true }]}><Input placeholder="多个角色用英文逗号分隔" /></Form.Item>
+        <Form.Item label="业务类别" name="category" rules={[{ required: true }]}><Input /></Form.Item>
+        <Form.Item label="审批路径" name="routing_mode" rules={[{ required: true }]}>
+          <Radio.Group
+            optionType="button"
+            buttonStyle="solid"
+            onChange={(event) => setRoutingMode(event.target.value as "linear" | "conditional")}
+            options={[{ label: "统一审批", value: "linear" }, { label: "按条件分流", value: "conditional" }]}
+          />
+        </Form.Item>
+        <Form.Item label="签署方式" name="sign_mode" rules={[{ required: true }]}><Select options={[{ label: "或签：任一人通过", value: "any" }, { label: "会签：全部人通过", value: "all" }]} /></Form.Item>
+        <Form.Item label={routingMode === "conditional" ? "符合条件时的办理角色" : "办理角色"} name="assignees" rules={[{ required: true }]}><Input placeholder="多个角色用英文逗号分隔" /></Form.Item>
+        {routingMode === "conditional" && <>
+          <Form.Item
+            label="判断字段"
+            name="condition_path"
+            extra="读取发起流程时提交的业务数据，例如 amount、event_type 或 organization.level"
+            rules={[
+              { required: true },
+              { pattern: /^[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*){0,7}$/, message: "使用字段名或点分层级，最多8级" },
+            ]}
+          ><Input placeholder="例如 amount" /></Form.Item>
+          <Form.Item label="判断方式" name="condition_operator" rules={[{ required: true }]}>
+            <Select onChange={(value: string) => setConditionOperator(value)} options={[
+              { label: "等于", value: "eq" },
+              { label: "不等于", value: "ne" },
+              { label: "大于", value: "gt" },
+              { label: "大于等于", value: "gte" },
+              { label: "小于", value: "lt" },
+              { label: "小于等于", value: "lte" },
+              { label: "属于列表", value: "in" },
+              { label: "不属于列表", value: "not_in" },
+              { label: "字段存在", value: "exists" },
+              { label: "字段不存在", value: "not_exists" },
+            ]} />
+          </Form.Item>
+          {conditionNeedsValue && <>
+            <Form.Item label="比较值类型" name="condition_value_type" rules={[{ required: true }]}>
+              <Select options={[{ label: "文本", value: "text" }, { label: "数字", value: "number" }, { label: "是/否", value: "boolean" }]} />
+            </Form.Item>
+            <Form.Item
+              label="比较值"
+              name="condition_value"
+              extra={conditionUsesList ? "多个值使用英文逗号分隔" : undefined}
+              rules={[{ required: true }]}
+            ><Input placeholder={conditionUsesList ? "例如 CN, SG" : "例如 10000"} /></Form.Item>
+          </>}
+          <Form.Item label="不符合条件时的办理角色" name="default_assignees" rules={[{ required: true }]}><Input placeholder="多个角色用英文逗号分隔" /></Form.Item>
+        </>}
         <Form.Item label="说明" name="description"><Input.TextArea rows={2} /></Form.Item>
         <Form.Item label="创建原因" name="change_reason" rules={[{ required: true }]}><Input.TextArea rows={2} /></Form.Item>
       </Form>

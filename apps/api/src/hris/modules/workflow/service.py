@@ -94,6 +94,27 @@ class WorkflowService:
             raise ApiError(status_code=422, code="WORKFLOW_START_HAS_INBOUND", message="开始节点不能有入线")
         if any(edge.source == ends[0].code for edge in payload.edges):
             raise ApiError(status_code=422, code="WORKFLOW_END_HAS_OUTBOUND", message="结束节点不能有出线")
+        edges_by_source: dict[str, list[Any]] = {}
+        for edge in payload.edges:
+            edges_by_source.setdefault(edge.source, []).append(edge)
+        for outgoing in edges_by_source.values():
+            conditioned = [edge for edge in outgoing if edge.condition is not None]
+            if not conditioned:
+                continue
+            defaults = [edge for edge in outgoing if edge.condition is None]
+            if len(defaults) > 1:
+                raise ApiError(
+                    status_code=422,
+                    code="WORKFLOW_ROUTE_DEFAULT_DUPLICATED",
+                    message="条件分支最多配置一条默认连线",
+                )
+            fingerprints = [edge.condition.model_dump_json() for edge in conditioned]
+            if len(set(fingerprints)) != len(fingerprints):
+                raise ApiError(
+                    status_code=422,
+                    code="WORKFLOW_EDGE_CONDITION_DUPLICATED",
+                    message="同一节点不能配置重复条件",
+                )
         adjacency: dict[str, list[str]] = {code: [] for code in node_codes}
         for source, target in edge_pairs:
             adjacency[source].append(target)

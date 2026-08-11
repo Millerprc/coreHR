@@ -105,6 +105,8 @@ scripts/                 启动、停止和自动检查脚本
 - [一至三阶段实现符合性审查](./docs/review/phase-1-3-implementation-conformance-review.md)
 - [一至三阶段整体 Review 指南](./docs/review/phase-1-3-user-review-guide.md)
 - [企业输入包 01：主数据与稳定编码对照](./docs/input-packs/01-master-code-mapping.md)
+- [一至三阶段企业输入顺序](./docs/input-packs/00-enterprise-input-sequence.md)
+- [当前输入：职务体系与职务目录](./docs/input-packs/04-job-architecture-input.md)
 - [旧EHR完整字典处置与coreHR映射基线](./docs/input-packs/03-ehr-lookup-full-extraction-and-mapping.md)
 - [企业输入包 02：合同/协议正式字段与附件规则](./docs/input-packs/02-contract-agreement-fields-and-attachments.md)
 - [第一阶段数据治理导入交付回执](./docs/delivery/P1-DATA-GOVERNANCE-IMPORT.md)

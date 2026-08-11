@@ -37,6 +37,10 @@ from hris.modules.workflow.models import (
     WorkflowTask,
     WorkflowVersion,
 )
+from hris.modules.workflow.conditions import (
+    WorkflowConditionError,
+    evaluate_workflow_condition,
+)
 from hris.modules.workforce.extended_schemas import (
     EmploymentAssignmentCreate,
     EmploymentCreate,
@@ -1114,17 +1118,12 @@ class LifecycleService:
             outgoing = [edge for edge in edges if edge.get("source") == current_code]
             if not outgoing:
                 raise ApiError(status_code=422, code="WORKFLOW_ROUTE_MISSING", message="当前节点没有后续连线")
-            if len(outgoing) == 1:
-                next_code = outgoing[0].get("target")
-            else:
-                requested_routes = instance.context.get("route_targets", {})
-                next_code = requested_routes.get(current_code)
-                if next_code not in {edge.get("target") for edge in outgoing}:
-                    raise ApiError(
-                        status_code=422,
-                        code="WORKFLOW_ROUTE_REQUIRED",
-                        message="多分支节点必须在流程上下文中明确route_targets",
-                    )
+            next_code, route_strategy = self._select_workflow_route(
+                instance,
+                current_code,
+                outgoing,
+            )
+            self._record_workflow_route(instance, current_code, next_code, route_strategy)
             next_node = nodes.get(next_code)
             if next_node is None:
                 raise ApiError(status_code=422, code="WORKFLOW_NODE_NOT_FOUND", message="后续节点不存在")
@@ -1152,6 +1151,67 @@ class LifecycleService:
                 await self._session.flush()
                 return
             current_code = next_code
+
+    @staticmethod
+    def _record_workflow_route(
+        instance: WorkflowInstance,
+        source: str,
+        target: str,
+        strategy: str,
+    ) -> None:
+        history = list(instance.context.get("_workflow_route_history", []))
+        history.append({"source": source, "target": target, "strategy": strategy})
+        instance.context = {**instance.context, "_workflow_route_history": history}
+
+    @staticmethod
+    def _select_workflow_route(
+        instance: WorkflowInstance,
+        current_code: str,
+        outgoing: list[dict[str, Any]],
+    ) -> tuple[str, str]:
+        conditioned = [edge for edge in outgoing if edge.get("condition") is not None]
+        if conditioned:
+            try:
+                matched = [
+                    edge
+                    for edge in conditioned
+                    if evaluate_workflow_condition(edge["condition"], instance.context)
+                ]
+            except WorkflowConditionError as exc:
+                raise ApiError(
+                    status_code=422,
+                    code="WORKFLOW_CONDITION_INVALID",
+                    message="流程条件配置无效",
+                ) from exc
+            if len(matched) > 1:
+                raise ApiError(
+                    status_code=422,
+                    code="WORKFLOW_ROUTE_AMBIGUOUS",
+                    message="多个流程条件同时满足，无法唯一选择后续节点",
+                )
+            if matched:
+                target = matched[0].get("target")
+                if isinstance(target, str):
+                    return target, "condition"
+            defaults = [edge for edge in outgoing if edge.get("condition") is None]
+            if len(defaults) == 1 and isinstance(defaults[0].get("target"), str):
+                return defaults[0]["target"], "default"
+            raise ApiError(
+                status_code=422,
+                code="WORKFLOW_ROUTE_NOT_MATCHED",
+                message="没有流程条件满足且未配置默认连线",
+            )
+        if len(outgoing) == 1 and isinstance(outgoing[0].get("target"), str):
+            return outgoing[0]["target"], "single"
+        requested_routes = instance.context.get("route_targets", {})
+        next_code = requested_routes.get(current_code) if isinstance(requested_routes, dict) else None
+        if next_code not in {edge.get("target") for edge in outgoing}:
+            raise ApiError(
+                status_code=422,
+                code="WORKFLOW_ROUTE_REQUIRED",
+                message="无条件多分支节点必须在流程上下文中明确route_targets",
+            )
+        return next_code, "explicit"
 
     async def decide_workflow_task(
         self,

@@ -385,6 +385,12 @@ class WorkflowInstanceCreate(BaseModel):
     business_object_id: UUID
     context: dict[str, Any] = Field(default_factory=dict)
 
+    @model_validator(mode="after")
+    def protect_runtime_context(self) -> "WorkflowInstanceCreate":
+        if any(key.startswith("_workflow_") for key in self.context):
+            raise ValueError("_workflow_前缀由流程引擎保留")
+        return self
+
 
 class WorkflowInstanceResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
