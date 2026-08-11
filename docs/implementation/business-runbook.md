@@ -11,6 +11,7 @@
 ```powershell
 $env:COREHR_DB_PASSWORD = "本地随机数据库密码"
 $env:COREHR_BOOTSTRAP_TOKEN = "一次性随机初始化凭证"
+# 人员敏感字段密钥按专用运行手册生成并注入，禁止复制示例值
 ./scripts/dev-business-up.ps1
 ```
 
@@ -19,12 +20,15 @@ Linux或macOS：
 ```bash
 export COREHR_DB_PASSWORD="本地随机数据库密码"
 export COREHR_BOOTSTRAP_TOKEN="一次性随机初始化凭证"
+# 人员敏感字段密钥按专用运行手册生成并注入，禁止复制示例值
 ./scripts/dev-business-up.sh
 ```
 
 启动脚本会构建容器、等待PostgreSQL和Redis健康、启动业务API与Web，并执行数据库迁移。
 
 不要只执行基础 `deploy/compose.yaml`。业务 API 依赖 `deploy/compose.business.yaml` 叠加配置；优先使用上述启动脚本，避免遗漏业务入口或数据库迁移。
+
+需要维护证件、个人联系方式、详细地址或执行明文Reveal前，先按[人员敏感字段密钥运行手册](./personnel-sensitive-key-runbook.md)生成并注入三项密钥配置。未配置时系统不得保存明文，而是明确拒绝敏感操作。
 
 ## 2. 首个主管理员
 

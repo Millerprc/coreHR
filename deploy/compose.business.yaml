@@ -2,6 +2,9 @@ services:
   api:
     environment:
       COREHR_BOOTSTRAP_TOKEN: ${COREHR_BOOTSTRAP_TOKEN:-local-dev-bootstrap-only}
+      COREHR_PERSONNEL_ENCRYPTION_KEYS: '${COREHR_PERSONNEL_ENCRYPTION_KEYS:-{}}'
+      COREHR_PERSONNEL_ACTIVE_KEY_VERSION: ${COREHR_PERSONNEL_ACTIVE_KEY_VERSION:-}
+      COREHR_PERSONNEL_SEARCH_KEY: ${COREHR_PERSONNEL_SEARCH_KEY:-}
     command:
       - uvicorn
       - hris.business_main:app
