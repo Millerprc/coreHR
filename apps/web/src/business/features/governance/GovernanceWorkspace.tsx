@@ -26,6 +26,7 @@ import type {
   ImportBatchRow,
   ImportBatchSummary,
   ImportEntityType,
+  ExportEntityType,
   ImportTemplate,
 } from "./types"
 
@@ -49,8 +50,21 @@ const entityLabels: Readonly<Record<ImportEntityType, string>> = {
   organization_type: "组织类型",
   legal_entity: "法人主体",
   job_dimension: "职务维度",
+  job_dimension_version: "职务维度历史版本",
   job: "职务",
+  job_version: "职务历史版本",
   organization: "组织",
+}
+
+
+const exportEntityLabels: Readonly<Record<ExportEntityType, string>> = {
+  dictionary: entityLabels.dictionary,
+  dictionary_item: entityLabels.dictionary_item,
+  organization_type: entityLabels.organization_type,
+  legal_entity: entityLabels.legal_entity,
+  job_dimension: entityLabels.job_dimension,
+  job: entityLabels.job,
+  organization: entityLabels.organization,
 }
 
 
@@ -85,7 +99,7 @@ export function GovernanceWorkspace({ token, canAdmin }: GovernanceWorkspaceProp
   const [forbidden, setForbidden] = useState(false)
   const [editorOpen, setEditorOpen] = useState(false)
   const [exportOpen, setExportOpen] = useState(false)
-  const [exportType, setExportType] = useState<ImportEntityType>("dictionary_item")
+  const [exportType, setExportType] = useState<ExportEntityType>("dictionary_item")
   const [exporting, setExporting] = useState(false)
   const [template, setTemplate] = useState<ImportTemplate | null>(null)
   const [fileName, setFileName] = useState("")
@@ -334,8 +348,8 @@ export function GovernanceWorkspace({ token, canAdmin }: GovernanceWorkspaceProp
             aria-label="主数据类型"
             className="full-width"
             value={exportType}
-            options={Object.entries(entityLabels).map(([value, label]) => ({ value, label }))}
-            onChange={(value: ImportEntityType) => setExportType(value)}
+            options={Object.entries(exportEntityLabels).map(([value, label]) => ({ value, label }))}
+            onChange={(value: ExportEntityType) => setExportType(value)}
           />
         </Space>
       </Modal>

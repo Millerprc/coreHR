@@ -16,6 +16,7 @@ from hris.modules.platform.models import (
 from hris.modules.workforce.models import (
     AuditLog,
     JobCatalog,
+    JobCatalogVersion,
     JobDimension,
     JobDimensionVersion,
     LegalEntity,
@@ -442,6 +443,284 @@ async def test_job_dimension_import_validates_and_orders_parent_dependencies(
     assert executed.status_code == 200, executed.text
     assert executed.json()["imported_rows"] == 4
     assert await db_session.scalar(select(func.count()).select_from(JobDimension)) == 4
+
+
+async def test_job_history_import_appends_versions_in_effective_date_order(
+    business_client: AsyncClient,
+    db_session: AsyncSession,
+    admin_token: str,
+) -> None:
+    await _seed_job_dimensions(db_session)
+    job_response = await business_client.post(
+        "/api/v1/workforce/jobs",
+        headers=_headers(admin_token),
+        json={
+            "code": "SYNTHETIC_HISTORY_JOB",
+            "name": "合成历史职务",
+            "level_code": "L1",
+            "grade_code": "G1",
+            "class_code": "TECH",
+            "sequence_code": "ENGINEERING",
+            "effective_from": "2026-01-01",
+            "status": "active",
+            "change_reason": "建立合成历史职务首版本",
+        },
+    )
+    assert job_response.status_code == 201, job_response.text
+
+    dimension_batch = await business_client.post(
+        "/api/v1/governance/import-batches/validate",
+        headers=_headers(admin_token),
+        json={
+            "entity_type": "job_dimension_version",
+            "source_system": "synthetic_ehr",
+            "source_table": "synthetic_job_dimension_history",
+            "idempotency_key": str(uuid4()),
+            "rows": [
+                {
+                    "source_record_id": "level-l1-2028",
+                    "data": {
+                        "dimension_type": "LEVEL",
+                        "dimension_code": "L1",
+                        "dimension_name": "合成职级2028",
+                        "sort_order": 30,
+                        "effective_from": "2028-01-01",
+                        "status": "active",
+                        "change_reason": "导入2028职级版本",
+                    },
+                },
+                {
+                    "source_record_id": "level-l1-2027",
+                    "data": {
+                        "dimension_type": "LEVEL",
+                        "dimension_code": "L1",
+                        "dimension_name": "合成职级2027",
+                        "sort_order": 20,
+                        "effective_from": "2027-01-01",
+                        "status": "active",
+                        "change_reason": "导入2027职级版本",
+                    },
+                },
+            ],
+        },
+    )
+    assert dimension_batch.status_code == 201, dimension_batch.text
+    assert dimension_batch.json()["valid_rows"] == 2
+    executed_dimensions = await business_client.post(
+        f"/api/v1/governance/import-batches/{dimension_batch.json()['id']}/execute",
+        headers=_headers(admin_token),
+        json={"reason": "执行合成职级历史版本导入"},
+    )
+    assert executed_dimensions.status_code == 200, executed_dimensions.text
+    assert executed_dimensions.json()["imported_rows"] == 2
+
+    job_batch = await business_client.post(
+        "/api/v1/governance/import-batches/validate",
+        headers=_headers(admin_token),
+        json={
+            "entity_type": "job_version",
+            "source_system": "synthetic_ehr",
+            "source_table": "synthetic_job_history",
+            "idempotency_key": str(uuid4()),
+            "rows": [
+                {
+                    "source_record_id": "history-job-2028",
+                    "data": {
+                        "job_code": "SYNTHETIC_HISTORY_JOB",
+                        "job_name": "合成历史职务2028",
+                        "level_code": "L1",
+                        "grade_code": "G1",
+                        "class_code": "TECH",
+                        "sequence_code": "ENGINEERING",
+                        "effective_from": "2028-01-01",
+                        "status": "active",
+                        "change_reason": "导入2028职务版本",
+                    },
+                },
+                {
+                    "source_record_id": "history-job-2027",
+                    "data": {
+                        "job_code": "SYNTHETIC_HISTORY_JOB",
+                        "job_name": "合成历史职务2027",
+                        "level_code": "L1",
+                        "grade_code": "G1",
+                        "class_code": "TECH",
+                        "sequence_code": "ENGINEERING",
+                        "effective_from": "2027-01-01",
+                        "status": "active",
+                        "change_reason": "导入2027职务版本",
+                    },
+                },
+            ],
+        },
+    )
+    assert job_batch.status_code == 201, job_batch.text
+    assert job_batch.json()["valid_rows"] == 2
+    executed_jobs = await business_client.post(
+        f"/api/v1/governance/import-batches/{job_batch.json()['id']}/execute",
+        headers=_headers(admin_token),
+        json={"reason": "执行合成职务历史版本导入"},
+    )
+    assert executed_jobs.status_code == 200, executed_jobs.text
+    assert executed_jobs.json()["imported_rows"] == 2
+
+    job = await db_session.scalar(
+        select(JobCatalog).where(JobCatalog.code == "SYNTHETIC_HISTORY_JOB")
+    )
+    assert job is not None and job.name == "合成历史职务2028"
+    job_versions = list(
+        (
+            await db_session.scalars(
+                select(JobCatalogVersion)
+                .where(JobCatalogVersion.job_id == job.id)
+                .order_by(JobCatalogVersion.version)
+            )
+        ).all()
+    )
+    assert [item.effective_from for item in job_versions] == [
+        date(2026, 1, 1),
+        date(2027, 1, 1),
+        date(2028, 1, 1),
+    ]
+    assert [item.effective_to for item in job_versions] == [
+        date(2026, 12, 31),
+        date(2027, 12, 31),
+        None,
+    ]
+
+
+async def test_job_history_import_rejects_backward_and_unknown_stable_codes(
+    business_client: AsyncClient,
+    db_session: AsyncSession,
+    admin_token: str,
+) -> None:
+    await _seed_job_dimensions(db_session)
+    dimension = await db_session.scalar(
+        select(JobDimension).where(
+            JobDimension.dimension_type == "LEVEL",
+            JobDimension.code == "L1",
+        )
+    )
+    assert dimension is not None
+    response = await business_client.post(
+        "/api/v1/governance/import-batches/validate",
+        headers=_headers(admin_token),
+        json={
+            "entity_type": "job_dimension_version",
+            "source_system": "synthetic_ehr",
+            "source_table": "synthetic_invalid_job_history",
+            "idempotency_key": str(uuid4()),
+            "rows": [
+                {
+                    "source_record_id": "backward-level",
+                    "data": {
+                        "dimension_type": "LEVEL",
+                        "dimension_code": "L1",
+                        "dimension_name": "倒插职级",
+                        "sort_order": 10,
+                        "effective_from": "2025-01-01",
+                        "status": "active",
+                        "change_reason": "验证倒插拒绝",
+                    },
+                },
+                {
+                    "source_record_id": "unknown-level",
+                    "data": {
+                        "dimension_type": "LEVEL",
+                        "dimension_code": "UNKNOWN_LEVEL",
+                        "dimension_name": "未知职级",
+                        "sort_order": 10,
+                        "effective_from": "2027-01-01",
+                        "status": "active",
+                        "change_reason": "验证未知代码拒绝",
+                    },
+                },
+            ],
+        },
+    )
+    assert response.status_code == 201, response.text
+    assert response.json()["rejected_rows"] == 2
+    errors_by_source = {
+        row["source_record_id"]: {error["code"] for error in row["errors"]}
+        for row in response.json()["rows"]
+    }
+    assert "JOB_DIMENSION_VERSION_DATE_NOT_FORWARD" in errors_by_source[
+        "backward-level"
+    ]
+    assert "JOB_DIMENSION_NOT_FOUND" in errors_by_source["unknown-level"]
+
+
+async def test_job_dimension_history_import_rejects_parent_cycle(
+    business_client: AsyncClient,
+    db_session: AsyncSession,
+    admin_token: str,
+) -> None:
+    await _seed_job_dimensions(db_session)
+    response = await business_client.post(
+        "/api/v1/governance/import-batches/validate",
+        headers=_headers(admin_token),
+        json={
+            "entity_type": "job_dimension_version",
+            "source_system": "synthetic_ehr",
+            "source_table": "synthetic_job_dimension_cycle_history",
+            "idempotency_key": str(uuid4()),
+            "rows": [
+                {
+                    "source_record_id": "level-cycle-2027",
+                    "data": {
+                        "dimension_type": "LEVEL",
+                        "dimension_code": "L1",
+                        "dimension_name": "循环职级",
+                        "parent_dimension_type": "GRADE",
+                        "parent_dimension_code": "G1",
+                        "sort_order": 10,
+                        "effective_from": "2027-01-01",
+                        "status": "active",
+                        "change_reason": "验证历史维度循环拒绝",
+                    },
+                },
+                {
+                    "source_record_id": "grade-cycle-2027",
+                    "data": {
+                        "dimension_type": "GRADE",
+                        "dimension_code": "G1",
+                        "dimension_name": "循环职等",
+                        "parent_dimension_type": "LEVEL",
+                        "parent_dimension_code": "L1",
+                        "sort_order": 10,
+                        "effective_from": "2027-01-01",
+                        "status": "active",
+                        "change_reason": "验证历史维度循环拒绝",
+                    },
+                },
+            ],
+        },
+    )
+    assert response.status_code == 201, response.text
+    assert response.json()["rejected_rows"] == 2
+    assert all(
+        "JOB_DIMENSION_PARENT_CYCLE"
+        in {error["code"] for error in row["errors"]}
+        for row in response.json()["rows"]
+    )
+
+
+async def test_job_history_template_is_import_only(
+    business_client: AsyncClient,
+    admin_token: str,
+) -> None:
+    template = await business_client.get(
+        "/api/v1/governance/import-templates/job_version",
+        headers=_headers(admin_token),
+    )
+    assert template.status_code == 200, template.text
+    assert "change_reason" in template.json()["required_columns"]
+
+    rejected_export = await business_client.get(
+        "/api/v1/governance/exports/job_version",
+        headers=_headers(admin_token),
+    )
+    assert rejected_export.status_code == 422, rejected_export.text
 
 
 async def test_dictionary_item_import_orders_parent_before_child(

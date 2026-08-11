@@ -12,6 +12,18 @@ ImportEntityType = Literal[
     "organization_type",
     "legal_entity",
     "job_dimension",
+    "job_dimension_version",
+    "job",
+    "job_version",
+    "organization",
+]
+
+ExportEntityType = Literal[
+    "dictionary",
+    "dictionary_item",
+    "organization_type",
+    "legal_entity",
+    "job_dimension",
     "job",
     "organization",
 ]
@@ -131,6 +143,14 @@ class JobImport(ImportRequest):
         if self.effective_to is not None and self.effective_to < self.effective_from:
             raise ValueError("effective_to不能早于effective_from")
         return self
+
+
+class JobDimensionVersionImport(JobDimensionImport):
+    change_reason: str = Field(min_length=1, max_length=500)
+
+
+class JobVersionImport(JobImport):
+    change_reason: str = Field(min_length=1, max_length=500)
 
 
 class ImportRowError(BaseModel):

@@ -5,11 +5,12 @@ import type {
   ImportBatchList,
   ImportEntityType,
   ImportTemplate,
+  ExportEntityType,
 } from "./types"
 
 
 export const governanceApi = {
-  exportCurrent(token: string, entityType: ImportEntityType) {
+  exportCurrent(token: string, entityType: ExportEntityType) {
     return apiDownload(`/api/v1/governance/exports/${entityType}`, token)
   },
 

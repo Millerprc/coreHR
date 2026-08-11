@@ -21,7 +21,9 @@ from hris.modules.platform.import_schemas import (
     ImportBatchValidate,
     ImportEntityType,
     JobDimensionImport,
+    JobDimensionVersionImport,
     JobImport,
+    JobVersionImport,
     OrganizationImport,
 )
 from hris.modules.platform.models import (
@@ -29,7 +31,12 @@ from hris.modules.platform.models import (
     DataDictionaryItem,
     ExternalRecordLink,
 )
-from hris.modules.workforce.extended_schemas import LegalEntityCreate
+from hris.modules.workforce.extended_schemas import (
+    JobDimensionVersionCreate,
+    JobVersionCreate,
+    LegalEntityCreate,
+)
+from hris.modules.workforce.extended_service import ExtendedWorkforceService
 from hris.modules.workforce.models import (
     AuditLog,
     JobCatalog,
@@ -51,7 +58,9 @@ _TARGET_TYPES: dict[str, str] = {
     "organization_type": "organization_type",
     "legal_entity": "legal_entity",
     "job_dimension": "job_dimension",
+    "job_dimension_version": "job_dimension_version",
     "job": "job",
+    "job_version": "job_version",
     "organization": "organization",
 }
 
@@ -133,6 +142,57 @@ _TEMPLATES: dict[str, tuple[list[str], list[str]]] = {
             "sort_order",
             "effective_from",
             "status",
+        ],
+    ),
+    "job_dimension_version": (
+        [
+            "dimension_type",
+            "dimension_code",
+            "dimension_name",
+            "parent_dimension_type",
+            "parent_dimension_code",
+            "sort_order",
+            "effective_from",
+            "effective_to",
+            "status",
+            "notes",
+            "change_reason",
+        ],
+        [
+            "dimension_type",
+            "dimension_code",
+            "dimension_name",
+            "sort_order",
+            "effective_from",
+            "status",
+            "change_reason",
+        ],
+    ),
+    "job_version": (
+        [
+            "job_code",
+            "job_name",
+            "level_code",
+            "grade_code",
+            "class_code",
+            "sequence_code",
+            "effective_from",
+            "effective_to",
+            "status",
+            "source_job_id",
+            "notes",
+            "change_reason",
+        ],
+        [
+            "job_code",
+            "job_name",
+            "level_code",
+            "grade_code",
+            "class_code",
+            "sequence_code",
+            "effective_from",
+            "status",
+            "change_reason",
         ],
     ),
     "organization": (
@@ -218,8 +278,12 @@ class ImportService:
             await self._validate_dictionary_item_relations(parsed, existing_targets, errors)
         elif payload.entity_type == "job_dimension":
             await self._validate_job_dimension_relations(parsed, existing_targets, errors)
+        elif payload.entity_type == "job_dimension_version":
+            await self._validate_job_dimension_versions(parsed, errors)
         elif payload.entity_type == "job":
             await self._validate_job_relations(parsed, errors)
+        elif payload.entity_type == "job_version":
+            await self._validate_job_versions(parsed, errors)
         elif payload.entity_type == "organization":
             await self._validate_organization_relations(parsed, existing_targets, errors)
 
@@ -327,6 +391,10 @@ class ImportService:
             valid_rows = await self._order_dictionary_item_rows(valid_rows)
         elif batch.entity_type == "job_dimension":
             valid_rows = await self._order_job_dimension_rows(valid_rows)
+        elif batch.entity_type == "job_dimension_version":
+            valid_rows = self._order_job_dimension_version_rows(valid_rows)
+        elif batch.entity_type == "job_version":
+            valid_rows = self._order_version_rows(valid_rows, JobVersionImport)
         elif batch.entity_type == "organization":
             valid_rows = await self._order_organization_rows(valid_rows)
 
@@ -355,6 +423,16 @@ class ImportService:
                         "code",
                         "执行时目标代码或来源追踪记录发生冲突",
                     )
+                ]
+                row.target_type = None
+                row.target_id = None
+                continue
+            except ApiError as exc:
+                if exc.status_code >= 500:
+                    raise
+                row.status = "rejected"
+                row.errors = [
+                    self._error(exc.code, None, exc.message)
                 ]
                 row.target_type = None
                 row.target_id = None
@@ -439,7 +517,9 @@ class ImportService:
             "organization_type": OrganizationTypeCreate,
             "legal_entity": LegalEntityCreate,
             "job_dimension": JobDimensionImport,
+            "job_dimension_version": JobDimensionVersionImport,
             "job": JobImport,
+            "job_version": JobVersionImport,
             "organization": OrganizationImport,
         }[payload.entity_type]
         parsed: dict[int, BaseModel] = {}
@@ -590,7 +670,7 @@ class ImportService:
             )
             return result
 
-        if entity_type == "job_dimension":
+        if entity_type in {"job_dimension", "job_dimension_version"}:
             dimension_keys = {
                 (dimension_type, code)
                 for model in parsed.values()
@@ -611,13 +691,32 @@ class ImportService:
                     )
                 ).all()
             ) if dimension_keys else []
+            if entity_type == "job_dimension_version":
+                dimension_by_id = {item.id: item for item in dimensions}
+                versions = list(
+                    (
+                        await self._session.scalars(
+                            select(JobDimensionVersion).where(
+                                JobDimensionVersion.dimension_id.in_(dimension_by_id)
+                            )
+                        )
+                    ).all()
+                ) if dimension_by_id else []
+                return {
+                    (
+                        f"{dimension_by_id[item.dimension_id].dimension_type}:"
+                        f"{dimension_by_id[item.dimension_id].code}:"
+                        f"{item.effective_from.isoformat()}"
+                    ): item
+                    for item in versions
+                }
             return {
                 f"{item.dimension_type}:{item.code}": item
                 for item in dimensions
                 if (item.dimension_type, item.code) in dimension_keys
             }
 
-        if entity_type == "job":
+        if entity_type in {"job", "job_version"}:
             codes = {
                 model.job_code
                 for model in parsed.values()
@@ -630,6 +729,24 @@ class ImportService:
                     )
                 ).all()
             ) if codes else []
+            if entity_type == "job_version":
+                jobs_by_id = {item.id: item for item in items}
+                versions = list(
+                    (
+                        await self._session.scalars(
+                            select(JobCatalogVersion).where(
+                                JobCatalogVersion.job_id.in_(jobs_by_id)
+                            )
+                        )
+                    ).all()
+                ) if jobs_by_id else []
+                return {
+                    (
+                        f"{jobs_by_id[item.job_id].code}:"
+                        f"{item.effective_from.isoformat()}"
+                    ): item
+                    for item in versions
+                }
             return {item.code: item for item in items}
 
         model_type: type[Any] = {
@@ -997,6 +1114,384 @@ class ImportService:
                         )
                     )
 
+    async def _validate_job_dimension_versions(
+        self,
+        parsed: dict[int, BaseModel],
+        errors: defaultdict[int, list[dict[str, Any]]],
+    ) -> None:
+        incoming: defaultdict[
+            tuple[str, str],
+            list[tuple[int, JobDimensionVersionImport]],
+        ] = defaultdict(list)
+        requested_keys: set[tuple[str, str]] = set()
+        for index, model in parsed.items():
+            if not isinstance(model, JobDimensionVersionImport):
+                continue
+            key = (model.dimension_type, model.dimension_code)
+            incoming[key].append((index, model))
+            requested_keys.add(key)
+            if model.parent_dimension_type and model.parent_dimension_code:
+                requested_keys.add(
+                    (model.parent_dimension_type, model.parent_dimension_code)
+                )
+
+        dimensions = list(
+            (
+                await self._session.scalars(
+                    select(JobDimension).where(
+                        JobDimension.dimension_type.in_(
+                            {key[0] for key in requested_keys}
+                        ),
+                        JobDimension.code.in_({key[1] for key in requested_keys}),
+                    )
+                )
+            ).all()
+        ) if requested_keys else []
+        dimension_by_key = {
+            (item.dimension_type, item.code): item
+            for item in dimensions
+            if (item.dimension_type, item.code) in requested_keys
+        }
+        dimension_by_id = {item.id: item for item in dimensions}
+        versions = list(
+            (
+                await self._session.scalars(
+                    select(JobDimensionVersion).where(
+                        JobDimensionVersion.dimension_id.in_(dimension_by_id)
+                    )
+                )
+            ).all()
+        ) if dimension_by_id else []
+        versions_by_dimension: defaultdict[UUID, list[JobDimensionVersion]] = defaultdict(list)
+        for version in versions:
+            versions_by_dimension[version.dimension_id].append(version)
+        for items in versions_by_dimension.values():
+            items.sort(key=lambda item: (item.effective_from, item.version))
+
+        for key, rows in incoming.items():
+            dimension = dimension_by_key.get(key)
+            if dimension is None:
+                for index, _model in rows:
+                    errors[index].append(
+                        self._error(
+                            "JOB_DIMENSION_NOT_FOUND",
+                            "dimension_code",
+                            "职务维度稳定代码不存在，请先导入首版本",
+                        )
+                    )
+                continue
+            existing_versions = versions_by_dimension[dimension.id]
+            latest_start = (
+                existing_versions[-1].effective_from
+                if existing_versions
+                else None
+            )
+            for index, model in sorted(rows, key=lambda item: item[1].effective_from):
+                if latest_start is not None and model.effective_from <= latest_start:
+                    errors[index].append(
+                        self._error(
+                            "JOB_DIMENSION_VERSION_DATE_NOT_FORWARD",
+                            "effective_from",
+                            "历史版本导入只能按日期向后追加，不能倒插或重复",
+                        )
+                    )
+                    continue
+                latest_start = model.effective_from
+
+        def incoming_at(
+            key: tuple[str, str],
+            effective_at: date,
+        ) -> tuple[int, JobDimensionVersionImport] | None:
+            candidates = [
+                item
+                for item in incoming.get(key, [])
+                if item[1].effective_from <= effective_at
+            ]
+            return max(candidates, key=lambda item: item[1].effective_from) if candidates else None
+
+        for key, rows in incoming.items():
+            for index, model in rows:
+                if model.parent_dimension_type is None or model.parent_dimension_code is None:
+                    continue
+                parent_key = (
+                    model.parent_dimension_type,
+                    model.parent_dimension_code,
+                )
+                parent = dimension_by_key.get(parent_key)
+                if parent is None:
+                    errors[index].append(
+                        self._error(
+                            "JOB_DIMENSION_PARENT_NOT_FOUND",
+                            "parent_dimension_code",
+                            "父职务维度稳定代码不存在",
+                        )
+                    )
+                    continue
+                incoming_parent = incoming_at(parent_key, model.effective_from)
+                if incoming_parent is not None:
+                    parent_index, parent_model = incoming_parent
+                    if errors[parent_index]:
+                        errors[index].append(
+                            self._error(
+                                "JOB_DIMENSION_PARENT_REJECTED",
+                                "parent_dimension_code",
+                                "父职务维度版本未通过当前批次校验",
+                            )
+                        )
+                    elif not (
+                        parent_model.status == "active"
+                        and (
+                            parent_model.effective_to is None
+                            or parent_model.effective_to >= model.effective_from
+                        )
+                    ):
+                        errors[index].append(
+                            self._error(
+                                "JOB_DIMENSION_PARENT_NOT_EFFECTIVE",
+                                "parent_dimension_code",
+                                "父职务维度版本在当前生效日期未启用",
+                            )
+                        )
+                elif await self._job_dimension_version_at(
+                    parent.id,
+                    model.effective_from,
+                ) is None:
+                    errors[index].append(
+                        self._error(
+                            "JOB_DIMENSION_PARENT_NOT_EFFECTIVE",
+                            "parent_dimension_code",
+                            "父职务维度在当前生效日期未启用",
+                        )
+                    )
+
+        edge_cache: dict[
+            tuple[tuple[str, str], date],
+            tuple[str, str] | None,
+        ] = {}
+
+        async def parent_at(
+            key: tuple[str, str],
+            effective_at: date,
+        ) -> tuple[str, str] | None:
+            cache_key = (key, effective_at)
+            if cache_key in edge_cache:
+                return edge_cache[cache_key]
+            incoming_version = incoming_at(key, effective_at)
+            if incoming_version is not None and not errors[incoming_version[0]]:
+                model = incoming_version[1]
+                parent_key = (
+                    (model.parent_dimension_type, model.parent_dimension_code)
+                    if model.parent_dimension_type and model.parent_dimension_code
+                    else None
+                )
+                edge_cache[cache_key] = parent_key
+                return parent_key
+            dimension = dimension_by_key.get(key)
+            if dimension is None:
+                edge_cache[cache_key] = None
+                return None
+            existing = await self._session.scalar(
+                select(JobDimensionVersion)
+                .where(
+                    JobDimensionVersion.dimension_id == dimension.id,
+                    JobDimensionVersion.effective_from <= effective_at,
+                    (
+                        JobDimensionVersion.effective_to.is_(None)
+                        | (JobDimensionVersion.effective_to >= effective_at)
+                    ),
+                )
+                .order_by(
+                    JobDimensionVersion.effective_from.desc(),
+                    JobDimensionVersion.version.desc(),
+                )
+                .limit(1)
+            )
+            if existing is None or existing.parent_dimension_id is None:
+                edge_cache[cache_key] = None
+                return None
+            parent = dimension_by_id.get(existing.parent_dimension_id)
+            if parent is None:
+                parent = await self._session.get(
+                    JobDimension,
+                    existing.parent_dimension_id,
+                )
+                if parent is not None:
+                    dimension_by_id[parent.id] = parent
+                    dimension_by_key[(parent.dimension_type, parent.code)] = parent
+            parent_key = (
+                (parent.dimension_type, parent.code)
+                if parent is not None
+                else None
+            )
+            edge_cache[cache_key] = parent_key
+            return parent_key
+
+        for key, rows in incoming.items():
+            for index, model in rows:
+                if errors[index]:
+                    continue
+                visited: set[tuple[str, str]] = set()
+                current: tuple[str, str] | None = key
+                while current is not None:
+                    if current in visited:
+                        errors[index].append(
+                            self._error(
+                                "JOB_DIMENSION_PARENT_CYCLE",
+                                "parent_dimension_code",
+                                "职务维度版本会形成父级循环",
+                            )
+                        )
+                        break
+                    visited.add(current)
+                    current = await parent_at(current, model.effective_from)
+
+    async def _validate_job_versions(
+        self,
+        parsed: dict[int, BaseModel],
+        errors: defaultdict[int, list[dict[str, Any]]],
+    ) -> None:
+        incoming: defaultdict[str, list[tuple[int, JobVersionImport]]] = defaultdict(list)
+        for index, model in parsed.items():
+            if isinstance(model, JobVersionImport):
+                incoming[model.job_code].append((index, model))
+        jobs = list(
+            (
+                await self._session.scalars(
+                    select(JobCatalog).where(JobCatalog.code.in_(incoming))
+                )
+            ).all()
+        ) if incoming else []
+        job_by_code = {item.code: item for item in jobs}
+        versions = list(
+            (
+                await self._session.scalars(
+                    select(JobCatalogVersion).where(
+                        JobCatalogVersion.job_id.in_({item.id for item in jobs})
+                    )
+                )
+            ).all()
+        ) if jobs else []
+        versions_by_job: defaultdict[UUID, list[JobCatalogVersion]] = defaultdict(list)
+        for version in versions:
+            versions_by_job[version.job_id].append(version)
+        for items in versions_by_job.values():
+            items.sort(key=lambda item: (item.effective_from, item.version))
+
+        for code, rows in incoming.items():
+            job = job_by_code.get(code)
+            if job is None:
+                for index, _model in rows:
+                    errors[index].append(
+                        self._error(
+                            "JOB_NOT_FOUND",
+                            "job_code",
+                            "职务稳定代码不存在，请先导入首版本",
+                        )
+                    )
+                continue
+            existing_versions = versions_by_job[job.id]
+            latest_start = (
+                existing_versions[-1].effective_from
+                if existing_versions
+                else None
+            )
+            for index, model in sorted(rows, key=lambda item: item[1].effective_from):
+                if latest_start is not None and model.effective_from <= latest_start:
+                    errors[index].append(
+                        self._error(
+                            "JOB_VERSION_DATE_NOT_FORWARD",
+                            "effective_from",
+                            "历史版本导入只能按日期向后追加，不能倒插或重复",
+                        )
+                    )
+                    continue
+                latest_start = model.effective_from
+
+        await self._validate_job_relations(parsed, errors)
+
+    @staticmethod
+    def _order_version_rows(
+        rows: list[ImportBatchRow],
+        schema_type: type[JobDimensionVersionImport] | type[JobVersionImport],
+    ) -> list[ImportBatchRow]:
+        def key(row: ImportBatchRow) -> tuple[str, date, int]:
+            model = schema_type.model_validate(row.payload)
+            stable_code = (
+                f"{model.dimension_type}:{model.dimension_code}"
+                if isinstance(model, JobDimensionVersionImport)
+                else model.job_code
+            )
+            return stable_code, model.effective_from, row.row_number
+
+        return sorted(rows, key=key)
+
+    @staticmethod
+    def _order_job_dimension_version_rows(
+        rows: list[ImportBatchRow],
+    ) -> list[ImportBatchRow]:
+        models = {
+            row.id: JobDimensionVersionImport.model_validate(row.payload)
+            for row in rows
+        }
+        by_key: defaultdict[
+            tuple[str, str],
+            list[tuple[ImportBatchRow, JobDimensionVersionImport]],
+        ] = defaultdict(list)
+        for row in rows:
+            model = models[row.id]
+            by_key[(model.dimension_type, model.dimension_code)].append((row, model))
+        for items in by_key.values():
+            items.sort(key=lambda item: (item[1].effective_from, item[0].row_number))
+
+        dependencies: dict[UUID, set[UUID]] = {row.id: set() for row in rows}
+        for items in by_key.values():
+            for previous, current in zip(items, items[1:], strict=False):
+                dependencies[current[0].id].add(previous[0].id)
+        for row in rows:
+            model = models[row.id]
+            if model.parent_dimension_type is None or model.parent_dimension_code is None:
+                continue
+            parent_key = (
+                model.parent_dimension_type,
+                model.parent_dimension_code,
+            )
+            parent_candidates = [
+                item
+                for item in by_key.get(parent_key, [])
+                if item[1].effective_from <= model.effective_from
+            ]
+            if parent_candidates:
+                dependencies[row.id].add(parent_candidates[-1][0].id)
+
+        pending = {row.id: row for row in rows}
+        completed: set[UUID] = set()
+        ordered: list[ImportBatchRow] = []
+        while pending:
+            ready = [
+                row
+                for row_id, row in pending.items()
+                if dependencies[row_id] <= completed
+            ]
+            if not ready:
+                raise ApiError(
+                    status_code=409,
+                    code="IMPORT_JOB_DIMENSION_VERSION_DEPENDENCY_INVALID",
+                    message="职务维度历史版本依赖顺序无法解析，请重新校验批次",
+                )
+            ready.sort(
+                key=lambda row: (
+                    models[row.id].effective_from,
+                    models[row.id].dimension_type,
+                    models[row.id].dimension_code,
+                    row.row_number,
+                )
+            )
+            for row in ready:
+                ordered.append(row)
+                completed.add(row.id)
+                del pending[row.id]
+        return ordered
+
     async def _order_job_dimension_rows(
         self,
         rows: list[ImportBatchRow],
@@ -1300,6 +1795,51 @@ class ImportService:
                     change_reason="主数据初始化导入",
                 )
             )
+        elif batch.entity_type == "job_dimension_version":
+            payload = JobDimensionVersionImport.model_validate(row.payload)
+            dimension = await self._session.scalar(
+                select(JobDimension).where(
+                    JobDimension.dimension_type == payload.dimension_type,
+                    JobDimension.code == payload.dimension_code,
+                )
+            )
+            if dimension is None:
+                raise ApiError(
+                    status_code=409,
+                    code="JOB_DIMENSION_NOT_FOUND",
+                    message="执行时职务维度稳定代码不存在",
+                )
+            workforce = ExtendedWorkforceService(
+                self._session,
+                actor_id=self._actor_id,
+                trace_id=self._trace_id,
+            )
+            await workforce.create_job_dimension_version(
+                dimension.id,
+                JobDimensionVersionCreate(
+                    name=payload.dimension_name,
+                    parent_dimension_type=payload.parent_dimension_type,
+                    parent_dimension_code=payload.parent_dimension_code,
+                    sort_order=payload.sort_order,
+                    status=payload.status,
+                    effective_from=payload.effective_from,
+                    effective_to=payload.effective_to,
+                    notes=payload.notes,
+                    change_reason=payload.change_reason,
+                ),
+            )
+            target = await self._session.scalar(
+                select(JobDimensionVersion).where(
+                    JobDimensionVersion.dimension_id == dimension.id,
+                    JobDimensionVersion.effective_from == payload.effective_from,
+                )
+            )
+            if target is None:
+                raise ApiError(
+                    status_code=500,
+                    code="JOB_DIMENSION_VERSION_CREATE_FAILED",
+                    message="职务维度版本创建后未能读取",
+                )
         elif batch.entity_type == "job":
             payload = JobImport.model_validate(row.payload)
             dimensions: dict[str, JobDimension] = {}
@@ -1362,6 +1902,51 @@ class ImportService:
                     change_reason="主数据初始化导入",
                 )
             )
+        elif batch.entity_type == "job_version":
+            payload = JobVersionImport.model_validate(row.payload)
+            job = await self._session.scalar(
+                select(JobCatalog).where(JobCatalog.code == payload.job_code)
+            )
+            if job is None:
+                raise ApiError(
+                    status_code=409,
+                    code="JOB_NOT_FOUND",
+                    message="执行时职务稳定代码不存在",
+                )
+            workforce = ExtendedWorkforceService(
+                self._session,
+                actor_id=self._actor_id,
+                trace_id=self._trace_id,
+            )
+            await workforce.create_job_version(
+                job.id,
+                JobVersionCreate(
+                    name=payload.job_name,
+                    level_code=payload.level_code,
+                    grade_code=payload.grade_code,
+                    class_code=payload.class_code,
+                    sequence_code=payload.sequence_code,
+                    status=payload.status,
+                    effective_from=payload.effective_from,
+                    effective_to=payload.effective_to,
+                    source_job_id=payload.source_job_id,
+                    notes=payload.notes,
+                    attributes={},
+                    change_reason=payload.change_reason,
+                ),
+            )
+            target = await self._session.scalar(
+                select(JobCatalogVersion).where(
+                    JobCatalogVersion.job_id == job.id,
+                    JobCatalogVersion.effective_from == payload.effective_from,
+                )
+            )
+            if target is None:
+                raise ApiError(
+                    status_code=500,
+                    code="JOB_VERSION_CREATE_FAILED",
+                    message="职务版本创建后未能读取",
+                )
         elif batch.entity_type == "organization":
             payload = OrganizationImport.model_validate(row.payload)
             organization_type = await self._session.scalar(
@@ -1473,8 +2058,18 @@ class ImportService:
             return f"{model.dictionary_code}:{model.code}"
         if entity_type == "job_dimension" and isinstance(model, JobDimensionImport):
             return f"{model.dimension_type}:{model.dimension_code}"
+        if entity_type == "job_dimension_version" and isinstance(
+            model,
+            JobDimensionVersionImport,
+        ):
+            return (
+                f"{model.dimension_type}:{model.dimension_code}:"
+                f"{model.effective_from.isoformat()}"
+            )
         if entity_type == "job" and isinstance(model, JobImport):
             return model.job_code
+        if entity_type == "job_version" and isinstance(model, JobVersionImport):
+            return f"{model.job_code}:{model.effective_from.isoformat()}"
         return str(getattr(model, "code"))
 
     @staticmethod
@@ -1525,6 +2120,17 @@ class ImportService:
         row: ImportBatchRow,
         target: Any,
     ) -> None:
+        target_code = str(getattr(target, "code", ""))
+        reason = "主数据初始化导入"
+        if batch.entity_type == "job_dimension_version":
+            target_code = (
+                f"{row.payload.get('dimension_type', '')}:"
+                f"{row.payload.get('dimension_code', '')}"
+            )
+            reason = "职务维度历史版本导入"
+        elif batch.entity_type == "job_version":
+            target_code = str(row.payload.get("job_code", ""))
+            reason = "职务历史版本导入"
         self._session.add(
             AuditLog(
                 occurred_at=datetime.now(UTC),
@@ -1533,12 +2139,12 @@ class ImportService:
                 action="governance.import_row.create",
                 object_type=_TARGET_TYPES[batch.entity_type],
                 object_id=target.id,
-                reason="主数据初始化导入",
+                reason=reason,
                 before_payload={},
                 after_payload={
                     "batch_id": str(batch.id),
                     "source_record_id": row.source_record_id,
-                    "code": str(getattr(target, "code", "")),
+                    "code": target_code,
                 },
                 source="import",
             )

@@ -11,7 +11,7 @@ from sqlalchemy.orm import aliased
 
 from hris.core.config import get_settings
 from hris.core.errors import ApiError
-from hris.modules.platform.import_schemas import ImportEntityType
+from hris.modules.platform.import_schemas import ExportEntityType
 from hris.modules.platform.import_service import ImportService
 from hris.modules.platform.models import DataDictionary, DataDictionaryItem
 from hris.modules.workforce.models import (
@@ -44,7 +44,7 @@ class MasterDataExportService:
         self._trace_id = trace_id
         self._timezone = ZoneInfo(get_settings().business_timezone)
 
-    async def export(self, entity_type: ImportEntityType) -> tuple[bytes, str, int]:
+    async def export(self, entity_type: ExportEntityType) -> tuple[bytes, str, int]:
         as_of = datetime.now(self._timezone).date()
         rows = await self._rows(entity_type, as_of)
         if len(rows) > _MAX_EXPORT_ROWS:
@@ -94,7 +94,7 @@ class MasterDataExportService:
 
     async def _rows(
         self,
-        entity_type: ImportEntityType,
+        entity_type: ExportEntityType,
         as_of: date,
     ) -> list[dict[str, Any]]:
         if entity_type == "dictionary":

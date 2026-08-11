@@ -8,6 +8,7 @@ from hris.core.database import get_db
 from hris.modules.platform.dependencies import require_permission
 from hris.modules.platform.import_models import ImportBatch, ImportBatchRow
 from hris.modules.platform.import_schemas import (
+    ExportEntityType,
     ImportBatchExecute,
     ImportBatchListResponse,
     ImportBatchResponse,
@@ -52,7 +53,7 @@ def _detail(batch: ImportBatch, rows: list[ImportBatchRow]) -> ImportBatchRespon
 
 @router.get("/exports/{entity_type}")
 async def export_current_master_data(
-    entity_type: ImportEntityType,
+    entity_type: ExportEntityType,
     db: DbSession,
     user: GovernanceViewer,
     request: Request,

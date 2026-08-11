@@ -4,8 +4,16 @@ export type ImportEntityType =
   | "organization_type"
   | "legal_entity"
   | "job_dimension"
+  | "job_dimension_version"
   | "job"
+  | "job_version"
   | "organization"
+
+
+export type ExportEntityType = Exclude<
+  ImportEntityType,
+  "job_dimension_version" | "job_version"
+>
 
 
 export interface ImportTemplate {
