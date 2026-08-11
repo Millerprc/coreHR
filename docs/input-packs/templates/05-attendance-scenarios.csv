@@ -1,0 +1,4 @@
+scenario_code,rule_set_code,shift_code,work_date,punches,approved_leave,other_events,expected_status,expected_scheduled_minutes,expected_worked_minutes,expected_late_minutes,expected_early_leave_minutes,expected_exception_codes,notes
+EXAMPLE_NORMAL,EXAMPLE_CN_STANDARD,EXAMPLE_DAY,2026-08-03,08:55+08:00|18:05+08:00,,,normal,480,550,0,0,,示例时间使用带时区偏移
+EXAMPLE_MISSING_OUT,EXAMPLE_CN_STANDARD,EXAMPLE_DAY,2026-08-04,09:00+08:00,,,exception,480,0,0,0,MISSING_PUNCH,示例行请按企业预期修改
+EXAMPLE_FULL_LEAVE,EXAMPLE_CN_STANDARD,EXAMPLE_DAY,2026-08-05,,EXAMPLE_ANNUAL:1day,,leave,480,0,0,0,,示例行请按企业预期修改

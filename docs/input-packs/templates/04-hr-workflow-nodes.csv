@@ -1,0 +1,10 @@
+workflow_code,node_code,node_name,node_type,sign_mode,timeout_hours,allow_delegate,allow_add_sign,allow_remove_sign,notes
+ONBOARDING_APPROVAL,START,开始,start,,,,,,示例行
+ONBOARDING_APPROVAL,HR_REVIEW,HR复核,approval,all,24,false,false,false,示例行
+ONBOARDING_APPROVAL,APPLY_RESULT,执行入职结果,action,,,,,,流程结束后由受控人事事件执行且不得运行任意脚本
+ONBOARDING_APPROVAL,END,结束,end,,,,,,示例行
+TRANSFER_APPROVAL,START,开始,start,,,,,,条件分支示例
+TRANSFER_APPROVAL,MANAGER_REVIEW,现组织主管审批,approval,all,24,false,false,false,动态办理人示例
+TRANSFER_APPROVAL,SPECIAL_REVIEW,跨国调动复核,approval,all,48,false,false,false,条件节点示例
+TRANSFER_APPROVAL,APPLY_RESULT,写入调岗结果,action,,,,,,动作节点不得执行任意脚本
+TRANSFER_APPROVAL,END,结束,end,,,,,,条件分支示例

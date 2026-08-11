@@ -1,0 +1,4 @@
+workflow_code,node_code,assignee_order,assignee_type,assignee_ref,resolution_scope,fallback_role,notes
+ONBOARDING_APPROVAL,HR_REVIEW,1,role,SSC,global,SYSTEM_ADMIN,示例行
+TRANSFER_APPROVAL,MANAGER_REVIEW,1,expression,INITIATOR_MANAGER,current_primary_organization,SSC,需确认主管关系来源
+TRANSFER_APPROVAL,SPECIAL_REVIEW,1,role,GLOBAL_HR,global,SSC,示例角色代码需替换

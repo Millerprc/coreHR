@@ -1,0 +1,2 @@
+leave_type_code,rule_code,effective_from,effective_to,frequency,grant_amount,proration_basis,service_months_from,service_months_to,balance_cap,carryover_cap,carryover_expiry_months,termination_policy,notes
+EXAMPLE_ANNUAL,ANNUAL_BASE,2026-01-01,,annual,5.0,entry_month,0,119,20.0,5.0,3,stop_on_end,示例值不是企业规则

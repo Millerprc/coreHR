@@ -1,0 +1,4 @@
+workflow_code,workflow_name,event_type,object_type,trigger,default_execution_mode,effective_date_source,allow_withdraw,allow_resubmit,rollback_mode,initiator_scope,notes
+ONBOARDING_APPROVAL,入职审批,ONBOARDING,employment,manual,approval,applicant_input,true,true,by_scenario,SSC,示例行请覆盖或删除
+CONFIRMATION_APPROVAL,转正审批,CONFIRMATION,employment,manual,approval,applicant_input,true,true,by_scenario,SSC,示例行请覆盖或删除
+TRANSFER_APPROVAL,调岗审批,TRANSFER,employment,manual,approval,applicant_input,true,true,by_scenario,SSC,示例行请覆盖或删除

@@ -1,0 +1,9 @@
+workflow_code,route_code,source_node_code,target_node_code,is_default,condition_mode,condition_path,operator,value_type,condition_value,notes
+ONBOARDING_APPROVAL,R_START_REVIEW,START,HR_REVIEW,true,,,,,,示例无条件连线
+ONBOARDING_APPROVAL,R_REVIEW_ACTION,HR_REVIEW,APPLY_RESULT,true,,,,,,示例无条件连线
+ONBOARDING_APPROVAL,R_ACTION_END,APPLY_RESULT,END,true,,,,,,示例无条件连线
+TRANSFER_APPROVAL,R_SPECIAL,START,SPECIAL_REVIEW,false,all,target.country_code,ne,string,CN,示例条件线
+TRANSFER_APPROVAL,R_DEFAULT,START,MANAGER_REVIEW,true,,,,,,每个条件分支保留唯一默认线
+TRANSFER_APPROVAL,R_SPECIAL_ACTION,SPECIAL_REVIEW,APPLY_RESULT,true,,,,,,示例无条件连线
+TRANSFER_APPROVAL,R_MANAGER_ACTION,MANAGER_REVIEW,APPLY_RESULT,true,,,,,,示例无条件连线
+TRANSFER_APPROVAL,R_ACTION_END,APPLY_RESULT,END,true,,,,,,示例无条件连线

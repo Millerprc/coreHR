@@ -109,6 +109,8 @@ scripts/                 启动、停止和自动检查脚本
 - [当前输入：职务体系与职务目录](./docs/input-packs/04-job-architecture-input.md)
 - [下一项输入：人员档案字段验收](./docs/input-packs/05-personnel-record-field-acceptance.md)
 - [人员档案字段实施计划](./docs/implementation/personnel-record-field-delivery-plan.md)
+- [人事流程图与审批规则输入包](./docs/input-packs/06-hr-workflow-input.md)
+- [考勤、班次与假期规则输入包](./docs/input-packs/07-attendance-rule-input.md)
 - [旧EHR完整字典处置与coreHR映射基线](./docs/input-packs/03-ehr-lookup-full-extraction-and-mapping.md)
 - [企业输入包 02：合同/协议正式字段与附件规则](./docs/input-packs/02-contract-agreement-fields-and-attachments.md)
 - [第一阶段数据治理导入交付回执](./docs/delivery/P1-DATA-GOVERNANCE-IMPORT.md)

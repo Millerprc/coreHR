@@ -1,0 +1,2 @@
+rule_set_code,rule_set_name,timezone,effective_from,effective_to,calendar_code,scope_type,scope_code,priority,punch_window_before_minutes,punch_window_after_minutes,punch_pair_strategy,notes
+EXAMPLE_CN_STANDARD,中国标准考勤,Asia/Shanghai,2026-01-01,,CN_CALENDAR,default,ALL,100,360,360,first_in_last_out,示例行请覆盖或删除

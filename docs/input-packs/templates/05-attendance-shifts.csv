@@ -1,0 +1,3 @@
+shift_code,shift_name,rule_set_code,start_time,end_time,crosses_midnight,break_minutes,scheduled_minutes,flexible_start_minutes,flexible_end_minutes,status,notes
+EXAMPLE_DAY,标准日班,EXAMPLE_CN_STANDARD,09:00,18:00,false,60,480,0,0,active,示例行请覆盖或删除
+EXAMPLE_NIGHT,跨午夜夜班,EXAMPLE_CN_STANDARD,20:00,05:00,true,60,480,0,0,active,示例行请覆盖或删除

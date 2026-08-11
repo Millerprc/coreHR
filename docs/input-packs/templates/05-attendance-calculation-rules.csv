@@ -1,0 +1,9 @@
+rule_set_code,rule_key,rule_name,value_type,value,unit,scope,required,notes
+EXAMPLE_CN_STANDARD,late_grace_minutes,迟到宽限,integer,0,minute,daily,true,示例值不是企业规则
+EXAMPLE_CN_STANDARD,early_leave_grace_minutes,早退宽限,integer,0,minute,daily,true,示例值不是企业规则
+EXAMPLE_CN_STANDARD,punch_rounding_mode,打卡取整,string,none,,daily,true,可选none/floor/ceil/nearest
+EXAMPLE_CN_STANDARD,missing_in_policy,缺入卡规则,string,exception,,daily,true,需确认是否可补卡及缺勤折算
+EXAMPLE_CN_STANDARD,missing_out_policy,缺出卡规则,string,exception,,daily,true,需确认是否可补卡及缺勤折算
+EXAMPLE_CN_STANDARD,no_punch_policy,无卡规则,string,absent,,daily,true,需叠加请假出差外勤
+EXAMPLE_CN_STANDARD,leave_with_punch_policy,请假与打卡并存,string,calculate_by_overlap,,daily,true,当前系统尚未精细实现
+EXAMPLE_CN_STANDARD,unscheduled_punch_policy,无排班打卡规则,string,exception,,daily,true,需确认休息日和加班边界
