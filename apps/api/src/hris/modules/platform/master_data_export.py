@@ -17,6 +17,9 @@ from hris.modules.platform.models import DataDictionary, DataDictionaryItem
 from hris.modules.workforce.models import (
     AuditLog,
     JobCatalog,
+    JobCatalogVersion,
+    JobDimension,
+    JobDimensionVersion,
     LegalEntity,
     Organization,
     OrganizationType,
@@ -102,6 +105,8 @@ class MasterDataExportService:
             return await self._organization_type_rows()
         if entity_type == "legal_entity":
             return await self._legal_entity_rows(as_of)
+        if entity_type == "job_dimension":
+            return await self._job_dimension_rows(as_of)
         if entity_type == "job":
             return await self._job_rows(as_of)
         return await self._organization_rows(as_of)
@@ -115,7 +120,7 @@ class MasterDataExportService:
                 .limit(_MAX_EXPORT_ROWS + 1)
             )
         ).all()
-        return [
+        rows = [
             {
                 "source_record_id": f"dictionary:{item.code}",
                 "code": item.code,
@@ -125,6 +130,7 @@ class MasterDataExportService:
             }
             for item in items
         ]
+        return rows
 
     async def _dictionary_item_rows(self) -> list[dict[str, Any]]:
         parent = aliased(DataDictionaryItem)
@@ -148,7 +154,7 @@ class MasterDataExportService:
                 .limit(_MAX_EXPORT_ROWS + 1)
             )
         ).all()
-        return [
+        rows = [
             {
                 "source_record_id": (
                     f"dictionary_item:{dictionary.code}:{item.code}"
@@ -163,6 +169,7 @@ class MasterDataExportService:
             }
             for item, dictionary, parent_code in result
         ]
+        return rows
 
     async def _organization_type_rows(self) -> list[dict[str, Any]]:
         items = (
@@ -214,7 +221,49 @@ class MasterDataExportService:
         ]
 
     async def _job_rows(self, as_of: date) -> list[dict[str, Any]]:
+        level = aliased(JobDimension)
+        grade = aliased(JobDimension)
+        job_class = aliased(JobDimension)
+        sequence = aliased(JobDimension)
         items = (
+            await self._session.execute(
+                select(JobCatalog, JobCatalogVersion, level, grade, job_class, sequence)
+                .join(JobCatalogVersion, JobCatalogVersion.job_id == JobCatalog.id)
+                .join(level, level.id == JobCatalogVersion.level_dimension_id)
+                .join(grade, grade.id == JobCatalogVersion.grade_dimension_id)
+                .join(job_class, job_class.id == JobCatalogVersion.class_dimension_id)
+                .join(sequence, sequence.id == JobCatalogVersion.sequence_dimension_id)
+                .where(
+                    JobCatalogVersion.status == "active",
+                    JobCatalogVersion.effective_from <= as_of,
+                    or_(
+                        JobCatalogVersion.effective_to.is_(None),
+                        JobCatalogVersion.effective_to >= as_of,
+                    ),
+                )
+                .order_by(JobCatalog.code)
+                .limit(_MAX_EXPORT_ROWS + 1)
+            )
+        ).all()
+        rows = [
+            {
+                "source_record_id": f"job:{job.code}",
+                "job_code": job.code,
+                "job_name": version.name,
+                "level_code": level_dimension.code,
+                "grade_code": grade_dimension.code,
+                "class_code": class_dimension.code,
+                "sequence_code": sequence_dimension.code,
+                "effective_from": version.effective_from,
+                "effective_to": version.effective_to,
+                "status": version.status,
+                "source_job_id": version.source_job_id,
+                "notes": version.notes,
+            }
+            for job, version, level_dimension, grade_dimension, class_dimension, sequence_dimension in items
+        ]
+        versioned_job_ids = {job.id for job, *_rest in items}
+        legacy_items = (
             await self._session.scalars(
                 select(JobCatalog)
                 .where(
@@ -229,19 +278,67 @@ class MasterDataExportService:
                 .limit(_MAX_EXPORT_ROWS + 1)
             )
         ).all()
+        rows.extend(
+            {
+                "source_record_id": f"job:{job.code}",
+                "job_code": job.code,
+                "job_name": job.name,
+                "level_code": job.level_code,
+                "grade_code": job.grade_code,
+                "class_code": job.class_code,
+                "sequence_code": job.sequence_code,
+                "effective_from": job.effective_from,
+                "effective_to": job.effective_to,
+                "status": job.status,
+                "source_job_id": None,
+                "notes": "兼容旧职务投影",
+            }
+            for job in legacy_items
+            if job.id not in versioned_job_ids
+        )
+        return rows
+
+    async def _job_dimension_rows(self, as_of: date) -> list[dict[str, Any]]:
+        parent = aliased(JobDimension)
+        items = (
+            await self._session.execute(
+                select(JobDimension, JobDimensionVersion, parent)
+                .join(
+                    JobDimensionVersion,
+                    JobDimensionVersion.dimension_id == JobDimension.id,
+                )
+                .outerjoin(parent, parent.id == JobDimensionVersion.parent_dimension_id)
+                .where(
+                    JobDimensionVersion.status == "active",
+                    JobDimensionVersion.effective_from <= as_of,
+                    or_(
+                        JobDimensionVersion.effective_to.is_(None),
+                        JobDimensionVersion.effective_to >= as_of,
+                    ),
+                )
+                .order_by(
+                    JobDimension.dimension_type,
+                    JobDimensionVersion.sort_order,
+                    JobDimension.code,
+                )
+                .limit(_MAX_EXPORT_ROWS + 1)
+            )
+        ).all()
         return [
             {
-                "source_record_id": f"job:{item.code}",
-                "code": item.code,
-                "name": item.name,
-                "level_code": item.level_code,
-                "grade_code": item.grade_code,
-                "class_code": item.class_code,
-                "sequence_code": item.sequence_code,
-                "effective_from": item.effective_from,
-                "effective_to": item.effective_to,
+                "source_record_id": f"job_dimension:{dimension.dimension_type}:{dimension.code}",
+                "dimension_type": dimension.dimension_type,
+                "dimension_code": dimension.code,
+                "dimension_name": version.name,
+                "parent_dimension_type": parent_dimension.dimension_type if parent_dimension else None,
+                "parent_dimension_code": parent_dimension.code if parent_dimension else None,
+                "sort_order": version.sort_order,
+                "effective_from": version.effective_from,
+                "effective_to": version.effective_to,
+                "status": version.status,
+                "notes": version.notes,
             }
-            for item in items
+            for dimension, version, parent_dimension in items
         ]
 
     async def _organization_rows(self, as_of: date) -> list[dict[str, Any]]:

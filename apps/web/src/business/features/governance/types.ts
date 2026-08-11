@@ -3,6 +3,7 @@ export type ImportEntityType =
   | "dictionary_item"
   | "organization_type"
   | "legal_entity"
+  | "job_dimension"
   | "job"
   | "organization"
 

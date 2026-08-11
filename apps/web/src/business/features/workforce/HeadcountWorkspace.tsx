@@ -17,6 +17,7 @@ import {
 import { useCallback, useEffect, useMemo, useState } from "react"
 
 import { workforceApi } from "./api"
+import { JobArchitecturePanel } from "./JobArchitecturePanel"
 import type {
   HeadcountFreeze,
   HeadcountResultLine,
@@ -26,7 +27,7 @@ import type {
 } from "./types"
 
 
-type Action = "plan" | "job" | "rule" | "freeze" | "snapshot" | null
+type Action = "plan" | "rule" | "freeze" | "snapshot" | null
 
 
 interface HeadcountWorkspaceProps {
@@ -113,8 +114,6 @@ export function HeadcountWorkspace({ token, canAdmin }: HeadcountWorkspaceProps)
           ...values,
           period_month: `${String(values.period_month)}-01`,
         })
-      } else if (action === "job") {
-        await workforceApi.createJob(token, values)
       } else if (action === "rule") {
         await workforceApi.createOccupancyRule(token, values)
       } else if (action === "freeze") {
@@ -173,7 +172,6 @@ export function HeadcountWorkspace({ token, canAdmin }: HeadcountWorkspaceProps)
   )
   const actionTitles: Record<Exclude<Action, null>, string> = {
     plan: "维护月度编制",
-    job: "新建职务",
     rule: "新增占编规则版本",
     freeze: "新增冻结",
     snapshot: "生成月度快照",
@@ -186,7 +184,7 @@ export function HeadcountWorkspace({ token, canAdmin }: HeadcountWorkspaceProps)
           <Typography.Title id="headcount-title" level={2}>人力与编制</Typography.Title>
           <Typography.Paragraph type="secondary">编制仅呈现结果，不预占或阻断招聘；月均人数为（月初＋月末）÷2。</Typography.Paragraph>
         </div>
-        {canAdmin && <Space wrap><Button onClick={() => openAction("job")}>新建职务</Button><Button type="primary" onClick={() => openAction("plan")}>维护编制</Button></Space>}
+        {canAdmin && <Button type="primary" onClick={() => openAction("plan")}>维护编制</Button>}
       </div>
       {error && <Alert closable onClose={() => setError(null)} type="error" showIcon title={error} />}
       <div className="filter-grid">
@@ -195,7 +193,12 @@ export function HeadcountWorkspace({ token, canAdmin }: HeadcountWorkspaceProps)
         <label><span className="field-label">组织</span><Select allowClear showSearch optionFilterProp="label" value={organizationId} options={organizationOptions} onChange={setOrganizationId} /></label>
         <label><span className="field-label">职务</span><Select allowClear showSearch optionFilterProp="label" value={jobId} options={jobOptions} onChange={setJobId} /></label>
       </div>
-      <Tabs items={[
+      <Tabs defaultActiveKey="results" items={[
+        {
+          key: "job-architecture",
+          label: "职务体系",
+          children: <JobArchitecturePanel token={token} canAdmin={canAdmin} onJobsChanged={load} />,
+        },
         {
           key: "results",
           label: "编制与人数结果",
@@ -258,15 +261,6 @@ export function HeadcountWorkspace({ token, canAdmin }: HeadcountWorkspaceProps)
             <Form.Item label="职务" name="job_id" initialValue={jobId} rules={[{ required: true }]}><Select showSearch optionFilterProp="label" options={jobOptions} /></Form.Item>
             <Form.Item label="编制数" name="planned_count" rules={[{ required: true }]}><InputNumber min={0} precision={2} stringMode /></Form.Item>
             <Form.Item name="override_freeze" valuePropName="checked"><Checkbox>授权绕过冻结（仍记录日志）</Checkbox></Form.Item>
-          </>}
-          {action === "job" && <>
-            <Form.Item label="职务编码" name="code" rules={[{ required: true }]}><Input /></Form.Item>
-            <Form.Item label="职务名称" name="name" rules={[{ required: true }]}><Input /></Form.Item>
-            <Form.Item label="职级代码" name="level_code"><Input /></Form.Item>
-            <Form.Item label="职等代码" name="grade_code"><Input /></Form.Item>
-            <Form.Item label="职类代码" name="class_code"><Input /></Form.Item>
-            <Form.Item label="序列代码" name="sequence_code"><Input /></Form.Item>
-            <Form.Item label="生效日期" name="effective_from" initialValue={`${month}-01`} rules={[{ required: true }]}><Input type="date" /></Form.Item>
           </>}
           {action === "rule" && <>
             <Form.Item label="人员类型代码" name="employee_type_code" rules={[{ required: true }]}><Input /></Form.Item>

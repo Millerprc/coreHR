@@ -1,3 +1,4 @@
+from datetime import date
 from uuid import UUID, uuid4
 
 import pytest
@@ -15,6 +16,8 @@ from hris.modules.platform.models import (
 from hris.modules.workforce.models import (
     AuditLog,
     JobCatalog,
+    JobDimension,
+    JobDimensionVersion,
     LegalEntity,
     Organization,
     OrganizationType,
@@ -28,6 +31,31 @@ pytestmark = pytest.mark.asyncio
 
 def _headers(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
+
+
+async def _seed_job_dimensions(db_session: AsyncSession) -> None:
+    for dimension_type, code in (
+        ("LEVEL", "L1"),
+        ("GRADE", "G1"),
+        ("CLASS", "TECH"),
+        ("SEQUENCE", "ENGINEERING"),
+    ):
+        dimension = JobDimension(dimension_type=dimension_type, code=code)
+        db_session.add(dimension)
+        await db_session.flush()
+        db_session.add(
+            JobDimensionVersion(
+                dimension_id=dimension.id,
+                version=1,
+                name=code,
+                sort_order=0,
+                status="active",
+                effective_from=date(2026, 1, 1),
+                is_current=True,
+                change_reason="合成导入测试",
+            )
+        )
+    await db_session.flush()
 
 
 def _dictionary_item_batch(idempotency_key: str) -> dict[str, object]:
@@ -313,13 +341,14 @@ async def test_import_batch_lists_and_returns_details(
             "job",
             "job-engineer",
             {
-                "code": "SYNTHETIC_ENGINEER",
-                "name": "合成工程师",
+                "job_code": "SYNTHETIC_ENGINEER",
+                "job_name": "合成工程师",
                 "level_code": "L1",
                 "grade_code": "G1",
                 "class_code": "TECH",
                 "sequence_code": "ENGINEERING",
                 "effective_from": "2026-01-01",
+                "status": "active",
             },
             JobCatalog,
             "SYNTHETIC_ENGINEER",
@@ -336,6 +365,8 @@ async def test_import_batch_supports_each_master_data_executor(
     model_type: type[object],
     code: str,
 ) -> None:
+    if entity_type == "job":
+        await _seed_job_dimensions(db_session)
     validated = await business_client.post(
         "/api/v1/governance/import-batches/validate",
         headers=_headers(admin_token),
@@ -361,6 +392,56 @@ async def test_import_batch_supports_each_master_data_executor(
     assert await db_session.scalar(
         select(func.count()).select_from(model_type).where(model_type.code == code)
     ) == 1
+
+
+async def test_job_dimension_import_validates_and_orders_parent_dependencies(
+    business_client: AsyncClient,
+    db_session: AsyncSession,
+    admin_token: str,
+) -> None:
+    rows = [
+        ("LEVEL", "LEVEL_06", "六级", "GRADE", "GRADE_02"),
+        ("GRADE", "GRADE_02", "二等", "CLASS", "CLASS_02"),
+        ("CLASS", "CLASS_02", "二级职类", "SEQUENCE", "TECH"),
+        ("SEQUENCE", "TECH", "技术", None, None),
+    ]
+    validated = await business_client.post(
+        "/api/v1/governance/import-batches/validate",
+        headers=_headers(admin_token),
+        json={
+            "entity_type": "job_dimension",
+            "source_system": "synthetic_ehr",
+            "source_table": "synthetic_job_dimensions",
+            "idempotency_key": str(uuid4()),
+            "rows": [
+                {
+                    "source_record_id": f"{dimension_type}-{code}",
+                    "data": {
+                        "dimension_type": dimension_type,
+                        "dimension_code": code,
+                        "dimension_name": name,
+                        "parent_dimension_type": parent_type,
+                        "parent_dimension_code": parent_code,
+                        "sort_order": index * 10,
+                        "effective_from": "2026-01-01",
+                        "status": "active",
+                    },
+                }
+                for index, (dimension_type, code, name, parent_type, parent_code) in enumerate(rows, start=1)
+            ],
+        },
+    )
+    assert validated.status_code == 201, validated.text
+    assert validated.json()["status"] == "validated"
+
+    executed = await business_client.post(
+        f"/api/v1/governance/import-batches/{validated.json()['id']}/execute",
+        headers=_headers(admin_token),
+        json={"reason": "验证职务维度导入顺序"},
+    )
+    assert executed.status_code == 200, executed.text
+    assert executed.json()["imported_rows"] == 4
+    assert await db_session.scalar(select(func.count()).select_from(JobDimension)) == 4
 
 
 async def test_dictionary_item_import_orders_parent_before_child(

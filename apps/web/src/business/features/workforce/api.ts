@@ -3,6 +3,7 @@ import type {
   HeadcountFreeze,
   HeadcountResult,
   Job,
+  JobDimension,
   LegalEntity,
   OccupancyRule,
   OrganizationOption,
@@ -44,9 +45,23 @@ export const workforceApi = {
     apiRequest("/api/v1/workforce/employment-assignments", token, { method: "POST", body }),
   createAgreement: (token: string, body: unknown) =>
     apiRequest("/api/v1/workforce/agreement-relationships", token, { method: "POST", body }),
-  jobs: (token: string) => apiRequest<Page<Job>>("/api/v1/workforce/jobs?limit=200&offset=0", token),
+  jobs: (token: string, effectiveAt?: string) => apiRequest<Page<Job>>(
+    `/api/v1/workforce/jobs?limit=200&offset=0${effectiveAt ? `&effective_at=${encodeURIComponent(effectiveAt)}` : ""}`,
+    token,
+  ),
   createJob: (token: string, body: unknown) =>
     apiRequest<Job>("/api/v1/workforce/jobs", token, { method: "POST", body }),
+  createJobVersion: (token: string, jobId: string, body: unknown) =>
+    apiRequest<Job>(`/api/v1/workforce/jobs/${jobId}/versions`, token, { method: "POST", body }),
+  jobDimensions: (token: string, effectiveAt?: string) =>
+    apiRequest<Page<JobDimension>>(
+      `/api/v1/workforce/job-dimensions?limit=500&offset=0${effectiveAt ? `&effective_at=${encodeURIComponent(effectiveAt)}` : ""}`,
+      token,
+    ),
+  createJobDimension: (token: string, body: unknown) =>
+    apiRequest<JobDimension>("/api/v1/workforce/job-dimensions", token, { method: "POST", body }),
+  createJobDimensionVersion: (token: string, dimensionId: string, body: unknown) =>
+    apiRequest<JobDimension>(`/api/v1/workforce/job-dimensions/${dimensionId}/versions`, token, { method: "POST", body }),
   legalEntities: (token: string) =>
     apiRequest<Page<LegalEntity>>("/api/v1/workforce/legal-entities?limit=200&offset=0", token),
   createLegalEntity: (token: string, body: unknown) =>

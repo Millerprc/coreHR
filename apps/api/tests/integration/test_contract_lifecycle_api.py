@@ -1,5 +1,6 @@
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 import pytest
 from httpx import AsyncClient
@@ -16,6 +17,10 @@ from hris.modules.workforce.models import (
 pytestmark = pytest.mark.asyncio
 
 
+def _business_today() -> date:
+    return datetime.now(ZoneInfo("Asia/Shanghai")).date()
+
+
 def _auth(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
@@ -25,7 +30,7 @@ async def _contract_context(
     *,
     suffix: str,
 ) -> tuple[Person, Employment, AgreementRelationship, LegalEntity, Person, Employment]:
-    today = date.today()
+    today = _business_today()
     person = Person(
         employee_number=f"98{suffix.zfill(4)}",
         display_name=f"Synthetic contract person {suffix}",
@@ -133,7 +138,7 @@ async def test_contract_requires_relation_owned_by_the_same_person(
             "employment_id": str(other_employment.id),
             "contract_type_code": "LABOR",
             "contract_number": "SYN-CONTRACT-MISMATCH",
-            "effective_from": date.today().isoformat(),
+            "effective_from": _business_today().isoformat(),
             "change_reason": "Synthetic mismatch",
         },
     )
@@ -149,7 +154,7 @@ async def test_contract_requires_relation_owned_by_the_same_person(
             "agreement_relationship_id": str(agreement.id),
             "contract_type_code": "LABOR",
             "contract_number": "SYN-CONTRACT-BOTH",
-            "effective_from": date.today().isoformat(),
+            "effective_from": _business_today().isoformat(),
             "change_reason": "Synthetic invalid relation selection",
         },
     )
@@ -161,7 +166,7 @@ async def test_contract_amendment_future_termination_and_rollback_are_auditable(
     admin_token: str,
     db_session: AsyncSession,
 ) -> None:
-    today = date.today()
+    today = _business_today()
     person, employment, _agreement, legal, _other_person, _other_employment = (
         await _contract_context(db_session, suffix="2")
     )
@@ -325,7 +330,7 @@ async def test_contract_renewal_rollback_and_expiry_processing_preserve_lineage(
     admin_token: str,
     db_session: AsyncSession,
 ) -> None:
-    today = date.today()
+    today = _business_today()
     person, employment, agreement, legal, _other_person, _other_employment = (
         await _contract_context(db_session, suffix="3")
     )

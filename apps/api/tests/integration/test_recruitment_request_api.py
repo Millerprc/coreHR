@@ -31,6 +31,30 @@ async def test_recruitment_request_is_visible_but_not_blocked_by_headcount_freez
     db_session.add_all([organization, job])
     await db_session.flush()
 
+    future_job = JobCatalog(
+        code="JOB-REQ-FUTURE",
+        name="未来生效职务",
+        status="active",
+        effective_from=period_month + timedelta(days=40),
+        attributes={},
+    )
+    db_session.add(future_job)
+    await db_session.flush()
+
+    rejected = await business_client.post(
+        "/api/v1/lifecycle/recruitment-requests",
+        headers=_auth(admin_token),
+        json={
+            "organization_id": str(organization.id),
+            "job_id": str(future_job.id),
+            "requested_count": 1,
+            "target_month": period_month.isoformat(),
+            "reason": "验证招聘月份必须使用已生效职务",
+        },
+    )
+    assert rejected.status_code == 422, rejected.text
+    assert rejected.json()["code"] == "JOB_NOT_EFFECTIVE"
+
     freeze = await business_client.post(
         "/api/v1/workforce/headcount-freezes",
         headers=_auth(admin_token),
@@ -59,6 +83,21 @@ async def test_recruitment_request_is_visible_but_not_blocked_by_headcount_freez
     assert created.status_code == 201, created.text
     assert created.json()["status"] == "draft"
     assert created.json()["request_number"].startswith("R")
+
+    job.effective_to = period_month + timedelta(days=40)
+    await db_session.flush()
+    invalid_target = await business_client.patch(
+        f"/api/v1/lifecycle/recruitment-requests/{created.json()['id']}",
+        headers=_auth(admin_token),
+        json={
+            "target_month": (period_month + timedelta(days=90)).replace(day=1).isoformat(),
+            "change_reason": "验证变更目标月份时重新检查职务有效期",
+        },
+    )
+    assert invalid_target.status_code == 422, invalid_target.text
+    assert invalid_target.json()["code"] == "JOB_NOT_EFFECTIVE"
+    job.effective_to = None
+    await db_session.flush()
 
     listed = await business_client.get(
         "/api/v1/lifecycle/recruitment-requests",

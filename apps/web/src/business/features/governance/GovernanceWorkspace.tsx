@@ -48,6 +48,7 @@ const entityLabels: Readonly<Record<ImportEntityType, string>> = {
   dictionary_item: "字典项",
   organization_type: "组织类型",
   legal_entity: "法人主体",
+  job_dimension: "职务维度",
   job: "职务",
   organization: "组织",
 }

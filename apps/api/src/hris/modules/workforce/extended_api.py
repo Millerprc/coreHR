@@ -1,11 +1,13 @@
-from datetime import date
+from datetime import date, datetime
 from typing import Annotated, Any
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, Query, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from hris.core.database import get_db
+from hris.core.config import get_settings
 from hris.modules.platform.dependencies import require_permission
 from hris.modules.platform.models import UserAccount
 from hris.modules.workforce.extended_schemas import (
@@ -26,7 +28,12 @@ from hris.modules.workforce.extended_schemas import (
     HeadcountSnapshotBatchResponse,
     HeadcountSnapshotGenerate,
     JobCreate,
+    JobDimensionCreate,
+    JobDimensionResponse,
+    JobDimensionType,
+    JobDimensionVersionCreate,
     JobResponse,
+    JobVersionCreate,
     LegalEntityCreate,
     LegalEntityResponse,
     OccupancyRuleCreate,
@@ -41,7 +48,6 @@ from hris.modules.workforce.extended_service import ExtendedWorkforceService
 from hris.modules.workforce.models import (
     HeadcountFreeze,
     HeadcountPlan,
-    JobCatalog,
     LegalEntity,
     OccupancyRule,
 )
@@ -58,6 +64,10 @@ def service(db: AsyncSession, user: UserAccount, request: Request) -> ExtendedWo
         actor_id=user.id,
         trace_id=str(request.state.trace_id),
     )
+
+
+def business_date() -> date:
+    return datetime.now(ZoneInfo(get_settings().business_timezone)).date()
 
 
 @router.post("/legal-entities", response_model=LegalEntityResponse, status_code=201)
@@ -92,7 +102,22 @@ async def list_legal_entities(
 async def create_job(
     payload: JobCreate, request: Request, db: DbSession, user: AdminUser
 ) -> JobResponse:
-    return JobResponse.model_validate(await service(db, user, request).create_job(payload))
+    return await service(db, user, request).create_job(payload)
+
+
+@router.post(
+    "/jobs/{job_id}/versions",
+    response_model=JobResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_job_version(
+    job_id: UUID,
+    payload: JobVersionCreate,
+    request: Request,
+    db: DbSession,
+    user: AdminUser,
+) -> JobResponse:
+    return await service(db, user, request).create_job_version(job_id, payload)
 
 
 @router.get("/jobs", response_model=PageResponse)
@@ -102,12 +127,71 @@ async def list_jobs(
     user: AdminUser,
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
+    effective_at: date | None = Query(default=None),
 ) -> PageResponse:
-    items, total = await service(db, user, request).list_models(
-        JobCatalog, limit=limit, offset=offset, order_by=JobCatalog.code
+    items, total = await service(db, user, request).list_jobs(
+        effective_at=effective_at or business_date(),
+        limit=limit,
+        offset=offset,
     )
     return PageResponse(
-        items=[JobResponse.model_validate(item).model_dump() for item in items],
+        items=[item.model_dump() for item in items],
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.post(
+    "/job-dimensions",
+    response_model=JobDimensionResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_job_dimension(
+    payload: JobDimensionCreate,
+    request: Request,
+    db: DbSession,
+    user: AdminUser,
+) -> JobDimensionResponse:
+    return await service(db, user, request).create_job_dimension(payload)
+
+
+@router.post(
+    "/job-dimensions/{dimension_id}/versions",
+    response_model=JobDimensionResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_job_dimension_version(
+    dimension_id: UUID,
+    payload: JobDimensionVersionCreate,
+    request: Request,
+    db: DbSession,
+    user: AdminUser,
+) -> JobDimensionResponse:
+    return await service(db, user, request).create_job_dimension_version(
+        dimension_id,
+        payload,
+    )
+
+
+@router.get("/job-dimensions", response_model=PageResponse)
+async def list_job_dimensions(
+    request: Request,
+    db: DbSession,
+    user: AdminUser,
+    dimension_type: JobDimensionType | None = Query(default=None),
+    effective_at: date | None = Query(default=None),
+    limit: int = Query(default=200, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+) -> PageResponse:
+    items, total = await service(db, user, request).list_job_dimensions(
+        dimension_type=dimension_type,
+        effective_at=effective_at or business_date(),
+        limit=limit,
+        offset=offset,
+    )
+    return PageResponse(
+        items=[item.model_dump() for item in items],
         total=total,
         limit=limit,
         offset=offset,

@@ -24,6 +24,25 @@ async def test_person_archive_keeps_employment_assignment_and_agreement_history(
     db_session.add_all([first_organization, second_organization])
     await db_session.flush()
 
+    for dimension_type, code, name in (
+        ("LEVEL", "L6", "六级"),
+        ("GRADE", "G2", "二等"),
+        ("CLASS", "C2", "二类"),
+        ("SEQUENCE", "TECH", "技术"),
+    ):
+        dimension = await business_client.post(
+            "/api/v1/workforce/job-dimensions",
+            headers=_auth(admin_token),
+            json={
+                "dimension_type": dimension_type,
+                "code": code,
+                "name": name,
+                "effective_from": "2026-01-01",
+                "change_reason": "建立合成职务维度",
+            },
+        )
+        assert dimension.status_code == 201, dimension.text
+
     legal = await business_client.post(
         "/api/v1/workforce/legal-entities",
         headers=_auth(admin_token),
@@ -48,6 +67,7 @@ async def test_person_archive_keeps_employment_assignment_and_agreement_history(
             "class_code": "C2",
             "sequence_code": "TECH",
             "effective_from": "2026-01-01",
+            "change_reason": "建立合成测试职务",
         },
     )
     assert job.status_code == 201, job.text

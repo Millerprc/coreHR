@@ -30,31 +30,136 @@ class LegalEntityResponse(BaseModel):
     effective_to: date | None
 
 
-class JobCreate(BaseModel):
-    code: str = Field(min_length=1, max_length=50)
+JobDimensionType = Literal["LEVEL", "GRADE", "CLASS", "SEQUENCE"]
+JobStatus = Literal["active", "inactive"]
+
+
+class JobDimensionCreate(BaseModel):
+    dimension_type: JobDimensionType
+    code: str = Field(pattern=r"^[A-Z0-9][A-Z0-9_.-]{0,49}$")
     name: str = Field(min_length=1, max_length=200)
-    level_code: str | None = Field(default=None, max_length=50)
-    grade_code: str | None = Field(default=None, max_length=50)
-    class_code: str | None = Field(default=None, max_length=50)
-    sequence_code: str | None = Field(default=None, max_length=50)
+    parent_dimension_type: JobDimensionType | None = None
+    parent_dimension_code: str | None = Field(
+        default=None,
+        pattern=r"^[A-Z0-9][A-Z0-9_.-]{0,49}$",
+    )
+    sort_order: int = Field(default=0, ge=0)
+    status: JobStatus = "active"
     effective_from: date
     effective_to: date | None = None
-    attributes: dict[str, Any] = Field(default_factory=dict)
+    notes: str | None = Field(default=None, max_length=1000)
+    change_reason: str = Field(min_length=1, max_length=500)
+
+    @model_validator(mode="after")
+    def validate_dimension(self) -> "JobDimensionCreate":
+        if (self.parent_dimension_type is None) != (self.parent_dimension_code is None):
+            raise ValueError("父维度类型和代码必须同时填写")
+        if (
+            self.parent_dimension_type == self.dimension_type
+            and self.parent_dimension_code == self.code
+        ):
+            raise ValueError("职务维度不能以自身为父级")
+        if self.effective_to is not None and self.effective_to < self.effective_from:
+            raise ValueError("effective_to不能早于effective_from")
+        return self
 
 
-class JobResponse(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
+class JobDimensionVersionCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    parent_dimension_type: JobDimensionType | None = None
+    parent_dimension_code: str | None = Field(
+        default=None,
+        pattern=r"^[A-Z0-9][A-Z0-9_.-]{0,49}$",
+    )
+    sort_order: int = Field(default=0, ge=0)
+    status: JobStatus = "active"
+    effective_from: date
+    effective_to: date | None = None
+    notes: str | None = Field(default=None, max_length=1000)
+    change_reason: str = Field(min_length=1, max_length=500)
 
+    @model_validator(mode="after")
+    def validate_dimension_version(self) -> "JobDimensionVersionCreate":
+        if (self.parent_dimension_type is None) != (self.parent_dimension_code is None):
+            raise ValueError("父维度类型和代码必须同时填写")
+        if self.effective_to is not None and self.effective_to < self.effective_from:
+            raise ValueError("effective_to不能早于effective_from")
+        return self
+
+
+class JobDimensionResponse(BaseModel):
     id: UUID
+    dimension_type: JobDimensionType
     code: str
     name: str
-    level_code: str | None
-    grade_code: str | None
-    class_code: str | None
-    sequence_code: str | None
+    parent_dimension_id: UUID | None
+    parent_dimension_type: JobDimensionType | None
+    parent_dimension_code: str | None
+    sort_order: int
     status: str
     effective_from: date
     effective_to: date | None
+    version: int
+    notes: str | None
+
+
+class JobCreate(BaseModel):
+    code: str = Field(pattern=r"^[A-Z0-9][A-Z0-9_.-]{0,49}$")
+    name: str = Field(min_length=1, max_length=200)
+    level_code: str = Field(pattern=r"^[A-Z0-9][A-Z0-9_.-]{0,49}$")
+    grade_code: str = Field(pattern=r"^[A-Z0-9][A-Z0-9_.-]{0,49}$")
+    class_code: str = Field(pattern=r"^[A-Z0-9][A-Z0-9_.-]{0,49}$")
+    sequence_code: str = Field(pattern=r"^[A-Z0-9][A-Z0-9_.-]{0,49}$")
+    status: JobStatus = "active"
+    effective_from: date
+    effective_to: date | None = None
+    source_job_id: str | None = Field(default=None, max_length=255)
+    notes: str | None = Field(default=None, max_length=1000)
+    attributes: dict[str, Any] = Field(default_factory=dict)
+    change_reason: str = Field(min_length=1, max_length=500)
+
+    @model_validator(mode="after")
+    def validate_effective_period(self) -> "JobCreate":
+        if self.effective_to is not None and self.effective_to < self.effective_from:
+            raise ValueError("effective_to不能早于effective_from")
+        return self
+
+
+class JobVersionCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    level_code: str = Field(pattern=r"^[A-Z0-9][A-Z0-9_.-]{0,49}$")
+    grade_code: str = Field(pattern=r"^[A-Z0-9][A-Z0-9_.-]{0,49}$")
+    class_code: str = Field(pattern=r"^[A-Z0-9][A-Z0-9_.-]{0,49}$")
+    sequence_code: str = Field(pattern=r"^[A-Z0-9][A-Z0-9_.-]{0,49}$")
+    status: JobStatus = "active"
+    effective_from: date
+    effective_to: date | None = None
+    source_job_id: str | None = Field(default=None, max_length=255)
+    notes: str | None = Field(default=None, max_length=1000)
+    attributes: dict[str, Any] = Field(default_factory=dict)
+    change_reason: str = Field(min_length=1, max_length=500)
+
+    @model_validator(mode="after")
+    def validate_effective_period(self) -> "JobVersionCreate":
+        if self.effective_to is not None and self.effective_to < self.effective_from:
+            raise ValueError("effective_to不能早于effective_from")
+        return self
+
+
+class JobResponse(BaseModel):
+    id: UUID
+    code: str
+    name: str
+    level_code: str
+    grade_code: str
+    class_code: str
+    sequence_code: str
+    status: str
+    effective_from: date
+    effective_to: date | None
+    version: int
+    source_job_id: str | None
+    notes: str | None
     attributes: dict[str, Any]
 
 

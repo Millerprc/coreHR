@@ -144,6 +144,98 @@ class JobCatalog(UuidPrimaryKeyMixin, TimestampMixin, Base):
     attributes: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
 
 
+class JobDimension(UuidPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "job_dimensions"
+    __table_args__ = (
+        UniqueConstraint("dimension_type", "code"),
+    )
+
+    dimension_type: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    code: Mapped[str] = mapped_column(String(50), nullable=False)
+
+
+class JobDimensionVersion(UuidPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "job_dimension_versions"
+    __table_args__ = (
+        UniqueConstraint("dimension_id", "version"),
+        CheckConstraint("version > 0", name="version_positive"),
+        CheckConstraint(
+            "effective_to IS NULL OR effective_to >= effective_from",
+            name="effective_period_order",
+        ),
+    )
+
+    dimension_id: Mapped[UUID] = mapped_column(
+        Uuid,
+        ForeignKey("job_dimensions.id"),
+        nullable=False,
+        index=True,
+    )
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    parent_dimension_id: Mapped[UUID | None] = mapped_column(
+        Uuid,
+        ForeignKey("job_dimensions.id"),
+        index=True,
+    )
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    status: Mapped[str] = mapped_column(String(30), nullable=False, default="active")
+    effective_from: Mapped[date] = mapped_column(Date, nullable=False)
+    effective_to: Mapped[date | None] = mapped_column(Date)
+    is_current: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    notes: Mapped[str | None] = mapped_column(String(1000))
+    change_reason: Mapped[str] = mapped_column(String(500), nullable=False)
+
+
+class JobCatalogVersion(UuidPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "job_catalog_versions"
+    __table_args__ = (
+        UniqueConstraint("job_id", "version"),
+        CheckConstraint("version > 0", name="version_positive"),
+        CheckConstraint(
+            "effective_to IS NULL OR effective_to >= effective_from",
+            name="effective_period_order",
+        ),
+    )
+
+    job_id: Mapped[UUID] = mapped_column(
+        Uuid,
+        ForeignKey("job_catalog.id"),
+        nullable=False,
+        index=True,
+    )
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    level_dimension_id: Mapped[UUID | None] = mapped_column(
+        Uuid,
+        ForeignKey("job_dimensions.id"),
+        index=True,
+    )
+    grade_dimension_id: Mapped[UUID | None] = mapped_column(
+        Uuid,
+        ForeignKey("job_dimensions.id"),
+        index=True,
+    )
+    class_dimension_id: Mapped[UUID | None] = mapped_column(
+        Uuid,
+        ForeignKey("job_dimensions.id"),
+        index=True,
+    )
+    sequence_dimension_id: Mapped[UUID | None] = mapped_column(
+        Uuid,
+        ForeignKey("job_dimensions.id"),
+        index=True,
+    )
+    status: Mapped[str] = mapped_column(String(30), nullable=False, default="active")
+    effective_from: Mapped[date] = mapped_column(Date, nullable=False)
+    effective_to: Mapped[date | None] = mapped_column(Date)
+    is_current: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    source_job_id: Mapped[str | None] = mapped_column(String(255))
+    notes: Mapped[str | None] = mapped_column(String(1000))
+    attributes: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    change_reason: Mapped[str] = mapped_column(String(500), nullable=False)
+
+
 class CostCenter(UuidPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "cost_centers"
     __table_args__ = (

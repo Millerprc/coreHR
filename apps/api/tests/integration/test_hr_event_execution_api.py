@@ -1,4 +1,5 @@
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import pytest
 from httpx import AsyncClient
@@ -17,6 +18,10 @@ from hris.modules.workforce.models import (
 pytestmark = pytest.mark.asyncio
 
 
+def _business_today() -> date:
+    return datetime.now(ZoneInfo("Asia/Shanghai")).date()
+
+
 def _auth(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
@@ -26,7 +31,7 @@ async def test_direct_future_and_rollback_hr_events_change_effective_results(
     admin_token: str,
     db_session: AsyncSession,
 ) -> None:
-    today = date.today()
+    today = _business_today()
     first_organization = Organization(code="734001")
     second_organization = Organization(code="734002")
     first_job = JobCatalog(
@@ -43,6 +48,13 @@ async def test_direct_future_and_rollback_hr_events_change_effective_results(
         effective_from=today - timedelta(days=30),
         attributes={},
     )
+    future_job = JobCatalog(
+        code="JOB-EVENT-FUTURE",
+        name="尚未生效职务",
+        status="active",
+        effective_from=today + timedelta(days=30),
+        attributes={},
+    )
     legal = LegalEntity(
         code="LE-EVENT",
         name="合成人事事件法人",
@@ -51,7 +63,15 @@ async def test_direct_future_and_rollback_hr_events_change_effective_results(
         effective_from=today - timedelta(days=30),
     )
     person = Person(employee_number="990002", display_name="合成人事事件人员", status="active")
-    db_session.add_all([first_organization, second_organization, first_job, second_job, legal, person])
+    db_session.add_all([
+        first_organization,
+        second_organization,
+        first_job,
+        second_job,
+        future_job,
+        legal,
+        person,
+    ])
     await db_session.flush()
     employment = Employment(
         person_id=person.id,
@@ -113,6 +133,25 @@ async def test_direct_future_and_rollback_hr_events_change_effective_results(
     assert employment.end_date is None
 
     tomorrow = today + timedelta(days=1)
+    rejected_transfer = await business_client.post(
+        "/api/v1/lifecycle/hr-events",
+        headers=_auth(admin_token),
+        json={
+            "event_type": "TRANSFER",
+            "object_type": "employment",
+            "object_id": str(employment.id),
+            "effective_date": tomorrow.isoformat(),
+            "execution_mode": "direct",
+            "reason": "验证调岗日期必须使用已生效职务",
+            "planned_payload": {
+                "organization_id": str(second_organization.id),
+                "job_id": str(future_job.id),
+            },
+        },
+    )
+    assert rejected_transfer.status_code == 422, rejected_transfer.text
+    assert rejected_transfer.json()["code"] == "JOB_NOT_EFFECTIVE"
+
     transfer = await business_client.post(
         "/api/v1/lifecycle/hr-events",
         headers=_auth(admin_token),
@@ -158,7 +197,7 @@ async def test_approved_hr_event_executes_after_workflow_completion(
     admin_token: str,
     db_session: AsyncSession,
 ) -> None:
-    today = date.today()
+    today = _business_today()
     legal = LegalEntity(
         code="LE-APPROVAL-EVENT",
         name="Synthetic approval legal entity",

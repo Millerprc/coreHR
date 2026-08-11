@@ -194,8 +194,18 @@ class LifecycleService:
     ) -> RecruitmentRequest:
         if await self._session.get(Organization, payload.organization_id) is None:
             raise ApiError(status_code=404, code="ORGANIZATION_NOT_FOUND", message="组织不存在")
-        if await self._session.get(JobCatalog, payload.job_id) is None:
-            raise ApiError(status_code=404, code="JOB_NOT_FOUND", message="职务不存在")
+        workforce = ExtendedWorkforceService(
+            self._session,
+            actor_id=self._actor_id,
+            trace_id=self._trace_id,
+        )
+        business_today = self._business_today()
+        target_date = (
+            max(payload.target_month, business_today)
+            if payload.target_month is not None
+            else business_today
+        )
+        await workforce.ensure_job_effective(payload.job_id, target_date)
         number = payload.request_number or await next_number(
             self._session,
             sequence_code="RECRUITMENT_REQUEST_NUMBER",
@@ -300,6 +310,23 @@ class LifecycleService:
                 status_code=409,
                 code="RECRUITMENT_REQUEST_FINALIZED",
                 message="已关闭或取消的招聘需求不能直接修改",
+            )
+        if "target_month" in changes:
+            business_today = self._business_today()
+            target_month = changes["target_month"]
+            target_date = (
+                max(target_month, business_today)
+                if target_month is not None
+                else business_today
+            )
+            workforce = ExtendedWorkforceService(
+                self._session,
+                actor_id=self._actor_id,
+                trace_id=self._trace_id,
+            )
+            await workforce.ensure_job_effective(
+                recruitment_request.job_id,
+                target_date,
             )
         before = {
             field: getattr(recruitment_request, field).isoformat()
@@ -1331,6 +1358,23 @@ class LifecycleService:
                         code="HR_EVENT_ASSIGNMENT_TARGET_REQUIRED",
                         message="organization and job are required",
                     )
+                try:
+                    target_job_id = UUID(str(payload.planned_payload["job_id"]))
+                except (TypeError, ValueError) as error:
+                    raise ApiError(
+                        status_code=422,
+                        code="HR_EVENT_JOB_ID_INVALID",
+                        message="job_id must be a valid UUID",
+                    ) from error
+                workforce = ExtendedWorkforceService(
+                    self._session,
+                    actor_id=self._actor_id,
+                    trace_id=self._trace_id,
+                )
+                await workforce.ensure_job_effective(
+                    target_job_id,
+                    payload.effective_date,
+                )
             if payload.event_type == "END_ASSIGNMENT" and not payload.planned_payload.get(
                 "assignment_id"
             ):
@@ -1580,8 +1624,12 @@ class LifecycleService:
         job_id = UUID(str(payload["job_id"]))
         if await self._session.get(Organization, organization_id) is None:
             raise ApiError(status_code=404, code="ORGANIZATION_NOT_FOUND", message="组织不存在")
-        if await self._session.get(JobCatalog, job_id) is None:
-            raise ApiError(status_code=404, code="JOB_NOT_FOUND", message="职务不存在")
+        workforce = ExtendedWorkforceService(
+            self._session,
+            actor_id=self._actor_id,
+            trace_id=self._trace_id,
+        )
+        await workforce.ensure_job_effective(job_id, event.effective_date)
         before: dict[str, Any] = {}
         if relation_type == "primary":
             current = await self._session.scalar(

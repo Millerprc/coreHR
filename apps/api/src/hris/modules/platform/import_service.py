@@ -20,6 +20,8 @@ from hris.modules.platform.import_schemas import (
     DictionaryItemImport,
     ImportBatchValidate,
     ImportEntityType,
+    JobDimensionImport,
+    JobImport,
     OrganizationImport,
 )
 from hris.modules.platform.models import (
@@ -27,10 +29,13 @@ from hris.modules.platform.models import (
     DataDictionaryItem,
     ExternalRecordLink,
 )
-from hris.modules.workforce.extended_schemas import JobCreate, LegalEntityCreate
+from hris.modules.workforce.extended_schemas import LegalEntityCreate
 from hris.modules.workforce.models import (
     AuditLog,
     JobCatalog,
+    JobCatalogVersion,
+    JobDimension,
+    JobDimensionVersion,
     LegalEntity,
     Organization,
     OrganizationType,
@@ -45,6 +50,7 @@ _TARGET_TYPES: dict[str, str] = {
     "dictionary_item": "data_dictionary_item",
     "organization_type": "organization_type",
     "legal_entity": "legal_entity",
+    "job_dimension": "job_dimension",
     "job": "job",
     "organization": "organization",
 }
@@ -84,16 +90,50 @@ _TEMPLATES: dict[str, tuple[list[str], list[str]]] = {
     ),
     "job": (
         [
-            "code",
-            "name",
+            "job_code",
+            "job_name",
             "level_code",
             "grade_code",
             "class_code",
             "sequence_code",
             "effective_from",
             "effective_to",
+            "status",
+            "source_job_id",
+            "notes",
         ],
-        ["code", "name", "effective_from"],
+        [
+            "job_code",
+            "job_name",
+            "level_code",
+            "grade_code",
+            "class_code",
+            "sequence_code",
+            "effective_from",
+            "status",
+        ],
+    ),
+    "job_dimension": (
+        [
+            "dimension_type",
+            "dimension_code",
+            "dimension_name",
+            "parent_dimension_type",
+            "parent_dimension_code",
+            "sort_order",
+            "effective_from",
+            "effective_to",
+            "status",
+            "notes",
+        ],
+        [
+            "dimension_type",
+            "dimension_code",
+            "dimension_name",
+            "sort_order",
+            "effective_from",
+            "status",
+        ],
     ),
     "organization": (
         [
@@ -176,6 +216,10 @@ class ImportService:
         existing_targets = await self._existing_targets(payload.entity_type, parsed)
         if payload.entity_type == "dictionary_item":
             await self._validate_dictionary_item_relations(parsed, existing_targets, errors)
+        elif payload.entity_type == "job_dimension":
+            await self._validate_job_dimension_relations(parsed, existing_targets, errors)
+        elif payload.entity_type == "job":
+            await self._validate_job_relations(parsed, errors)
         elif payload.entity_type == "organization":
             await self._validate_organization_relations(parsed, existing_targets, errors)
 
@@ -281,6 +325,8 @@ class ImportService:
         valid_rows = [row for row in rows if row.status == "valid"]
         if batch.entity_type == "dictionary_item":
             valid_rows = await self._order_dictionary_item_rows(valid_rows)
+        elif batch.entity_type == "job_dimension":
+            valid_rows = await self._order_job_dimension_rows(valid_rows)
         elif batch.entity_type == "organization":
             valid_rows = await self._order_organization_rows(valid_rows)
 
@@ -392,7 +438,8 @@ class ImportService:
             "dictionary_item": DictionaryItemImport,
             "organization_type": OrganizationTypeCreate,
             "legal_entity": LegalEntityCreate,
-            "job": JobCreate,
+            "job_dimension": JobDimensionImport,
+            "job": JobImport,
             "organization": OrganizationImport,
         }[payload.entity_type]
         parsed: dict[int, BaseModel] = {}
@@ -543,11 +590,52 @@ class ImportService:
             )
             return result
 
+        if entity_type == "job_dimension":
+            dimension_keys = {
+                (dimension_type, code)
+                for model in parsed.values()
+                if isinstance(model, JobDimensionImport)
+                for dimension_type, code in (
+                    (model.dimension_type, model.dimension_code),
+                    (model.parent_dimension_type, model.parent_dimension_code),
+                )
+                if dimension_type is not None and code is not None
+            }
+            dimensions = list(
+                (
+                    await self._session.scalars(
+                        select(JobDimension).where(
+                            JobDimension.dimension_type.in_({key[0] for key in dimension_keys}),
+                            JobDimension.code.in_({key[1] for key in dimension_keys}),
+                        )
+                    )
+                ).all()
+            ) if dimension_keys else []
+            return {
+                f"{item.dimension_type}:{item.code}": item
+                for item in dimensions
+                if (item.dimension_type, item.code) in dimension_keys
+            }
+
+        if entity_type == "job":
+            codes = {
+                model.job_code
+                for model in parsed.values()
+                if isinstance(model, JobImport)
+            }
+            items = list(
+                (
+                    await self._session.scalars(
+                        select(JobCatalog).where(JobCatalog.code.in_(codes))
+                    )
+                ).all()
+            ) if codes else []
+            return {item.code: item for item in items}
+
         model_type: type[Any] = {
             "dictionary": DataDictionary,
             "organization_type": OrganizationType,
             "legal_entity": LegalEntity,
-            "job": JobCatalog,
         }[entity_type]
         codes = {str(getattr(model, "code")) for model in parsed.values()}
         items = list(
@@ -689,6 +777,260 @@ class ImportService:
                     status_code=409,
                     code="IMPORT_DICTIONARY_DEPENDENCY_INVALID",
                     message="字典项依赖顺序无法解析，请重新校验批次",
+                )
+        return ordered
+
+    async def _job_dimension_version_at(
+        self,
+        dimension_id: UUID,
+        effective_at: date,
+    ) -> JobDimensionVersion | None:
+        return await self._session.scalar(
+            select(JobDimensionVersion)
+            .where(
+                JobDimensionVersion.dimension_id == dimension_id,
+                JobDimensionVersion.status == "active",
+                JobDimensionVersion.effective_from <= effective_at,
+                (
+                    JobDimensionVersion.effective_to.is_(None)
+                    | (JobDimensionVersion.effective_to >= effective_at)
+                ),
+            )
+            .order_by(
+                JobDimensionVersion.effective_from.desc(),
+                JobDimensionVersion.version.desc(),
+            )
+            .limit(1)
+        )
+
+    async def _validate_job_dimension_relations(
+        self,
+        parsed: dict[int, BaseModel],
+        existing: dict[str, Any],
+        errors: defaultdict[int, list[dict[str, Any]]],
+    ) -> None:
+        incoming: dict[str, JobDimensionImport] = {}
+        index_by_key: dict[str, int] = {}
+        for index, model in parsed.items():
+            if not isinstance(model, JobDimensionImport):
+                continue
+            key = f"{model.dimension_type}:{model.dimension_code}"
+            incoming[key] = model
+            index_by_key[key] = index
+            if model.parent_dimension_type is None or model.parent_dimension_code is None:
+                continue
+            parent_key = f"{model.parent_dimension_type}:{model.parent_dimension_code}"
+            parent_incoming = incoming.get(parent_key) or next(
+                (
+                    candidate
+                    for candidate in parsed.values()
+                    if isinstance(candidate, JobDimensionImport)
+                    and candidate.dimension_type == model.parent_dimension_type
+                    and candidate.dimension_code == model.parent_dimension_code
+                ),
+                None,
+            )
+            parent_existing = existing.get(parent_key)
+            if parent_incoming is None and parent_existing is None:
+                errors[index].append(
+                    self._error(
+                        "JOB_DIMENSION_PARENT_NOT_FOUND",
+                        "parent_dimension_code",
+                        "父职务维度不存在且不在当前批次",
+                    )
+                )
+            elif parent_incoming is not None and not (
+                parent_incoming.status == "active"
+                and parent_incoming.effective_from <= model.effective_from
+                and (
+                    parent_incoming.effective_to is None
+                    or parent_incoming.effective_to >= model.effective_from
+                )
+            ):
+                errors[index].append(
+                    self._error(
+                        "JOB_DIMENSION_PARENT_NOT_EFFECTIVE",
+                        "parent_dimension_code",
+                        "当前批次父职务维度在子维度生效日未启用",
+                    )
+                )
+            elif (
+                parent_existing is not None
+                and await self._job_dimension_version_at(
+                    parent_existing.id,
+                    model.effective_from,
+                )
+                is None
+            ):
+                errors[index].append(
+                    self._error(
+                        "JOB_DIMENSION_PARENT_NOT_EFFECTIVE",
+                        "parent_dimension_code",
+                        "父职务维度在子维度生效日未启用",
+                    )
+                )
+
+        visiting: set[str] = set()
+        visited: set[str] = set()
+
+        def visit(key: str, path: list[str]) -> None:
+            if key in visited:
+                return
+            if key in visiting:
+                for cycle_key in path[path.index(key) :]:
+                    errors[index_by_key[cycle_key]].append(
+                        self._error(
+                            "JOB_DIMENSION_PARENT_CYCLE",
+                            "parent_dimension_code",
+                            "职务维度父级不能形成循环",
+                        )
+                    )
+                return
+            model = incoming.get(key)
+            if (
+                model is None
+                or model.parent_dimension_type is None
+                or model.parent_dimension_code is None
+            ):
+                visited.add(key)
+                return
+            parent_key = f"{model.parent_dimension_type}:{model.parent_dimension_code}"
+            if parent_key not in incoming:
+                visited.add(key)
+                return
+            visiting.add(key)
+            visit(parent_key, [*path, parent_key])
+            visiting.discard(key)
+            visited.add(key)
+
+        for key in incoming:
+            visit(key, [key])
+
+        dependency_changed = True
+        while dependency_changed:
+            dependency_changed = False
+            invalid_keys = {key for key, index in index_by_key.items() if errors[index]}
+            for key, model in incoming.items():
+                index = index_by_key[key]
+                if (
+                    errors[index]
+                    or model.parent_dimension_type is None
+                    or model.parent_dimension_code is None
+                ):
+                    continue
+                parent_key = f"{model.parent_dimension_type}:{model.parent_dimension_code}"
+                if parent_key in invalid_keys:
+                    errors[index].append(
+                        self._error(
+                            "JOB_DIMENSION_PARENT_REJECTED",
+                            "parent_dimension_code",
+                            "父职务维度未通过当前批次校验",
+                        )
+                    )
+                    dependency_changed = True
+
+    async def _validate_job_relations(
+        self,
+        parsed: dict[int, BaseModel],
+        errors: defaultdict[int, list[dict[str, Any]]],
+    ) -> None:
+        dimension_pairs = {
+            (dimension_type, code)
+            for model in parsed.values()
+            if isinstance(model, JobImport)
+            for dimension_type, code in (
+                ("LEVEL", model.level_code),
+                ("GRADE", model.grade_code),
+                ("CLASS", model.class_code),
+                ("SEQUENCE", model.sequence_code),
+            )
+        }
+        dimensions = list(
+            (
+                await self._session.scalars(
+                    select(JobDimension).where(
+                        JobDimension.dimension_type.in_({pair[0] for pair in dimension_pairs}),
+                        JobDimension.code.in_({pair[1] for pair in dimension_pairs}),
+                    )
+                )
+            ).all()
+        ) if dimension_pairs else []
+        dimension_by_key = {
+            (item.dimension_type, item.code): item
+            for item in dimensions
+            if (item.dimension_type, item.code) in dimension_pairs
+        }
+        effective_cache: dict[tuple[UUID, date], bool] = {}
+        for index, model in parsed.items():
+            if not isinstance(model, JobImport):
+                continue
+            for field, dimension_type, code in (
+                ("level_code", "LEVEL", model.level_code),
+                ("grade_code", "GRADE", model.grade_code),
+                ("class_code", "CLASS", model.class_code),
+                ("sequence_code", "SEQUENCE", model.sequence_code),
+            ):
+                dimension = dimension_by_key.get((dimension_type, code))
+                if dimension is None:
+                    errors[index].append(
+                        self._error(
+                            "JOB_DIMENSION_NOT_FOUND",
+                            field,
+                            f"{dimension_type}维度代码不存在，请先导入职务维度",
+                        )
+                    )
+                    continue
+                cache_key = (dimension.id, model.effective_from)
+                if cache_key not in effective_cache:
+                    effective_cache[cache_key] = (
+                        await self._job_dimension_version_at(
+                            dimension.id,
+                            model.effective_from,
+                        )
+                    ) is not None
+                if not effective_cache[cache_key]:
+                    errors[index].append(
+                        self._error(
+                            "JOB_DIMENSION_NOT_EFFECTIVE",
+                            field,
+                            f"{dimension_type}维度在职务生效日未启用",
+                        )
+                    )
+
+    async def _order_job_dimension_rows(
+        self,
+        rows: list[ImportBatchRow],
+    ) -> list[ImportBatchRow]:
+        pending = {row.id: row for row in rows}
+        available = {
+            (dimension_type, code)
+            for dimension_type, code in (
+                await self._session.execute(
+                    select(JobDimension.dimension_type, JobDimension.code)
+                )
+            ).all()
+        }
+        ordered: list[ImportBatchRow] = []
+        while pending:
+            progressed = False
+            for row_id, row in list(pending.items()):
+                model = JobDimensionImport.model_validate(row.payload)
+                parent = (
+                    (model.parent_dimension_type, model.parent_dimension_code)
+                    if model.parent_dimension_type and model.parent_dimension_code
+                    else None
+                )
+                if parent is not None and parent not in available:
+                    continue
+                ordered.append(row)
+                available.add((model.dimension_type, model.dimension_code))
+                del pending[row_id]
+                progressed = True
+            if not progressed:
+                raise ApiError(
+                    status_code=409,
+                    code="IMPORT_JOB_DIMENSION_DEPENDENCY_INVALID",
+                    message="职务维度父级依赖顺序无法解析，请重新校验批次",
                 )
         return ordered
 
@@ -914,11 +1256,111 @@ class ImportService:
                 **payload.model_dump(),
                 status="active",
             )
+        elif batch.entity_type == "job_dimension":
+            payload = JobDimensionImport.model_validate(row.payload)
+            parent: JobDimension | None = None
+            if payload.parent_dimension_type and payload.parent_dimension_code:
+                parent = await self._session.scalar(
+                    select(JobDimension).where(
+                        JobDimension.dimension_type == payload.parent_dimension_type,
+                        JobDimension.code == payload.parent_dimension_code,
+                    )
+                )
+                if (
+                    parent is None
+                    or await self._job_dimension_version_at(
+                        parent.id,
+                        payload.effective_from,
+                    )
+                    is None
+                ):
+                    raise ApiError(
+                        status_code=409,
+                        code="JOB_DIMENSION_PARENT_NOT_EFFECTIVE",
+                        message="执行时父职务维度不存在或未启用",
+                    )
+            target = JobDimension(
+                dimension_type=payload.dimension_type,
+                code=payload.dimension_code,
+            )
+            self._session.add(target)
+            await self._session.flush()
+            self._session.add(
+                JobDimensionVersion(
+                    dimension_id=target.id,
+                    version=1,
+                    name=payload.dimension_name,
+                    parent_dimension_id=parent.id if parent else None,
+                    sort_order=payload.sort_order,
+                    status=payload.status,
+                    effective_from=payload.effective_from,
+                    effective_to=payload.effective_to,
+                    is_current=True,
+                    notes=payload.notes,
+                    change_reason="主数据初始化导入",
+                )
+            )
         elif batch.entity_type == "job":
-            payload = JobCreate.model_validate(row.payload)
+            payload = JobImport.model_validate(row.payload)
+            dimensions: dict[str, JobDimension] = {}
+            for key, dimension_type, code in (
+                ("level", "LEVEL", payload.level_code),
+                ("grade", "GRADE", payload.grade_code),
+                ("class", "CLASS", payload.class_code),
+                ("sequence", "SEQUENCE", payload.sequence_code),
+            ):
+                dimension = await self._session.scalar(
+                    select(JobDimension).where(
+                        JobDimension.dimension_type == dimension_type,
+                        JobDimension.code == code,
+                    )
+                )
+                if (
+                    dimension is None
+                    or await self._job_dimension_version_at(
+                        dimension.id,
+                        payload.effective_from,
+                    )
+                    is None
+                ):
+                    raise ApiError(
+                        status_code=409,
+                        code="JOB_DIMENSION_NOT_EFFECTIVE",
+                        message=f"执行时{dimension_type}维度不存在或未启用",
+                    )
+                dimensions[key] = dimension
             target = JobCatalog(
-                **payload.model_dump(),
-                status="active",
+                code=payload.job_code,
+                name=payload.job_name,
+                level_code=payload.level_code,
+                grade_code=payload.grade_code,
+                class_code=payload.class_code,
+                sequence_code=payload.sequence_code,
+                status=payload.status,
+                effective_from=payload.effective_from,
+                effective_to=payload.effective_to,
+                attributes={},
+            )
+            self._session.add(target)
+            await self._session.flush()
+            self._session.add(
+                JobCatalogVersion(
+                    job_id=target.id,
+                    version=1,
+                    name=payload.job_name,
+                    level_dimension_id=dimensions["level"].id,
+                    grade_dimension_id=dimensions["grade"].id,
+                    class_dimension_id=dimensions["class"].id,
+                    sequence_dimension_id=dimensions["sequence"].id,
+                    status=payload.status,
+                    effective_from=payload.effective_from,
+                    effective_to=payload.effective_to,
+                    is_current=True,
+                    source_job_id=payload.source_job_id,
+                    notes=payload.notes,
+                    attributes={},
+                    change_reason="主数据初始化导入",
+                )
             )
         elif batch.entity_type == "organization":
             payload = OrganizationImport.model_validate(row.payload)
@@ -1029,6 +1471,10 @@ class ImportService:
             model, DictionaryItemImport
         ):
             return f"{model.dictionary_code}:{model.code}"
+        if entity_type == "job_dimension" and isinstance(model, JobDimensionImport):
+            return f"{model.dimension_type}:{model.dimension_code}"
+        if entity_type == "job" and isinstance(model, JobImport):
+            return model.job_code
         return str(getattr(model, "code"))
 
     @staticmethod

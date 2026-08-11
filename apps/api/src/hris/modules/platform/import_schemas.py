@@ -11,6 +11,7 @@ ImportEntityType = Literal[
     "dictionary_item",
     "organization_type",
     "legal_entity",
+    "job_dimension",
     "job",
     "organization",
 ]
@@ -78,6 +79,55 @@ class OrganizationImport(ImportRequest):
 
     @model_validator(mode="after")
     def validate_effective_period(self) -> "OrganizationImport":
+        if self.effective_to is not None and self.effective_to < self.effective_from:
+            raise ValueError("effective_to不能早于effective_from")
+        return self
+
+
+class JobDimensionImport(ImportRequest):
+    dimension_type: Literal["LEVEL", "GRADE", "CLASS", "SEQUENCE"]
+    dimension_code: str = Field(pattern=r"^[A-Z0-9][A-Z0-9_.-]{0,49}$")
+    dimension_name: str = Field(min_length=1, max_length=200)
+    parent_dimension_type: Literal["LEVEL", "GRADE", "CLASS", "SEQUENCE"] | None = None
+    parent_dimension_code: str | None = Field(
+        default=None,
+        pattern=r"^[A-Z0-9][A-Z0-9_.-]{0,49}$",
+    )
+    sort_order: int = Field(default=0, ge=0)
+    effective_from: date
+    effective_to: date | None = None
+    status: Literal["active", "inactive"] = "active"
+    notes: str | None = Field(default=None, max_length=1000)
+
+    @model_validator(mode="after")
+    def validate_dimension(self) -> "JobDimensionImport":
+        if (self.parent_dimension_type is None) != (self.parent_dimension_code is None):
+            raise ValueError("父维度类型和代码必须同时填写")
+        if (
+            self.parent_dimension_type == self.dimension_type
+            and self.parent_dimension_code == self.dimension_code
+        ):
+            raise ValueError("职务维度不能以自身为父级")
+        if self.effective_to is not None and self.effective_to < self.effective_from:
+            raise ValueError("effective_to不能早于effective_from")
+        return self
+
+
+class JobImport(ImportRequest):
+    job_code: str = Field(pattern=r"^[A-Z0-9][A-Z0-9_.-]{0,49}$")
+    job_name: str = Field(min_length=1, max_length=200)
+    level_code: str = Field(pattern=r"^[A-Z0-9][A-Z0-9_.-]{0,49}$")
+    grade_code: str = Field(pattern=r"^[A-Z0-9][A-Z0-9_.-]{0,49}$")
+    class_code: str = Field(pattern=r"^[A-Z0-9][A-Z0-9_.-]{0,49}$")
+    sequence_code: str = Field(pattern=r"^[A-Z0-9][A-Z0-9_.-]{0,49}$")
+    effective_from: date
+    effective_to: date | None = None
+    status: Literal["active", "inactive"] = "active"
+    source_job_id: str | None = Field(default=None, max_length=255)
+    notes: str | None = Field(default=None, max_length=1000)
+
+    @model_validator(mode="after")
+    def validate_effective_period(self) -> "JobImport":
         if self.effective_to is not None and self.effective_to < self.effective_from:
             raise ValueError("effective_to不能早于effective_from")
         return self

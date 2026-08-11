@@ -17,6 +17,11 @@ from hris.modules.workforce.extended_schemas import (
     HeadcountPlanCreate,
     HeadcountSnapshotGenerate,
     JobCreate,
+    JobDimensionCreate,
+    JobDimensionResponse,
+    JobDimensionVersionCreate,
+    JobResponse,
+    JobVersionCreate,
     LegalEntityCreate,
     OccupancyRuleCreate,
     PersonCreate,
@@ -32,6 +37,9 @@ from hris.modules.workforce.models import (
     HeadcountSnapshot,
     OccupancyRule,
     JobCatalog,
+    JobCatalogVersion,
+    JobDimension,
+    JobDimensionVersion,
     LegalEntity,
     Organization,
     OrganizationVersion,
@@ -94,19 +102,559 @@ class ExtendedWorkforceService:
         )
         return entity
 
-    async def create_job(self, payload: JobCreate) -> JobCatalog:
+    async def _dimension_at(
+        self,
+        *,
+        dimension_type: str,
+        code: str,
+        effective_at: date,
+        active_only: bool = True,
+    ) -> tuple[JobDimension, JobDimensionVersion] | None:
+        filters = [
+            JobDimension.dimension_type == dimension_type,
+            JobDimension.code == code,
+            JobDimensionVersion.effective_from <= effective_at,
+            or_(
+                JobDimensionVersion.effective_to.is_(None),
+                JobDimensionVersion.effective_to >= effective_at,
+            ),
+        ]
+        if active_only:
+            filters.append(JobDimensionVersion.status == "active")
+        return (
+            await self._session.execute(
+                select(JobDimension, JobDimensionVersion)
+                .join(
+                    JobDimensionVersion,
+                    JobDimensionVersion.dimension_id == JobDimension.id,
+                )
+                .where(*filters)
+                .order_by(
+                    JobDimensionVersion.effective_from.desc(),
+                    JobDimensionVersion.version.desc(),
+                )
+                .limit(1)
+            )
+        ).one_or_none()
+
+    async def _dimension_response(
+        self,
+        dimension: JobDimension,
+        version: JobDimensionVersion,
+    ) -> JobDimensionResponse:
+        parent = (
+            await self._session.get(JobDimension, version.parent_dimension_id)
+            if version.parent_dimension_id is not None
+            else None
+        )
+        return JobDimensionResponse(
+            id=dimension.id,
+            dimension_type=dimension.dimension_type,
+            code=dimension.code,
+            name=version.name,
+            parent_dimension_id=parent.id if parent else None,
+            parent_dimension_type=parent.dimension_type if parent else None,
+            parent_dimension_code=parent.code if parent else None,
+            sort_order=version.sort_order,
+            status=version.status,
+            effective_from=version.effective_from,
+            effective_to=version.effective_to,
+            version=version.version,
+            notes=version.notes,
+        )
+
+    async def _resolve_parent_dimension(
+        self,
+        *,
+        parent_type: str | None,
+        parent_code: str | None,
+        effective_at: date,
+        child_id: UUID | None = None,
+    ) -> JobDimension | None:
+        if parent_type is None or parent_code is None:
+            return None
+        resolved = await self._dimension_at(
+            dimension_type=parent_type,
+            code=parent_code,
+            effective_at=effective_at,
+        )
+        if resolved is None:
+            raise ApiError(
+                status_code=422,
+                code="JOB_DIMENSION_PARENT_NOT_EFFECTIVE",
+                message="父职务维度不存在或在生效日期未启用",
+            )
+        parent, parent_version = resolved
+        visited: set[UUID] = set()
+        while child_id is not None and parent is not None:
+            if parent.id == child_id:
+                raise ApiError(
+                    status_code=422,
+                    code="JOB_DIMENSION_PARENT_CYCLE",
+                    message="职务维度父级不能形成循环",
+                )
+            if parent.id in visited or parent_version.parent_dimension_id is None:
+                break
+            visited.add(parent.id)
+            next_parent = await self._session.get(
+                JobDimension,
+                parent_version.parent_dimension_id,
+            )
+            if next_parent is None:
+                break
+            next_version = await self._session.scalar(
+                select(JobDimensionVersion)
+                .where(
+                    JobDimensionVersion.dimension_id == next_parent.id,
+                    JobDimensionVersion.effective_from <= effective_at,
+                    or_(
+                        JobDimensionVersion.effective_to.is_(None),
+                        JobDimensionVersion.effective_to >= effective_at,
+                    ),
+                )
+                .order_by(JobDimensionVersion.version.desc())
+                .limit(1)
+            )
+            if next_version is None:
+                break
+            parent, parent_version = next_parent, next_version
+        return resolved[0]
+
+    async def create_job_dimension(
+        self,
+        payload: JobDimensionCreate,
+    ) -> JobDimensionResponse:
+        existing = await self._session.scalar(
+            select(JobDimension).where(
+                JobDimension.dimension_type == payload.dimension_type,
+                JobDimension.code == payload.code,
+            )
+        )
+        if existing is not None:
+            raise ApiError(
+                status_code=409,
+                code="JOB_DIMENSION_CODE_EXISTS",
+                message="同类型职务维度代码已存在",
+            )
+        parent = await self._resolve_parent_dimension(
+            parent_type=payload.parent_dimension_type,
+            parent_code=payload.parent_dimension_code,
+            effective_at=payload.effective_from,
+        )
+        dimension = JobDimension(
+            dimension_type=payload.dimension_type,
+            code=payload.code,
+        )
+        self._session.add(dimension)
+        await self._session.flush()
+        version = JobDimensionVersion(
+            dimension_id=dimension.id,
+            version=1,
+            name=payload.name,
+            parent_dimension_id=parent.id if parent else None,
+            sort_order=payload.sort_order,
+            status=payload.status,
+            effective_from=payload.effective_from,
+            effective_to=payload.effective_to,
+            is_current=True,
+            notes=payload.notes,
+            change_reason=payload.change_reason,
+        )
+        self._session.add(version)
+        await self._session.flush()
+        self._audit(
+            action="create",
+            object_type="job_dimension",
+            object_id=dimension.id,
+            reason=payload.change_reason,
+            after={
+                "dimension_type": dimension.dimension_type,
+                "code": dimension.code,
+                "version": 1,
+            },
+        )
+        return await self._dimension_response(dimension, version)
+
+    async def create_job_dimension_version(
+        self,
+        dimension_id: UUID,
+        payload: JobDimensionVersionCreate,
+    ) -> JobDimensionResponse:
+        dimension = await self._session.get(JobDimension, dimension_id, with_for_update=True)
+        if dimension is None:
+            raise ApiError(status_code=404, code="JOB_DIMENSION_NOT_FOUND", message="职务维度不存在")
+        latest = await self._session.scalar(
+            select(JobDimensionVersion)
+            .where(JobDimensionVersion.dimension_id == dimension.id)
+            .order_by(JobDimensionVersion.version.desc())
+            .limit(1)
+            .with_for_update()
+        )
+        if latest is None:
+            raise ApiError(status_code=409, code="JOB_DIMENSION_VERSION_MISSING", message="职务维度缺少初始版本")
+        if payload.effective_from <= latest.effective_from:
+            raise ApiError(
+                status_code=409,
+                code="JOB_DIMENSION_VERSION_DATE_NOT_FORWARD",
+                message="新版本生效日期必须晚于最新版本",
+            )
+        parent = await self._resolve_parent_dimension(
+            parent_type=payload.parent_dimension_type,
+            parent_code=payload.parent_dimension_code,
+            effective_at=payload.effective_from,
+            child_id=dimension.id,
+        )
+        if latest.effective_to is None or latest.effective_to >= payload.effective_from:
+            latest.effective_to = payload.effective_from - timedelta(days=1)
+        latest.is_current = False
+        version = JobDimensionVersion(
+            dimension_id=dimension.id,
+            version=latest.version + 1,
+            name=payload.name,
+            parent_dimension_id=parent.id if parent else None,
+            sort_order=payload.sort_order,
+            status=payload.status,
+            effective_from=payload.effective_from,
+            effective_to=payload.effective_to,
+            is_current=True,
+            notes=payload.notes,
+            change_reason=payload.change_reason,
+        )
+        self._session.add(version)
+        await self._session.flush()
+        self._audit(
+            action="create_version",
+            object_type="job_dimension",
+            object_id=dimension.id,
+            reason=payload.change_reason,
+            before={"version": latest.version, "effective_to": latest.effective_to.isoformat()},
+            after={"version": version.version, "effective_from": version.effective_from.isoformat()},
+        )
+        return await self._dimension_response(dimension, version)
+
+    async def list_job_dimensions(
+        self,
+        *,
+        dimension_type: str | None,
+        effective_at: date,
+        limit: int,
+        offset: int,
+    ) -> tuple[list[JobDimensionResponse], int]:
+        filters = [
+            JobDimensionVersion.effective_from <= effective_at,
+            or_(
+                JobDimensionVersion.effective_to.is_(None),
+                JobDimensionVersion.effective_to >= effective_at,
+            ),
+        ]
+        if dimension_type is not None:
+            filters.append(JobDimension.dimension_type == dimension_type)
+        pairs = (
+            await self._session.execute(
+                select(JobDimension, JobDimensionVersion)
+                .join(
+                    JobDimensionVersion,
+                    JobDimensionVersion.dimension_id == JobDimension.id,
+                )
+                .where(*filters)
+                .order_by(JobDimension.dimension_type, JobDimension.code)
+                .limit(limit)
+                .offset(offset)
+            )
+        ).all()
+        items = [
+            await self._dimension_response(dimension, version)
+            for dimension, version in pairs
+        ]
+        total = await self._session.scalar(
+            select(func.count(func.distinct(JobDimension.id)))
+            .select_from(JobDimension)
+            .join(
+                JobDimensionVersion,
+                JobDimensionVersion.dimension_id == JobDimension.id,
+            )
+            .where(*filters)
+        )
+        return items, total or 0
+
+    async def _resolve_job_dimensions(
+        self,
+        *,
+        level_code: str,
+        grade_code: str,
+        class_code: str,
+        sequence_code: str,
+        effective_at: date,
+    ) -> dict[str, JobDimension]:
+        result: dict[str, JobDimension] = {}
+        for key, dimension_type, code in (
+            ("level", "LEVEL", level_code),
+            ("grade", "GRADE", grade_code),
+            ("class", "CLASS", class_code),
+            ("sequence", "SEQUENCE", sequence_code),
+        ):
+            resolved = await self._dimension_at(
+                dimension_type=dimension_type,
+                code=code,
+                effective_at=effective_at,
+            )
+            if resolved is None:
+                raise ApiError(
+                    status_code=422,
+                    code="JOB_DIMENSION_NOT_EFFECTIVE",
+                    message=f"{dimension_type}维度代码不存在或在职务生效日未启用",
+                )
+            result[key] = resolved[0]
+        return result
+
+    @staticmethod
+    def _job_response(
+        job: JobCatalog,
+        version: JobCatalogVersion,
+        dimensions: dict[str, JobDimension],
+    ) -> JobResponse:
+        return JobResponse(
+            id=job.id,
+            code=job.code,
+            name=version.name,
+            level_code=dimensions["level"].code,
+            grade_code=dimensions["grade"].code,
+            class_code=dimensions["class"].code,
+            sequence_code=dimensions["sequence"].code,
+            status=version.status,
+            effective_from=version.effective_from,
+            effective_to=version.effective_to,
+            version=version.version,
+            source_job_id=version.source_job_id,
+            notes=version.notes,
+            attributes=version.attributes,
+        )
+
+    async def _job_version_at(
+        self,
+        job_id: UUID,
+        effective_at: date,
+        *,
+        active_only: bool = True,
+    ) -> JobCatalogVersion | None:
+        filters = [
+            JobCatalogVersion.job_id == job_id,
+            JobCatalogVersion.effective_from <= effective_at,
+            or_(
+                JobCatalogVersion.effective_to.is_(None),
+                JobCatalogVersion.effective_to >= effective_at,
+            ),
+        ]
+        if active_only:
+            filters.append(JobCatalogVersion.status == "active")
+        return await self._session.scalar(
+            select(JobCatalogVersion)
+            .where(*filters)
+            .order_by(
+                JobCatalogVersion.effective_from.desc(),
+                JobCatalogVersion.version.desc(),
+            )
+            .limit(1)
+        )
+
+    async def _job_effective_at(self, job_id: UUID, effective_at: date) -> bool:
+        if await self._job_version_at(job_id, effective_at) is not None:
+            return True
+        legacy = await self._session.get(JobCatalog, job_id)
+        return bool(
+            legacy is not None
+            and legacy.status == "active"
+            and legacy.effective_from <= effective_at
+            and (legacy.effective_to is None or legacy.effective_to >= effective_at)
+        )
+
+    async def ensure_job_effective(self, job_id: UUID, effective_at: date) -> None:
+        if not await self._job_effective_at(job_id, effective_at):
+            raise ApiError(
+                status_code=422,
+                code="JOB_NOT_EFFECTIVE",
+                message="职务不存在或在目标生效日期未启用",
+            )
+
+    async def _job_dimensions_for_version(
+        self,
+        version: JobCatalogVersion,
+    ) -> dict[str, JobDimension] | None:
+        dimension_ids = {
+            "level": version.level_dimension_id,
+            "grade": version.grade_dimension_id,
+            "class": version.class_dimension_id,
+            "sequence": version.sequence_dimension_id,
+        }
+        if any(value is None for value in dimension_ids.values()):
+            return None
+        dimensions: dict[str, JobDimension] = {}
+        for key, dimension_id in dimension_ids.items():
+            dimension = await self._session.get(JobDimension, dimension_id)
+            if dimension is None:
+                return None
+            dimensions[key] = dimension
+        return dimensions
+
+    async def create_job(self, payload: JobCreate) -> JobResponse:
         await self._ensure_unique(JobCatalog, JobCatalog.code, payload.code, "JOB_CODE_EXISTS")
-        job = JobCatalog(**payload.model_dump(), status="active")
+        dimensions = await self._resolve_job_dimensions(
+            level_code=payload.level_code,
+            grade_code=payload.grade_code,
+            class_code=payload.class_code,
+            sequence_code=payload.sequence_code,
+            effective_at=payload.effective_from,
+        )
+        job = JobCatalog(
+            code=payload.code,
+            name=payload.name,
+            level_code=payload.level_code,
+            grade_code=payload.grade_code,
+            class_code=payload.class_code,
+            sequence_code=payload.sequence_code,
+            status=payload.status,
+            effective_from=payload.effective_from,
+            effective_to=payload.effective_to,
+            attributes=payload.attributes,
+        )
         self._session.add(job)
+        await self._session.flush()
+        version = JobCatalogVersion(
+            job_id=job.id,
+            version=1,
+            name=payload.name,
+            level_dimension_id=dimensions["level"].id,
+            grade_dimension_id=dimensions["grade"].id,
+            class_dimension_id=dimensions["class"].id,
+            sequence_dimension_id=dimensions["sequence"].id,
+            status=payload.status,
+            effective_from=payload.effective_from,
+            effective_to=payload.effective_to,
+            is_current=True,
+            source_job_id=payload.source_job_id,
+            notes=payload.notes,
+            attributes=payload.attributes,
+            change_reason=payload.change_reason,
+        )
+        self._session.add(version)
         await self._session.flush()
         self._audit(
             action="create",
             object_type="job",
             object_id=job.id,
-            reason="创建职务",
-            after={"code": job.code, "name": job.name},
+            reason=payload.change_reason,
+            after={"code": job.code, "name": version.name, "version": 1},
         )
-        return job
+        return self._job_response(job, version, dimensions)
+
+    async def create_job_version(
+        self,
+        job_id: UUID,
+        payload: JobVersionCreate,
+    ) -> JobResponse:
+        job = await self._session.get(JobCatalog, job_id, with_for_update=True)
+        if job is None:
+            raise ApiError(status_code=404, code="JOB_NOT_FOUND", message="职务不存在")
+        latest = await self._session.scalar(
+            select(JobCatalogVersion)
+            .where(JobCatalogVersion.job_id == job.id)
+            .order_by(JobCatalogVersion.version.desc())
+            .limit(1)
+            .with_for_update()
+        )
+        if latest is None:
+            raise ApiError(status_code=409, code="JOB_VERSION_MISSING", message="职务缺少初始版本")
+        if payload.effective_from <= latest.effective_from:
+            raise ApiError(
+                status_code=409,
+                code="JOB_VERSION_DATE_NOT_FORWARD",
+                message="新版本生效日期必须晚于最新版本",
+            )
+        dimensions = await self._resolve_job_dimensions(
+            level_code=payload.level_code,
+            grade_code=payload.grade_code,
+            class_code=payload.class_code,
+            sequence_code=payload.sequence_code,
+            effective_at=payload.effective_from,
+        )
+        if latest.effective_to is None or latest.effective_to >= payload.effective_from:
+            latest.effective_to = payload.effective_from - timedelta(days=1)
+        latest.is_current = False
+        version = JobCatalogVersion(
+            job_id=job.id,
+            version=latest.version + 1,
+            name=payload.name,
+            level_dimension_id=dimensions["level"].id,
+            grade_dimension_id=dimensions["grade"].id,
+            class_dimension_id=dimensions["class"].id,
+            sequence_dimension_id=dimensions["sequence"].id,
+            status=payload.status,
+            effective_from=payload.effective_from,
+            effective_to=payload.effective_to,
+            is_current=True,
+            source_job_id=payload.source_job_id,
+            notes=payload.notes,
+            attributes=payload.attributes,
+            change_reason=payload.change_reason,
+        )
+        self._session.add(version)
+        job.name = version.name
+        job.level_code = dimensions["level"].code
+        job.grade_code = dimensions["grade"].code
+        job.class_code = dimensions["class"].code
+        job.sequence_code = dimensions["sequence"].code
+        job.status = version.status
+        job.effective_from = version.effective_from
+        job.effective_to = version.effective_to
+        job.attributes = version.attributes
+        await self._session.flush()
+        self._audit(
+            action="create_version",
+            object_type="job",
+            object_id=job.id,
+            reason=payload.change_reason,
+            before={"version": latest.version, "effective_to": latest.effective_to.isoformat()},
+            after={"version": version.version, "effective_from": version.effective_from.isoformat()},
+        )
+        return self._job_response(job, version, dimensions)
+
+    async def list_jobs(
+        self,
+        *,
+        effective_at: date,
+        limit: int,
+        offset: int,
+    ) -> tuple[list[JobResponse], int]:
+        effective_filters = (
+            JobCatalogVersion.effective_from <= effective_at,
+            or_(
+                JobCatalogVersion.effective_to.is_(None),
+                JobCatalogVersion.effective_to >= effective_at,
+            ),
+        )
+        pairs = (
+            await self._session.execute(
+                select(JobCatalog, JobCatalogVersion)
+                .join(JobCatalogVersion, JobCatalogVersion.job_id == JobCatalog.id)
+                .where(*effective_filters)
+                .order_by(JobCatalog.code)
+                .limit(limit)
+                .offset(offset)
+            )
+        ).all()
+        items: list[JobResponse] = []
+        for job, version in pairs:
+            dimensions = await self._job_dimensions_for_version(version)
+            if dimensions is None:
+                continue
+            items.append(self._job_response(job, version, dimensions))
+        total = await self._session.scalar(
+            select(func.count(func.distinct(JobCatalog.id)))
+            .select_from(JobCatalog)
+            .join(JobCatalogVersion, JobCatalogVersion.job_id == JobCatalog.id)
+            .where(*effective_filters)
+        )
+        return items, total or 0
 
     async def _lock_sequence(self, code: str, width: int, max_value: int) -> NumberSequence:
         await self._session.execute(
@@ -279,8 +827,15 @@ class ExtendedWorkforceService:
             raise ApiError(status_code=404, code="EMPLOYMENT_NOT_FOUND", message="劳动关系不存在")
         if await self._session.get(Organization, payload.organization_id) is None:
             raise ApiError(status_code=404, code="ORGANIZATION_NOT_FOUND", message="组织不存在")
-        if payload.job_id is not None and await self._session.get(JobCatalog, payload.job_id) is None:
-            raise ApiError(status_code=404, code="JOB_NOT_FOUND", message="职务不存在")
+        if (
+            payload.job_id is not None
+            and not await self._job_effective_at(payload.job_id, payload.effective_from)
+        ):
+            raise ApiError(
+                status_code=422,
+                code="JOB_NOT_EFFECTIVE",
+                message="职务不存在或在任职生效日期未启用",
+            )
         if payload.relation_type == "primary":
             overlap_filters = [
                 EmploymentAssignment.employment_id == payload.employment_id,
@@ -421,8 +976,12 @@ class ExtendedWorkforceService:
     async def create_headcount_plan(self, payload: HeadcountPlanCreate) -> HeadcountPlan:
         if await self._session.get(Organization, payload.organization_id) is None:
             raise ApiError(status_code=404, code="ORGANIZATION_NOT_FOUND", message="组织不存在")
-        if await self._session.get(JobCatalog, payload.job_id) is None:
-            raise ApiError(status_code=404, code="JOB_NOT_FOUND", message="职务不存在")
+        if not await self._job_effective_at(payload.job_id, payload.period_month):
+            raise ApiError(
+                status_code=422,
+                code="JOB_NOT_EFFECTIVE",
+                message="职务不存在或在目标月份未启用",
+            )
         matching_freezes = await self._matching_freezes(
             period_month=payload.period_month,
             organization_id=payload.organization_id,
@@ -818,6 +1377,7 @@ class ExtendedWorkforceService:
         for plan in plans:
             organization = await self._session.get(Organization, plan.organization_id)
             job = await self._session.get(JobCatalog, plan.job_id)
+            job_version = await self._job_version_at(plan.job_id, as_of)
             if organization is None or job is None:
                 continue
             current_count = await self._count_people(plan.organization_id, plan.job_id, as_of)
@@ -834,7 +1394,7 @@ class ExtendedWorkforceService:
                     "organization_code": organization.code,
                     "job_id": plan.job_id,
                     "job_code": job.code,
-                    "job_name": job.name,
+                    "job_name": job_version.name if job_version else job.name,
                     "period_month": plan.period_month,
                     "planned_count": plan.planned_count,
                     "plan_version": plan.version,

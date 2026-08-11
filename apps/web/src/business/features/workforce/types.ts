@@ -72,13 +72,34 @@ export interface Job {
   readonly id: string
   readonly code: string
   readonly name: string
-  readonly level_code: string | null
-  readonly grade_code: string | null
-  readonly class_code: string | null
-  readonly sequence_code: string | null
+  readonly level_code: string
+  readonly grade_code: string
+  readonly class_code: string
+  readonly sequence_code: string
   readonly status: string
   readonly effective_from: string
   readonly effective_to: string | null
+  readonly version: number
+  readonly source_job_id: string | null
+  readonly notes: string | null
+  readonly attributes: Readonly<Record<string, unknown>>
+}
+
+
+export interface JobDimension {
+  readonly id: string
+  readonly dimension_type: "LEVEL" | "GRADE" | "CLASS" | "SEQUENCE"
+  readonly code: string
+  readonly name: string
+  readonly parent_dimension_id: string | null
+  readonly parent_dimension_type: "LEVEL" | "GRADE" | "CLASS" | "SEQUENCE" | null
+  readonly parent_dimension_code: string | null
+  readonly sort_order: number
+  readonly status: string
+  readonly effective_from: string
+  readonly effective_to: string | null
+  readonly version: number
+  readonly notes: string | null
 }
 
 

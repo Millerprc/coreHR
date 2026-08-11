@@ -268,14 +268,17 @@ async def test_remaining_master_data_types_export_import_compatible_columns(
         ],
         "job": [
             "source_record_id",
-            "code",
-            "name",
+            "job_code",
+            "job_name",
             "level_code",
             "grade_code",
             "class_code",
             "sequence_code",
             "effective_from",
             "effective_to",
+            "status",
+            "source_job_id",
+            "notes",
         ],
     }
     for entity_type, fieldnames in expected_headers.items():

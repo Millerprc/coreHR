@@ -11,6 +11,7 @@ describe("HeadcountWorkspace", () => {
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
       const path = String(input)
       if (path.endsWith("/organizations/tree")) return Response.json([])
+      if (path.includes("/workforce/job-dimensions")) return Response.json({ items: [], total: 0, limit: 500, offset: 0 })
       if (path.includes("/workforce/jobs")) return Response.json({ items: [], total: 0, limit: 200, offset: 0 })
       if (path.includes("/workforce/headcount-results")) return Response.json({
         period_month: "2026-08-01",
