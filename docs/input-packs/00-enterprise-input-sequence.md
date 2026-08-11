@@ -8,7 +8,7 @@
 | 顺序 | 输入包 | 当前状态 | 补充后直接交付 |
 |---:|---|---|---|
 | 1 | [职务、职级、职等、职类、序列](./04-job-architecture-input.md) | `FIRST_SAMPLE_CONFIRMED` | 首个正式组合已冻结；后续目录按生效日期扩充 |
-| 2 | [人员档案字段验收表](./05-personnel-record-field-acceptance.md) | `NOW / TEMPLATE_READY` | 完整档案表单、必填/唯一/可编辑/敏感字段规则 |
+| 2 | [人员档案字段验收表](./05-personnel-record-field-acceptance.md) | `ACCEPTED / IMPLEMENTING` | 完整档案表单、必填/唯一/可编辑/敏感字段规则 |
 | 3 | [入职、转正、调动、兼岗、借调、离职、撤回/更正流程图](./06-hr-workflow-input.md) | `WAIT / TEMPLATE_READY` | 正式流程模板、条件、审批人和超时规则 |
 | 4 | 合同/协议字段、归类、附件和提醒规则 | `WAIT` | 企业合同模板、附件安全与生命周期适配 |
 | 5 | [考勤与假期规则包](./07-attendance-rule-input.md) | `WAIT / TEMPLATE_READY` | 企业日报/月报口径、自动计提/结转和精细核算 |
@@ -17,7 +17,7 @@
 
 ## 当前只需要做什么
 
-先回答[人员档案字段验收包](./05-personnel-record-field-acceptance.md)第6节的8个问题。不需要一次整理完整表头；回答后我会先实现第一批52个第一阶段字段及敏感字段安全边界。
+人员字段推荐值和敏感字段安全ADR已确认，当前不需要继续补人员表头。系统正在实现第一批52个第一阶段字段及敏感字段安全边界；下一轮企业输入将在本批代码和安全验收完成后进入人事流程图。
 
 职务体系当前已冻结以下两份首版 CSV，无需重复填写：
 

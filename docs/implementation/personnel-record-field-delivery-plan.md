@@ -1,6 +1,6 @@
 # 第一阶段人员档案字段实施计划
 
-> 状态：`READY_FOR_RULE_CONFIRMATION`
+> 状态：`RULES_AND_SECURITY_ACCEPTED / IMPLEMENTATION_IN_PROGRESS`
 > 日期：2026-08-12
 > 依据：[人员档案领域规范](../01-foundation/07-人员档案领域规范.md)、[人员字段验收包](../input-packs/05-personnel-record-field-acceptance.md)、[EHR装配方案](../migration/ehr-corehr-assembly-plan.md)
 > 数据边界：本计划只使用结构和合成数据；安全闸门通过前禁止导入真实证件、联系方式和地址
@@ -50,6 +50,8 @@ PER-001～PER-014
 
 ### PER-001 冻结字段合同
 
+**状态：`COMPLETE`（2026-08-12全部采用推荐值）**
+
 **输入**
 
 - [55字段验收模板](../input-packs/templates/03-personnel-field-acceptance.csv)。
@@ -66,6 +68,8 @@ PER-001～PER-014
 - 民族、国籍、所在国家/地区不混用。
 
 ### PER-002 批准敏感字段安全ADR
+
+**状态：`COMPLETE`（[ADR-0004](../adr/ADR-0004-personnel-sensitive-field-protection.md) Accepted）**
 
 **推荐提案**
 
@@ -242,9 +246,9 @@ PER-001～PER-014
 
 | 范围 | 状态 | 原因 |
 |---|---|---|
-| 字段合同、任务拆分、非敏感目标模型评审 | `READY` | 不接触真实值 |
-| 敏感安全ADR | `WAIT_USER_APPROVAL` | 架构决策必须明确批准 |
-| 基础字段和四类主体有效期开发 | `WAIT_FIELD_CONFIRMATION` | 避免先写错正式字段 |
+| 字段合同、任务拆分、非敏感目标模型评审 | `COMPLETE` | 2026-08-12全部采用推荐值 |
+| 敏感安全ADR | `ACCEPTED` | ADR-0004已批准 |
+| 基础字段和四类主体有效期开发 | `IN_PROGRESS` | 字段与安全前置已满足 |
 | 真实敏感数据读取与迁移 | `HOLD` | 加密、权限、审计、运行手册和UAT均未完成 |
 
 ## 5. MinimaxCode任务卡规则

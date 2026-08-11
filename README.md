@@ -109,6 +109,7 @@ scripts/                 启动、停止和自动检查脚本
 - [已确认首个样本：职务体系与职务目录](./docs/input-packs/04-job-architecture-input.md)
 - [当前输入：人员档案字段验收](./docs/input-packs/05-personnel-record-field-acceptance.md)
 - [人员档案字段实施计划](./docs/implementation/personnel-record-field-delivery-plan.md)
+- [ADR-0004：人员敏感字段应用层保护](./docs/adr/ADR-0004-personnel-sensitive-field-protection.md)
 - [人事流程图与审批规则输入包](./docs/input-packs/06-hr-workflow-input.md)
 - [考勤、班次与假期规则输入包](./docs/input-packs/07-attendance-rule-input.md)
 - [打卡来源与接口契约输入包](./docs/input-packs/08-punch-interface-input.md)
