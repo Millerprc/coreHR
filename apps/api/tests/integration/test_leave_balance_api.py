@@ -18,6 +18,7 @@ def _auth(token: str) -> dict[str, str]:
 async def _employment(db_session: AsyncSession, employee_number: str) -> Employment:
     person = Person(
         employee_number=employee_number,
+        legal_name=f"Leave balance {employee_number}",
         display_name=f"Leave balance {employee_number}",
         status="active",
     )

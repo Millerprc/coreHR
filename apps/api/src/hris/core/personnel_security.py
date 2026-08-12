@@ -194,6 +194,10 @@ def normalize_email(value: str) -> str:
     return value.strip().casefold()
 
 
+def normalize_text(value: str) -> str:
+    return value.strip()
+
+
 def mask_document_number(value: str) -> str:
     if len(value) <= 4:
         return "*" * len(value)
@@ -223,3 +227,9 @@ def mask_email(value: str) -> str:
     if not separator or not local or not domain:
         return "*" * len(value)
     return local[:1] + "*" * max(len(local) - 1, 1) + "@" + domain
+
+
+def mask_text(value: str) -> str:
+    if len(value) <= 2:
+        return "*" * len(value)
+    return value[:1] + "*" * (len(value) - 2) + value[-1:]

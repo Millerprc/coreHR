@@ -11,6 +11,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Integer,
+    LargeBinary,
     Numeric,
     String,
     Text,
@@ -334,12 +335,16 @@ class Person(UuidPrimaryKeyMixin, TimestampMixin, Base):
         unique=True,
         index=True,
     )
+    legal_name: Mapped[str] = mapped_column(String(200), nullable=False, index=True)
     display_name: Mapped[str] = mapped_column(String(200), nullable=False, index=True)
     former_name: Mapped[str | None] = mapped_column(String(200))
     gender_code: Mapped[str | None] = mapped_column(String(30))
     birth_date: Mapped[date | None] = mapped_column(Date)
+    ethnicity_code: Mapped[str | None] = mapped_column(String(50))
     nationality_code: Mapped[str | None] = mapped_column(String(3))
     country_code: Mapped[str | None] = mapped_column(String(3))
+    marital_status_code: Mapped[str | None] = mapped_column(String(50))
+    political_status_code: Mapped[str | None] = mapped_column(String(50))
     status: Mapped[str] = mapped_column(String(30), nullable=False, default="active")
 
 
@@ -372,6 +377,137 @@ class PersonLabel(UuidPrimaryKeyMixin, TimestampMixin, Base):
     effective_to: Mapped[date | None] = mapped_column(Date)
     status: Mapped[str] = mapped_column(String(30), nullable=False, default="active")
     is_ai_generated: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+
+class PersonDocument(UuidPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "person_documents"
+    __table_args__ = (
+        UniqueConstraint(
+            "person_id",
+            "document_type_code",
+            "issuing_country_code",
+            "document_number_digest",
+            name="uq_person_documents_identity_digest",
+        ),
+        CheckConstraint(
+            "expiry_date IS NULL OR issue_date IS NULL OR expiry_date >= issue_date",
+            name="document_date_order",
+        ),
+        CheckConstraint(
+            "effective_to IS NULL OR effective_to >= effective_from",
+            name="effective_period_order",
+        ),
+    )
+
+    person_id: Mapped[UUID] = mapped_column(
+        Uuid,
+        ForeignKey("persons.id"),
+        nullable=False,
+        index=True,
+    )
+    document_type_code: Mapped[str] = mapped_column(String(50), nullable=False)
+    issuing_country_code: Mapped[str] = mapped_column(String(3), nullable=False)
+    issue_date: Mapped[date | None] = mapped_column(Date)
+    expiry_date: Mapped[date | None] = mapped_column(Date)
+    is_primary: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    verification_status: Mapped[str] = mapped_column(
+        String(30), nullable=False, default="unverified"
+    )
+    effective_from: Mapped[date] = mapped_column(Date, nullable=False)
+    effective_to: Mapped[date | None] = mapped_column(Date)
+    document_number_key_version: Mapped[str] = mapped_column(String(50), nullable=False)
+    document_number_nonce: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    document_number_ciphertext: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    masked_document_number: Mapped[str] = mapped_column(String(255), nullable=False)
+    document_number_digest: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+
+
+class PersonContact(UuidPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "person_contacts"
+    __table_args__ = (
+        UniqueConstraint(
+            "person_id",
+            "contact_type",
+            "contact_value_digest",
+            "effective_from",
+            name="uq_person_contacts_value_effective",
+        ),
+        CheckConstraint(
+            "effective_to IS NULL OR effective_to >= effective_from",
+            name="effective_period_order",
+        ),
+    )
+
+    person_id: Mapped[UUID] = mapped_column(
+        Uuid,
+        ForeignKey("persons.id"),
+        nullable=False,
+        index=True,
+    )
+    contact_type: Mapped[str] = mapped_column(String(30), nullable=False)
+    is_primary: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    effective_from: Mapped[date] = mapped_column(Date, nullable=False)
+    effective_to: Mapped[date | None] = mapped_column(Date)
+    contact_value_key_version: Mapped[str] = mapped_column(String(50), nullable=False)
+    contact_value_nonce: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    contact_value_ciphertext: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    masked_contact_value: Mapped[str] = mapped_column(String(320), nullable=False)
+    contact_value_digest: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+
+
+class PersonAddress(UuidPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "person_addresses"
+    __table_args__ = (
+        CheckConstraint(
+            "effective_to IS NULL OR effective_to >= effective_from",
+            name="effective_period_order",
+        ),
+    )
+
+    person_id: Mapped[UUID] = mapped_column(
+        Uuid,
+        ForeignKey("persons.id"),
+        nullable=False,
+        index=True,
+    )
+    address_type: Mapped[str] = mapped_column(String(30), nullable=False)
+    country_code: Mapped[str] = mapped_column(String(3), nullable=False)
+    region_code: Mapped[str | None] = mapped_column(String(50))
+    effective_from: Mapped[date] = mapped_column(Date, nullable=False)
+    effective_to: Mapped[date | None] = mapped_column(Date)
+    address_detail_key_version: Mapped[str] = mapped_column(String(50), nullable=False)
+    address_detail_nonce: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    address_detail_ciphertext: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    masked_address_detail: Mapped[str] = mapped_column(String(500), nullable=False)
+
+
+class EmergencyContact(UuidPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "emergency_contacts"
+    __table_args__ = (
+        CheckConstraint(
+            "effective_to IS NULL OR effective_to >= effective_from",
+            name="effective_period_order",
+        ),
+    )
+
+    person_id: Mapped[UUID] = mapped_column(
+        Uuid,
+        ForeignKey("persons.id"),
+        nullable=False,
+        index=True,
+    )
+    relationship_code: Mapped[str] = mapped_column(String(50), nullable=False)
+    effective_from: Mapped[date] = mapped_column(Date, nullable=False)
+    effective_to: Mapped[date | None] = mapped_column(Date)
+    name_key_version: Mapped[str] = mapped_column(String(50), nullable=False)
+    name_nonce: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    name_ciphertext: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    masked_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    phone_key_version: Mapped[str] = mapped_column(String(50), nullable=False)
+    phone_nonce: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    phone_ciphertext: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    masked_phone: Mapped[str] = mapped_column(String(50), nullable=False)
+    phone_digest: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
 
 
 class Employment(UuidPrimaryKeyMixin, TimestampMixin, Base):
@@ -413,6 +549,52 @@ class Employment(UuidPrimaryKeyMixin, TimestampMixin, Base):
         ForeignKey("legal_entities.id"),
     )
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
+
+class EmploymentLegalEntityRelation(UuidPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "employment_legal_entity_relations"
+    __table_args__ = (
+        UniqueConstraint(
+            "employment_id",
+            "relation_kind",
+            "version",
+            name="uq_employment_legal_entity_relations_employment_kind_version",
+        ),
+        UniqueConstraint(
+            "employment_id",
+            "relation_kind",
+            "effective_from",
+            name="uq_employment_legal_entity_relations_employment_kind_effective",
+        ),
+        CheckConstraint(
+            "relation_kind IN ('contract', 'payroll', 'social_insurance', 'tax')",
+            name="supported_relation_kind",
+        ),
+        CheckConstraint("version > 0", name="version_positive"),
+        CheckConstraint(
+            "effective_to IS NULL OR effective_to >= effective_from",
+            name="effective_period_order",
+        ),
+    )
+
+    employment_id: Mapped[UUID] = mapped_column(
+        Uuid,
+        ForeignKey("employments.id"),
+        nullable=False,
+        index=True,
+    )
+    relation_kind: Mapped[str] = mapped_column(String(30), nullable=False, index=True)
+    legal_entity_id: Mapped[UUID] = mapped_column(
+        Uuid,
+        ForeignKey("legal_entities.id"),
+        nullable=False,
+        index=True,
+    )
+    effective_from: Mapped[date] = mapped_column(Date, nullable=False)
+    effective_to: Mapped[date | None] = mapped_column(Date)
+    source_event_id: Mapped[UUID | None] = mapped_column(Uuid)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    change_reason: Mapped[str] = mapped_column(String(500), nullable=False)
 
 
 class EmploymentAssignment(UuidPrimaryKeyMixin, TimestampMixin, Base):

@@ -53,10 +53,13 @@ async def get_current_session(
 CurrentSession = Annotated[tuple[UserAccount, UserSession], Depends(get_current_session)]
 
 
-def require_permission(permission_code: str) -> Callable[..., UserAccount]:
+def require_permissions(*required_codes: str) -> Callable[..., UserAccount]:
+    if not required_codes:
+        raise ValueError("at least one permission code is required")
+
     async def dependency(current: CurrentSession, db: DbSession) -> UserAccount:
         user, _ = current
-        permission_codes = set(
+        granted_codes = set(
             (
                 await db.scalars(
                     select(Permission.code)
@@ -67,8 +70,12 @@ def require_permission(permission_code: str) -> Callable[..., UserAccount]:
                 )
             ).all()
         )
-        if "*" not in permission_codes and permission_code not in permission_codes:
+        if "*" not in granted_codes and not set(required_codes).issubset(granted_codes):
             raise ApiError(status_code=403, code="PERMISSION_DENIED", message="没有执行此操作的权限")
         return user
 
     return dependency
+
+
+def require_permission(permission_code: str) -> Callable[..., UserAccount]:
+    return require_permissions(permission_code)

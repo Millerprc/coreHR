@@ -11,6 +11,7 @@ from hris.modules.workflow.api import router as workflow_configuration_router
 from hris.modules.workflow.extended_api import router as lifecycle_router
 from hris.modules.workforce.extended_api import router as workforce_operations_router
 from hris.modules.workforce.organization_api import router as organization_router
+from hris.modules.workforce.personnel_api import router as personnel_router
 
 
 business_router = APIRouter()
@@ -20,6 +21,7 @@ business_router.include_router(configuration_router)
 business_router.include_router(import_router)
 business_router.include_router(organization_router)
 business_router.include_router(workforce_operations_router)
+business_router.include_router(personnel_router)
 business_router.include_router(
     workflow_configuration_router,
     prefix="/api/v1",

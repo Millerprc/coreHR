@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from hris.core.database import get_db
 from hris.core.config import get_settings
-from hris.modules.platform.dependencies import require_permission
+from hris.modules.platform.dependencies import require_permission, require_permissions
 from hris.modules.platform.models import UserAccount
 from hris.modules.workforce.extended_schemas import (
     AgreementRelationshipCreate,
@@ -17,6 +17,8 @@ from hris.modules.workforce.extended_schemas import (
     EmploymentAssignmentCreate,
     EmploymentAssignmentResponse,
     EmploymentCreate,
+    EmploymentLegalEntityRelationCreate,
+    EmploymentLegalEntityRelationResponse,
     EmploymentResponse,
     HeadcountFreezeClose,
     HeadcountFreezeCreate,
@@ -56,6 +58,20 @@ from hris.modules.workforce.models import (
 router = APIRouter(prefix="/api/v1/workforce", tags=["phase-1-workforce-admin"])
 DbSession = Annotated[AsyncSession, Depends(get_db)]
 AdminUser = Annotated[UserAccount, Depends(require_permission("WORKFORCE_ADMIN"))]
+PersonViewer = Annotated[
+    UserAccount,
+    Depends(require_permissions("PERSON_VIEW", "PERSON_SENSITIVE_VIEW")),
+]
+PersonEditor = Annotated[
+    UserAccount,
+    Depends(
+        require_permissions(
+            "PERSON_VIEW",
+            "PERSON_EDIT_BASIC",
+            "PERSON_SENSITIVE_VIEW",
+        )
+    ),
+]
 
 
 def service(db: AsyncSession, user: UserAccount, request: Request) -> ExtendedWorkforceService:
@@ -200,7 +216,7 @@ async def list_job_dimensions(
 
 @router.post("/persons", response_model=PersonResponse, status_code=status.HTTP_201_CREATED)
 async def create_person(
-    payload: PersonCreate, request: Request, db: DbSession, user: AdminUser
+    payload: PersonCreate, request: Request, db: DbSession, user: PersonEditor
 ) -> PersonResponse:
     return PersonResponse.model_validate(await service(db, user, request).create_person(payload))
 
@@ -209,7 +225,7 @@ async def create_person(
 async def list_persons(
     request: Request,
     db: DbSession,
-    user: AdminUser,
+    user: PersonViewer,
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     search: str | None = Query(default=None, max_length=200),
@@ -231,14 +247,18 @@ async def list_persons(
 
 @router.get("/persons/{person_id}", response_model=PersonArchiveResponse)
 async def get_person_archive(
-    person_id: UUID, request: Request, db: DbSession, user: AdminUser
+    person_id: UUID, request: Request, db: DbSession, user: PersonViewer
 ) -> PersonArchiveResponse:
-    person, employments, assignments, agreements = await service(
+    person, employments, legal_entity_relations, assignments, agreements = await service(
         db, user, request
     ).person_archive(person_id)
     return PersonArchiveResponse(
         person=PersonResponse.model_validate(person),
         employments=[EmploymentResponse.model_validate(item) for item in employments],
+        legal_entity_relations=[
+            EmploymentLegalEntityRelationResponse.model_validate(item)
+            for item in legal_entity_relations
+        ],
         assignments=[
             EmploymentAssignmentResponse.model_validate(item) for item in assignments
         ],
@@ -254,7 +274,7 @@ async def update_person(
     payload: PersonUpdate,
     request: Request,
     db: DbSession,
-    user: AdminUser,
+    user: PersonEditor,
 ) -> PersonResponse:
     return PersonResponse.model_validate(
         await service(db, user, request).update_person(person_id, payload)
@@ -263,7 +283,7 @@ async def update_person(
 
 @router.post("/persons/{person_id}/reserve-number", response_model=EmployeeNumberResponse)
 async def reserve_employee_number(
-    person_id: UUID, request: Request, db: DbSession, user: AdminUser
+    person_id: UUID, request: Request, db: DbSession, user: PersonEditor
 ) -> EmployeeNumberResponse:
     number = await service(db, user, request).reserve_employee_number(person_id)
     return EmployeeNumberResponse(person_id=person_id, employee_number=number)
@@ -275,6 +295,44 @@ async def create_employment(
 ) -> EmploymentResponse:
     return EmploymentResponse.model_validate(
         await service(db, user, request).create_employment(payload)
+    )
+
+
+@router.get(
+    "/employments/{employment_id}/legal-entity-relations",
+    response_model=list[EmploymentLegalEntityRelationResponse],
+)
+async def list_employment_legal_entity_relations(
+    employment_id: UUID,
+    request: Request,
+    db: DbSession,
+    user: AdminUser,
+    effective_at: date | None = Query(default=None),
+) -> list[EmploymentLegalEntityRelationResponse]:
+    items = await service(db, user, request).list_employment_legal_entity_relations(
+        employment_id,
+        effective_at=effective_at or business_date(),
+    )
+    return [EmploymentLegalEntityRelationResponse.model_validate(item) for item in items]
+
+
+@router.post(
+    "/employments/{employment_id}/legal-entity-relations",
+    response_model=EmploymentLegalEntityRelationResponse,
+    status_code=201,
+)
+async def create_employment_legal_entity_relation_version(
+    employment_id: UUID,
+    payload: EmploymentLegalEntityRelationCreate,
+    request: Request,
+    db: DbSession,
+    user: AdminUser,
+) -> EmploymentLegalEntityRelationResponse:
+    return EmploymentLegalEntityRelationResponse.model_validate(
+        await service(db, user, request).create_employment_legal_entity_relation_version(
+            employment_id,
+            payload,
+        )
     )
 
 

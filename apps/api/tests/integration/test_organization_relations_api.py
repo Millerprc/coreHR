@@ -62,7 +62,11 @@ async def _seed_relations_domain(
         ),
     ]
     people = [
-        Person(display_name=f"合成人员{index}", status="active")
+        Person(
+            legal_name=f"合成人员{index}",
+            display_name=f"合成人员{index}",
+            status="active",
+        )
         for index in range(1, 6)
     ]
     db_session.add_all([organization_type, *organizations, *legal_entities, *people])

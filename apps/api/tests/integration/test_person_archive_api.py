@@ -77,6 +77,7 @@ async def test_person_archive_keeps_employment_assignment_and_agreement_history(
         "/api/v1/workforce/persons",
         headers=_auth(admin_token),
         json={
+            "legal_name": "合成测试人员",
             "display_name": "合成测试人员",
             "country_code": "CN",
             "reserve_employee_number": True,
@@ -176,6 +177,7 @@ async def test_employment_overlap_does_not_block_non_employment_agreements(
         "/api/v1/workforce/persons",
         headers=_auth(admin_token),
         json={
+            "legal_name": "仅协议合成人员",
             "display_name": "仅协议合成人员",
             "reserve_employee_number": False,
             "change_reason": "建立人员主数据",

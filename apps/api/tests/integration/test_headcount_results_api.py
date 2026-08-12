@@ -61,6 +61,7 @@ async def test_headcount_results_freeze_override_and_immutable_snapshots(
     )
     person = Person(
         employee_number="990001",
+        legal_name="合成占编人员",
         display_name="合成占编人员",
         status="active",
     )

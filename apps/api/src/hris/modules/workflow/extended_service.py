@@ -591,6 +591,7 @@ class LifecycleService:
         if person_id is None:
             person = await workforce.create_person(
                 PersonCreate(
+                    legal_name=candidate.display_name,
                     display_name=candidate.display_name,
                     gender_code=payload.gender_code,
                     birth_date=payload.birth_date,

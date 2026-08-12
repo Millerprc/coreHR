@@ -11,9 +11,11 @@ from hris.core.personnel_security import (
     mask_document_number,
     mask_email,
     mask_phone,
+    mask_text,
     normalize_document_number,
     normalize_email,
     normalize_phone,
+    normalize_text,
     protector_from_settings,
 )
 
@@ -119,6 +121,12 @@ def test_maskers_do_not_return_original_value() -> None:
     assert mask_email("person@example.com") == "p*****@example.com"
     assert mask_document_number("AB1234") == "A****4"
     assert mask_phone("12345") == "***45"
+    assert mask_text("Synthetic Name") == "S************e"
+    assert mask_text("Li") == "**"
+
+
+def test_generic_sensitive_text_is_trimmed_and_not_collapsed() -> None:
+    assert normalize_text("  Synthetic  Address  ") == "Synthetic  Address"
 
 
 def test_base64_key_configuration_does_not_accept_wrong_length() -> None:

@@ -36,7 +36,12 @@ async def test_candidate_application_and_contract_admin_lifecycle(
         status="active",
         effective_from=today - timedelta(days=1),
     )
-    person = Person(employee_number="990004", display_name="Synthetic lifecycle person", status="active")
+    person = Person(
+        employee_number="990004",
+        legal_name="Synthetic lifecycle person",
+        display_name="Synthetic lifecycle person",
+        status="active",
+    )
     db_session.add_all([organization, job, legal, person])
     await db_session.flush()
 

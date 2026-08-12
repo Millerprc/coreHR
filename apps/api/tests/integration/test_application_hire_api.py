@@ -205,6 +205,7 @@ async def test_hire_application_can_reuse_existing_person_and_employee_number(
     )
     existing_person = Person(
         employee_number="992002",
+        legal_name="Synthetic returning person",
         display_name="Synthetic returning person",
         status="active",
     )

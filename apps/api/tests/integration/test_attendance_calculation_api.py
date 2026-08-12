@@ -23,7 +23,12 @@ async def test_attendance_daily_monthly_and_leave_cancellation_are_versioned(
 ) -> None:
     work_date = date(2026, 8, 10)
     leave_date = work_date + timedelta(days=1)
-    person = Person(employee_number="990005", display_name="Synthetic attendance person", status="active")
+    person = Person(
+        employee_number="990005",
+        legal_name="Synthetic attendance person",
+        display_name="Synthetic attendance person",
+        status="active",
+    )
     db_session.add(person)
     await db_session.flush()
     employment = Employment(

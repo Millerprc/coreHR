@@ -13,6 +13,7 @@ from hris.modules.workforce.extended_schemas import (
     AgreementRelationshipCreate,
     EmploymentAssignmentCreate,
     EmploymentCreate,
+    EmploymentLegalEntityRelationCreate,
     HeadcountFreezeCreate,
     HeadcountPlanCreate,
     HeadcountSnapshotGenerate,
@@ -32,6 +33,7 @@ from hris.modules.workforce.models import (
     AuditLog,
     Employment,
     EmploymentAssignment,
+    EmploymentLegalEntityRelation,
     HeadcountPlan,
     HeadcountFreeze,
     HeadcountSnapshot,
@@ -707,7 +709,11 @@ class ExtendedWorkforceService:
             object_type="person",
             object_id=person.id,
             reason=payload.change_reason,
-            after={"employee_number": person.employee_number, "display_name": person.display_name},
+            after={
+                "employee_number": person.employee_number,
+                "status": person.status,
+                "changed_fields": sorted(data),
+            },
         )
         return person
 
@@ -733,7 +739,6 @@ class ExtendedWorkforceService:
         changes = payload.model_dump(exclude={"change_reason"}, exclude_unset=True)
         if not changes:
             raise ApiError(status_code=422, code="PERSON_CHANGE_EMPTY", message="没有可保存的档案变更")
-        before = {field: getattr(person, field) for field in changes}
         for field, value in changes.items():
             setattr(person, field, value)
         await self._session.flush()
@@ -743,8 +748,8 @@ class ExtendedWorkforceService:
             object_type="person",
             object_id=person.id,
             reason=payload.change_reason,
-            before=self._json_values(before),
-            after=self._json_values(changes),
+            before={"changed_fields": sorted(changes)},
+            after={"changed_fields": sorted(changes)},
         )
         return person
 
@@ -806,6 +811,26 @@ class ExtendedWorkforceService:
         )
         self._session.add(employment)
         await self._session.flush()
+        relation_values = {
+            "contract": employment.contract_legal_entity_id,
+            "payroll": employment.payroll_legal_entity_id,
+            "social_insurance": employment.social_insurance_legal_entity_id,
+            "tax": employment.tax_legal_entity_id,
+        }
+        self._session.add_all(
+            [
+                EmploymentLegalEntityRelation(
+                    employment_id=employment.id,
+                    relation_kind=relation_kind,
+                    legal_entity_id=legal_entity_id,
+                    effective_from=employment.planned_start_date,
+                    version=1,
+                    change_reason=payload.change_reason,
+                )
+                for relation_kind, legal_entity_id in relation_values.items()
+            ]
+        )
+        await self._session.flush()
         self._audit(
             action="create",
             object_type="employment",
@@ -818,6 +843,97 @@ class ExtendedWorkforceService:
             },
         )
         return employment
+
+    async def list_employment_legal_entity_relations(
+        self,
+        employment_id: UUID,
+        *,
+        effective_at: date,
+    ) -> list[EmploymentLegalEntityRelation]:
+        if await self._session.get(Employment, employment_id) is None:
+            raise ApiError(status_code=404, code="EMPLOYMENT_NOT_FOUND", message="劳动关系不存在")
+        return list(
+            (
+                await self._session.scalars(
+                    select(EmploymentLegalEntityRelation)
+                    .where(
+                        EmploymentLegalEntityRelation.employment_id == employment_id,
+                        EmploymentLegalEntityRelation.effective_from <= effective_at,
+                        or_(
+                            EmploymentLegalEntityRelation.effective_to.is_(None),
+                            EmploymentLegalEntityRelation.effective_to >= effective_at,
+                        ),
+                    )
+                    .order_by(EmploymentLegalEntityRelation.relation_kind)
+                )
+            ).all()
+        )
+
+    async def create_employment_legal_entity_relation_version(
+        self,
+        employment_id: UUID,
+        payload: EmploymentLegalEntityRelationCreate,
+    ) -> EmploymentLegalEntityRelation:
+        employment = await self._session.get(Employment, employment_id, with_for_update=True)
+        if employment is None:
+            raise ApiError(status_code=404, code="EMPLOYMENT_NOT_FOUND", message="劳动关系不存在")
+        if await self._session.get(LegalEntity, payload.legal_entity_id) is None:
+            raise ApiError(status_code=422, code="LEGAL_ENTITY_NOT_FOUND", message="法人主体不存在")
+        current = await self._session.scalar(
+            select(EmploymentLegalEntityRelation)
+            .where(
+                EmploymentLegalEntityRelation.employment_id == employment_id,
+                EmploymentLegalEntityRelation.relation_kind == payload.relation_kind,
+                EmploymentLegalEntityRelation.effective_to.is_(None),
+            )
+            .order_by(EmploymentLegalEntityRelation.version.desc())
+            .limit(1)
+            .with_for_update()
+        )
+        if current is None:
+            raise ApiError(status_code=409, code="LEGAL_ENTITY_RELATION_BASE_MISSING", message="四类主体初始版本不存在")
+        if payload.effective_from <= current.effective_from:
+            raise ApiError(
+                status_code=409,
+                code="LEGAL_ENTITY_RELATION_DATE_NOT_FORWARD",
+                message="新版本生效日期必须晚于当前版本",
+            )
+        current.effective_to = payload.effective_from - timedelta(days=1)
+        relation = EmploymentLegalEntityRelation(
+            employment_id=employment_id,
+            relation_kind=payload.relation_kind,
+            legal_entity_id=payload.legal_entity_id,
+            effective_from=payload.effective_from,
+            version=current.version + 1,
+            change_reason=payload.change_reason,
+        )
+        projection_field = {
+            "contract": "contract_legal_entity_id",
+            "payroll": "payroll_legal_entity_id",
+            "social_insurance": "social_insurance_legal_entity_id",
+            "tax": "tax_legal_entity_id",
+        }[payload.relation_kind]
+        setattr(employment, projection_field, payload.legal_entity_id)
+        self._session.add(relation)
+        await self._session.flush()
+        self._audit(
+            action="version",
+            object_type="employment_legal_entity_relation",
+            object_id=relation.id,
+            reason=payload.change_reason,
+            before={
+                "legal_entity_id": str(current.legal_entity_id),
+                "effective_from": current.effective_from.isoformat(),
+                "effective_to": current.effective_to.isoformat(),
+                "version": current.version,
+            },
+            after={
+                "legal_entity_id": str(relation.legal_entity_id),
+                "effective_from": relation.effective_from.isoformat(),
+                "version": relation.version,
+            },
+        )
+        return relation
 
     async def create_assignment(
         self,
@@ -909,7 +1025,13 @@ class ExtendedWorkforceService:
     async def person_archive(
         self,
         person_id: UUID,
-    ) -> tuple[Person, list[Employment], list[EmploymentAssignment], list[AgreementRelationship]]:
+    ) -> tuple[
+        Person,
+        list[Employment],
+        list[EmploymentLegalEntityRelation],
+        list[EmploymentAssignment],
+        list[AgreementRelationship],
+    ]:
         person = await self._session.get(Person, person_id)
         if person is None:
             raise ApiError(status_code=404, code="PERSON_NOT_FOUND", message="人员不存在")
@@ -924,7 +1046,20 @@ class ExtendedWorkforceService:
         )
         employment_ids = [item.id for item in employments]
         assignments: list[EmploymentAssignment] = []
+        legal_entity_relations: list[EmploymentLegalEntityRelation] = []
         if employment_ids:
+            legal_entity_relations = list(
+                (
+                    await self._session.scalars(
+                        select(EmploymentLegalEntityRelation)
+                        .where(EmploymentLegalEntityRelation.employment_id.in_(employment_ids))
+                        .order_by(
+                            EmploymentLegalEntityRelation.relation_kind,
+                            EmploymentLegalEntityRelation.effective_from.desc(),
+                        )
+                    )
+                ).all()
+            )
             assignments = list(
                 (
                     await self._session.scalars(
@@ -943,7 +1078,7 @@ class ExtendedWorkforceService:
                 )
             ).all()
         )
-        return person, employments, assignments, agreements
+        return person, employments, legal_entity_relations, assignments, agreements
 
     async def list_persons(
         self,

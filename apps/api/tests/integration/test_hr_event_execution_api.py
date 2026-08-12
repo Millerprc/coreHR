@@ -62,7 +62,12 @@ async def test_direct_future_and_rollback_hr_events_change_effective_results(
         status="active",
         effective_from=today - timedelta(days=30),
     )
-    person = Person(employee_number="990002", display_name="合成人事事件人员", status="active")
+    person = Person(
+        employee_number="990002",
+        legal_name="合成人事事件人员",
+        display_name="合成人事事件人员",
+        status="active",
+    )
     db_session.add_all([
         first_organization,
         second_organization,
@@ -207,6 +212,7 @@ async def test_approved_hr_event_executes_after_workflow_completion(
     )
     person = Person(
         employee_number="990003",
+        legal_name="Synthetic approval employee",
         display_name="Synthetic approval employee",
         status="active",
     )

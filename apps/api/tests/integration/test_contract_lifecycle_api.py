@@ -33,11 +33,13 @@ async def _contract_context(
     today = _business_today()
     person = Person(
         employee_number=f"98{suffix.zfill(4)}",
+        legal_name=f"Synthetic contract person {suffix}",
         display_name=f"Synthetic contract person {suffix}",
         status="active",
     )
     other_person = Person(
         employee_number=f"97{suffix.zfill(4)}",
+        legal_name=f"Synthetic other person {suffix}",
         display_name=f"Synthetic other person {suffix}",
         status="active",
     )

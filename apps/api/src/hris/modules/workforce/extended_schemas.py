@@ -164,15 +164,25 @@ class JobResponse(BaseModel):
 
 
 class PersonCreate(BaseModel):
-    display_name: str = Field(min_length=1, max_length=200)
+    legal_name: str = Field(min_length=1, max_length=200)
+    display_name: str | None = Field(default=None, min_length=1, max_length=200)
     former_name: str | None = Field(default=None, max_length=200)
     gender_code: str | None = Field(default=None, max_length=30)
     birth_date: date | None = None
+    ethnicity_code: str | None = Field(default=None, max_length=50)
     nationality_code: str | None = Field(default=None, min_length=2, max_length=3)
     country_code: str | None = Field(default=None, min_length=2, max_length=3)
+    marital_status_code: str | None = Field(default=None, max_length=50)
+    political_status_code: str | None = Field(default=None, max_length=50)
     employee_number: str | None = Field(default=None, pattern=r"^[0-9]{6}$")
     reserve_employee_number: bool = True
     change_reason: str = Field(min_length=1, max_length=500)
+
+    @model_validator(mode="after")
+    def default_display_name(self) -> "PersonCreate":
+        if self.display_name is None:
+            self.display_name = self.legal_name
+        return self
 
 
 class PersonResponse(BaseModel):
@@ -180,24 +190,32 @@ class PersonResponse(BaseModel):
 
     id: UUID
     employee_number: str | None
+    legal_name: str
     display_name: str
     former_name: str | None
     gender_code: str | None
     birth_date: date | None
+    ethnicity_code: str | None
     nationality_code: str | None
     country_code: str | None
+    marital_status_code: str | None
+    political_status_code: str | None
     status: str
     created_at: datetime
     updated_at: datetime
 
 
 class PersonUpdate(BaseModel):
+    legal_name: str | None = Field(default=None, min_length=1, max_length=200)
     display_name: str | None = Field(default=None, min_length=1, max_length=200)
     former_name: str | None = Field(default=None, max_length=200)
     gender_code: str | None = Field(default=None, max_length=30)
     birth_date: date | None = None
+    ethnicity_code: str | None = Field(default=None, max_length=50)
     nationality_code: str | None = Field(default=None, min_length=2, max_length=3)
     country_code: str | None = Field(default=None, min_length=2, max_length=3)
+    marital_status_code: str | None = Field(default=None, max_length=50)
+    political_status_code: str | None = Field(default=None, max_length=50)
     change_reason: str = Field(min_length=1, max_length=500)
 
 
@@ -243,6 +261,30 @@ class EmploymentResponse(BaseModel):
     social_insurance_legal_entity_id: UUID | None
     tax_legal_entity_id: UUID | None
     version: int
+
+
+EmploymentLegalEntityKind = Literal["contract", "payroll", "social_insurance", "tax"]
+
+
+class EmploymentLegalEntityRelationCreate(BaseModel):
+    relation_kind: EmploymentLegalEntityKind
+    legal_entity_id: UUID
+    effective_from: date
+    change_reason: str = Field(min_length=1, max_length=500)
+
+
+class EmploymentLegalEntityRelationResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    employment_id: UUID
+    relation_kind: EmploymentLegalEntityKind
+    legal_entity_id: UUID
+    effective_from: date
+    effective_to: date | None
+    source_event_id: UUID | None
+    version: int
+    change_reason: str
 
 
 class EmploymentAssignmentCreate(BaseModel):
@@ -311,6 +353,7 @@ class AgreementRelationshipResponse(BaseModel):
 class PersonArchiveResponse(BaseModel):
     person: PersonResponse
     employments: list[EmploymentResponse]
+    legal_entity_relations: list[EmploymentLegalEntityRelationResponse]
     assignments: list[EmploymentAssignmentResponse]
     agreements: list[AgreementRelationshipResponse]
 
