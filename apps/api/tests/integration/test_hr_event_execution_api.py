@@ -314,3 +314,104 @@ async def test_approved_hr_event_executes_after_workflow_completion(
     await db_session.refresh(employment)
     assert employment.status == "terminated"
     assert employment.end_date == today
+
+
+async def test_onboarding_requires_pending_start_and_rejects_open_duplicate(
+    business_client: AsyncClient,
+    admin_token: str,
+    db_session: AsyncSession,
+) -> None:
+    today = _business_today()
+    tomorrow = today + timedelta(days=1)
+    legal = LegalEntity(
+        code="LE-ONBOARDING-GUARD",
+        name="Synthetic onboarding legal entity",
+        country_code="CN",
+        status="active",
+        effective_from=today - timedelta(days=30),
+    )
+    person = Person(
+        employee_number="990004",
+        legal_name="Synthetic pending employee",
+        display_name="Synthetic pending employee",
+        status="active",
+    )
+    db_session.add_all([legal, person])
+    await db_session.flush()
+    employment = Employment(
+        person_id=person.id,
+        employee_type_code="REGULAR",
+        status="pending_start",
+        planned_start_date=tomorrow,
+        contract_legal_entity_id=legal.id,
+        payroll_legal_entity_id=legal.id,
+        social_insurance_legal_entity_id=legal.id,
+        tax_legal_entity_id=legal.id,
+        version=1,
+    )
+    db_session.add(employment)
+    await db_session.flush()
+
+    event = await business_client.post(
+        "/api/v1/lifecycle/hr-events",
+        headers=_auth(admin_token),
+        json={
+            "event_type": "ONBOARDING",
+            "object_type": "employment",
+            "object_id": str(employment.id),
+            "effective_date": tomorrow.isoformat(),
+            "execution_mode": "direct",
+            "reason": "Synthetic scheduled onboarding",
+            "planned_payload": {},
+        },
+    )
+    assert event.status_code == 201, event.text
+    assert event.json()["status"] == "scheduled"
+
+    duplicate = await business_client.post(
+        "/api/v1/lifecycle/hr-events",
+        headers=_auth(admin_token),
+        json={
+            "event_type": "ONBOARDING",
+            "object_type": "employment",
+            "object_id": str(employment.id),
+            "effective_date": tomorrow.isoformat(),
+            "execution_mode": "approval",
+            "reason": "Synthetic duplicate onboarding",
+            "planned_payload": {},
+        },
+    )
+    assert duplicate.status_code == 409, duplicate.text
+    assert duplicate.json()["code"] == "ONBOARDING_EVENT_ALREADY_OPEN"
+
+    employment.status = "active"
+    employment.actual_start_date = today
+    await db_session.flush()
+    processed = await business_client.post(
+        "/api/v1/lifecycle/hr-events/process",
+        headers=_auth(admin_token),
+        json={"as_of": tomorrow.isoformat()},
+    )
+    assert processed.status_code == 200, processed.text
+    assert processed.json()["processed_ids"] == []
+    assert processed.json()["failed"][0]["event_id"] == event.json()["id"]
+
+    await db_session.refresh(employment)
+    assert employment.status == "active"
+    assert employment.actual_start_date == today
+
+    invalid_state = await business_client.post(
+        "/api/v1/lifecycle/hr-events",
+        headers=_auth(admin_token),
+        json={
+            "event_type": "ONBOARDING",
+            "object_type": "employment",
+            "object_id": str(employment.id),
+            "effective_date": tomorrow.isoformat(),
+            "execution_mode": "approval",
+            "reason": "Synthetic invalid onboarding",
+            "planned_payload": {},
+        },
+    )
+    assert invalid_state.status_code == 409, invalid_state.text
+    assert invalid_state.json()["code"] == "ONBOARDING_EMPLOYMENT_STATUS_INVALID"

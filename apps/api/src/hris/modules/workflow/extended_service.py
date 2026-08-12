@@ -1391,12 +1391,38 @@ class LifecycleService:
                     code="HR_EVENT_TYPE_UNSUPPORTED",
                     message="event type is not registered for employment",
                 )
-            if await self._session.get(Employment, payload.object_id) is None:
+            employment = await self._session.get(
+                Employment,
+                payload.object_id,
+                with_for_update=payload.event_type == "ONBOARDING",
+            )
+            if employment is None:
                 raise ApiError(
                     status_code=404,
                     code="EMPLOYMENT_NOT_FOUND",
                     message="employment not found",
                 )
+            if payload.event_type == "ONBOARDING":
+                if employment.status != "pending_start":
+                    raise ApiError(
+                        status_code=409,
+                        code="ONBOARDING_EMPLOYMENT_STATUS_INVALID",
+                        message="only pending-start employment can be onboarded",
+                    )
+                open_event = await self._session.scalar(
+                    select(HrEvent.id).where(
+                        HrEvent.object_type == "employment",
+                        HrEvent.object_id == payload.object_id,
+                        HrEvent.event_type == "ONBOARDING",
+                        HrEvent.status.in_(("pending_approval", "ready", "scheduled", "failed")),
+                    )
+                )
+                if open_event is not None:
+                    raise ApiError(
+                        status_code=409,
+                        code="ONBOARDING_EVENT_ALREADY_OPEN",
+                        message="an unfinished onboarding event already exists",
+                    )
             if payload.event_type in {"TRANSFER", "CONCURRENT_ASSIGNMENT", "SECONDMENT"}:
                 if not payload.planned_payload.get("organization_id") or not payload.planned_payload.get("job_id"):
                     raise ApiError(
@@ -1591,6 +1617,12 @@ class LifecycleService:
         if event.event_type.startswith("ROLLBACK_"):
             changes = dict(event.planned_payload)
         elif event_type == "ONBOARDING":
+            if employment.status != "pending_start":
+                raise ApiError(
+                    status_code=409,
+                    code="ONBOARDING_EMPLOYMENT_STATUS_INVALID",
+                    message="only pending-start employment can be onboarded",
+                )
             changes = {"status": "active", "actual_start_date": event.effective_date}
         elif event_type == "CONFIRMATION":
             changes = {"status": "active", "probation_end_date": event.effective_date}
