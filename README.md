@@ -6,7 +6,7 @@
 
 第零阶段工程底座已经完成，业务第一至第三阶段的主管理员工程 MVP 已落地，并通过自动化测试、本机 Docker 和浏览器整栈验证。
 
-这里的“工程 MVP”不等于生产替换验收完成：正式编码对照、完整档案字段、真实人事流程图、合同正式字段/附件规则、企业考勤细则和打卡接口仍需补充。准确状态见[一至三阶段实现符合性审查](./docs/review/phase-1-3-implementation-conformance-review.md)。
+这里的“工程 MVP”不等于生产替换验收完成：正式编码对照、完整档案字段、真实人事流程图、合同正式字段/附件规则、企业考勤细则和打卡接口仍需补充。准确状态见[一至三阶段整体 Review 报告](./docs/review/phase-1-3-overall-review-2026-08-12.md)。
 
 ### 已落地能力
 
@@ -15,7 +15,7 @@
 - 数据治理：七类现状主数据支持 CSV 模板、预校验、逐行拒绝报告、来源追踪及幂等执行，并可按业务日期导出有效快照；另提供职务维度、职务的向前追加历史版本任务。组织导入保留历史编码并校验有效父级。
 - 第二阶段：流程定义/发布/执行、会签/或签、审批任务、候选人、应聘、录用转待入职、合同/协议建档/变更/续签/解除/取消/到期提醒，以及直接生效、未来生效、审批生效和回退人事事件。
 - 第三阶段：考勤规则版本、班次、排班、幂等原始打卡、假期、请假/销假、年度假期余额与不可变流水、可重算考勤日报和月报，以及月结/特殊业务期间冻结与有因解冻。
-- 管理端：主管理员可在 9 个业务菜单中完成当前核心操作；普通角色和自助端尚未开放。
+- 管理端：主管理员可在 10 个业务菜单中完成当前核心操作，并可创建和启停 SSC 等内部账号；普通角色和自助端尚未开放。
 
 ### 尚未宣称完成
 
@@ -102,13 +102,14 @@ scripts/                 启动、停止和自动检查脚本
 - [项目决策](./docs/01-foundation/03-项目决策.md)
 - [技术架构基线](./docs/01-foundation/04-技术架构基线.md)
 - [代码结构与编码规范](./docs/01-foundation/10-代码结构与编码规范.md)
-- [一至三阶段实现符合性审查](./docs/review/phase-1-3-implementation-conformance-review.md)
+- [一至三阶段整体 Review 报告（当前）](./docs/review/phase-1-3-overall-review-2026-08-12.md)
+- [一至三阶段实现符合性审查（前一快照）](./docs/review/phase-1-3-implementation-conformance-review.md)
 - [一至三阶段整体 Review 指南](./docs/review/phase-1-3-user-review-guide.md)
 - [第一阶段人员档案实施 Review](./docs/review/phase-1-personnel-record-implementation-review-2026-08-12.md)
 - [企业输入包 01：主数据与稳定编码对照](./docs/input-packs/01-master-code-mapping.md)
 - [一至三阶段企业输入顺序](./docs/input-packs/00-enterprise-input-sequence.md)
 - [已确认首个样本：职务体系与职务目录](./docs/input-packs/04-job-architecture-input.md)
-- [当前输入：人员档案字段验收](./docs/input-packs/05-personnel-record-field-acceptance.md)
+- [人员档案字段验收（已实现，待业务 UAT）](./docs/input-packs/05-personnel-record-field-acceptance.md)
 - [人员档案字段实施计划](./docs/implementation/personnel-record-field-delivery-plan.md)
 - [ADR-0004：人员敏感字段应用层保护](./docs/adr/ADR-0004-personnel-sensitive-field-protection.md)
 - [人员敏感字段密钥运行手册](./docs/implementation/personnel-sensitive-key-runbook.md)
