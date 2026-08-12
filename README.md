@@ -104,6 +104,7 @@ scripts/                 启动、停止和自动检查脚本
 - [代码结构与编码规范](./docs/01-foundation/10-代码结构与编码规范.md)
 - [一至三阶段实现符合性审查](./docs/review/phase-1-3-implementation-conformance-review.md)
 - [一至三阶段整体 Review 指南](./docs/review/phase-1-3-user-review-guide.md)
+- [第一阶段人员档案实施 Review](./docs/review/phase-1-personnel-record-implementation-review-2026-08-12.md)
 - [企业输入包 01：主数据与稳定编码对照](./docs/input-packs/01-master-code-mapping.md)
 - [一至三阶段企业输入顺序](./docs/input-packs/00-enterprise-input-sequence.md)
 - [已确认首个样本：职务体系与职务目录](./docs/input-packs/04-job-architecture-input.md)
