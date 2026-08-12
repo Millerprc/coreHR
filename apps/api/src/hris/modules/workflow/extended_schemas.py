@@ -2,7 +2,7 @@ from datetime import date, datetime
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class CandidateCreate(BaseModel):
@@ -359,6 +359,14 @@ class HrEventCreate(BaseModel):
     before_payload: dict[str, Any] = Field(default_factory=dict)
     planned_payload: dict[str, Any] = Field(default_factory=dict)
     workflow_instance_id: UUID | None = None
+
+    @field_validator("reason")
+    @classmethod
+    def validate_reason(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("reason must not be blank")
+        return normalized
 
 
 class HrEventRollbackCreate(BaseModel):

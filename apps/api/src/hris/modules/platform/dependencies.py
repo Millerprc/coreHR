@@ -53,12 +53,11 @@ async def get_current_session(
 CurrentSession = Annotated[tuple[UserAccount, UserSession], Depends(get_current_session)]
 
 
-async def ensure_permissions(
+async def granted_permission_codes(
     user: UserAccount,
     db: AsyncSession,
-    *required_codes: str,
-) -> None:
-    granted_codes = set(
+) -> set[str]:
+    return set(
         (
             await db.scalars(
                 select(Permission.code)
@@ -69,6 +68,14 @@ async def ensure_permissions(
             )
         ).all()
     )
+
+
+async def ensure_permissions(
+    user: UserAccount,
+    db: AsyncSession,
+    *required_codes: str,
+) -> None:
+    granted_codes = await granted_permission_codes(user, db)
     if "*" not in granted_codes and not set(required_codes).issubset(granted_codes):
         raise ApiError(status_code=403, code="PERMISSION_DENIED", message="没有执行此操作的权限")
 
@@ -79,17 +86,7 @@ def require_permissions(*required_codes: str) -> Callable[..., UserAccount]:
 
     async def dependency(current: CurrentSession, db: DbSession) -> UserAccount:
         user, _ = current
-        granted_codes = set(
-            (
-                await db.scalars(
-                    select(Permission.code)
-                    .join(RolePermission, RolePermission.permission_id == Permission.id)
-                    .join(Role, Role.id == RolePermission.role_id)
-                    .join(UserRole, UserRole.role_id == Role.id)
-                    .where(UserRole.user_id == user.id, Role.is_active.is_(True))
-                )
-            ).all()
-        )
+        granted_codes = await granted_permission_codes(user, db)
         if "*" not in granted_codes and not set(required_codes).issubset(granted_codes):
             raise ApiError(status_code=403, code="PERMISSION_DENIED", message="没有执行此操作的权限")
         return user

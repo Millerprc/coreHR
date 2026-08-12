@@ -97,12 +97,14 @@ async def _seed_access_token(
             module_code="TEST",
         )
         db_session.add(permission)
-    role = Role(
-        code=role_code,
-        name=f"Synthetic {role_code}",
-        is_system=False,
-        is_active=True,
-    )
+    role = await db_session.scalar(select(Role).where(Role.code == role_code))
+    if role is None:
+        role = Role(
+            code=role_code,
+            name=f"Synthetic {role_code}",
+            is_system=False,
+            is_active=True,
+        )
     user = UserAccount(
         username=username,
         display_name=f"Synthetic {username}",
@@ -112,18 +114,24 @@ async def _seed_access_token(
     )
     db_session.add_all([role, user])
     await db_session.flush()
-    db_session.add_all(
-        [
-            RolePermission(role_id=role.id, permission_id=permission.id),
-            UserRole(user_id=user.id, role_id=role.id),
-            UserSession(
-                user_id=user.id,
-                token_hash=token_digest(raw_token),
-                expires_at=now + timedelta(hours=1),
-                last_seen_at=now,
-            ),
-        ]
+    role_permission = await db_session.scalar(
+        select(RolePermission).where(
+            RolePermission.role_id == role.id,
+            RolePermission.permission_id == permission.id,
+        )
     )
+    records = [
+        UserRole(user_id=user.id, role_id=role.id),
+        UserSession(
+            user_id=user.id,
+            token_hash=token_digest(raw_token),
+            expires_at=now + timedelta(hours=1),
+            last_seen_at=now,
+        ),
+    ]
+    if role_permission is None:
+        records.append(RolePermission(role_id=role.id, permission_id=permission.id))
+    db_session.add_all(records)
     await db_session.flush()
     return raw_token
 
@@ -147,4 +155,26 @@ async def restricted_token(db_session: AsyncSession) -> str:
         role_code="SYNTHETIC_VIEWER",
         permission_code="ORGANIZATION_VIEW",
         raw_token="synthetic-viewer-token",
+    )
+
+
+@pytest_asyncio.fixture
+async def ssc_token(db_session: AsyncSession) -> str:
+    return await _seed_access_token(
+        db_session,
+        username="synthetic-ssc",
+        role_code="SSC_ADMIN",
+        permission_code="ONBOARDING_INITIATE",
+        raw_token="synthetic-ssc-token",
+    )
+
+
+@pytest_asyncio.fixture
+async def lifecycle_admin_token(db_session: AsyncSession) -> str:
+    return await _seed_access_token(
+        db_session,
+        username="synthetic-lifecycle-admin",
+        role_code="SYNTHETIC_LIFECYCLE_ADMIN",
+        permission_code="LIFECYCLE_ADMIN",
+        raw_token="synthetic-lifecycle-admin-token",
     )

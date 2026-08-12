@@ -1,11 +1,15 @@
 from datetime import date, datetime, timedelta
+from uuid import UUID
 from zoneinfo import ZoneInfo
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from hris.modules.platform.models import UserAccount
 from hris.modules.workforce.models import (
+    AuditLog,
     Employment,
     EmploymentAssignment,
     JobCatalog,
@@ -415,3 +419,112 @@ async def test_onboarding_requires_pending_start_and_rejects_open_duplicate(
     )
     assert invalid_state.status_code == 409, invalid_state.text
     assert invalid_state.json()["code"] == "ONBOARDING_EMPLOYMENT_STATUS_INVALID"
+
+
+async def test_ssc_can_initiate_only_onboarding_and_creation_is_audited(
+    business_client: AsyncClient,
+    admin_token: str,
+    ssc_token: str,
+    lifecycle_admin_token: str,
+    restricted_token: str,
+    db_session: AsyncSession,
+) -> None:
+    today = _business_today()
+    legal = LegalEntity(
+        code="LE-SSC-ONBOARDING",
+        name="Synthetic SSC onboarding legal entity",
+        country_code="CN",
+        status="active",
+        effective_from=today - timedelta(days=30),
+    )
+    person = Person(
+        employee_number="990005",
+        legal_name="Synthetic SSC pending employee",
+        display_name="Synthetic SSC pending employee",
+        status="active",
+    )
+    db_session.add_all([legal, person])
+    await db_session.flush()
+    employment = Employment(
+        person_id=person.id,
+        employee_type_code="REGULAR",
+        status="pending_start",
+        planned_start_date=today,
+        contract_legal_entity_id=legal.id,
+        payroll_legal_entity_id=legal.id,
+        social_insurance_legal_entity_id=legal.id,
+        tax_legal_entity_id=legal.id,
+        version=1,
+    )
+    db_session.add(employment)
+    await db_session.flush()
+    onboarding_payload = {
+        "event_type": "ONBOARDING",
+        "object_type": "employment",
+        "object_id": str(employment.id),
+        "effective_date": today.isoformat(),
+        "execution_mode": "approval",
+        "reason": "  SSC initiates synthetic onboarding  ",
+        "planned_payload": {},
+    }
+
+    denied = await business_client.post(
+        "/api/v1/lifecycle/hr-events",
+        headers=_auth(restricted_token),
+        json=onboarding_payload,
+    )
+    assert denied.status_code == 403, denied.text
+    assert denied.json()["code"] == "PERMISSION_DENIED"
+
+    lifecycle_admin_denied = await business_client.post(
+        "/api/v1/lifecycle/hr-events",
+        headers=_auth(lifecycle_admin_token),
+        json=onboarding_payload,
+    )
+    assert lifecycle_admin_denied.status_code == 403, lifecycle_admin_denied.text
+    assert lifecycle_admin_denied.json()["code"] == "PERMISSION_DENIED"
+
+    created = await business_client.post(
+        "/api/v1/lifecycle/hr-events",
+        headers=_auth(ssc_token),
+        json=onboarding_payload,
+    )
+    assert created.status_code == 201, created.text
+    assert created.json()["reason"] == "SSC initiates synthetic onboarding"
+    assert created.json()["status"] == "pending_approval"
+
+    ssc_user = await db_session.scalar(
+        select(UserAccount).where(UserAccount.username == "synthetic-ssc")
+    )
+    audit = await db_session.scalar(
+        select(AuditLog).where(
+            AuditLog.action == "create",
+            AuditLog.object_type == "hr_event",
+            AuditLog.object_id == UUID(created.json()["id"]),
+        )
+    )
+    assert ssc_user is not None
+    assert audit is not None
+    assert audit.actor_id == ssc_user.id
+    assert audit.reason == "SSC initiates synthetic onboarding"
+    assert audit.after_payload["event_type"] == "ONBOARDING"
+    assert audit.after_payload["object_id"] == str(employment.id)
+
+    termination = await business_client.post(
+        "/api/v1/lifecycle/hr-events",
+        headers=_auth(ssc_token),
+        json={
+            **onboarding_payload,
+            "event_type": "TERMINATION",
+            "reason": "SSC must not terminate employment",
+        },
+    )
+    assert termination.status_code == 403, termination.text
+    assert termination.json()["code"] == "PERMISSION_DENIED"
+
+    admin_blank_reason = await business_client.post(
+        "/api/v1/lifecycle/hr-events",
+        headers=_auth(admin_token),
+        json={**onboarding_payload, "reason": "   "},
+    )
+    assert admin_blank_reason.status_code == 422, admin_blank_reason.text

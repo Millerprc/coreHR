@@ -2117,7 +2117,14 @@ class LifecycleService:
             action="create",
             object_type="hr_event",
             object_id=event.id,
-            after={"event_number": event.event_number, "status": event.status},
+            reason=event.reason,
+            after={
+                "event_number": event.event_number,
+                "event_type": event.event_type,
+                "object_type": event.object_type,
+                "object_id": str(event.object_id),
+                "status": event.status,
+            },
         )
         return event
 

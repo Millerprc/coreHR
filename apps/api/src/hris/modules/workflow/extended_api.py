@@ -6,7 +6,11 @@ from fastapi import APIRouter, Depends, Query, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from hris.core.database import get_db
-from hris.modules.platform.dependencies import require_permission
+from hris.modules.platform.dependencies import (
+    CurrentSession,
+    ensure_permissions,
+    require_permission,
+)
 from hris.modules.platform.models import UserAccount
 from hris.modules.workflow.extended_schemas import (
     ApplicationHireConversionResponse,
@@ -53,6 +57,7 @@ from hris.modules.workflow.extended_service import LifecycleService
 router = APIRouter(prefix="/api/v1/lifecycle", tags=["phase-2-lifecycle-admin"])
 DbSession = Annotated[AsyncSession, Depends(get_db)]
 AdminUser = Annotated[UserAccount, Depends(require_permission("LIFECYCLE_ADMIN"))]
+ONBOARDING_INITIATE_PERMISSION = "ONBOARDING_INITIATE"
 
 
 def service(db: AsyncSession, user: UserAccount, request: Request) -> LifecycleService:
@@ -476,8 +481,16 @@ async def list_workflow_tasks(
 
 @router.post("/hr-events", response_model=HrEventResponse, status_code=201)
 async def create_hr_event(
-    payload: HrEventCreate, request: Request, db: DbSession, user: AdminUser
+    payload: HrEventCreate,
+    request: Request,
+    db: DbSession,
+    current: CurrentSession,
 ) -> HrEventResponse:
+    user, _ = current
+    if payload.event_type == "ONBOARDING":
+        await ensure_permissions(user, db, ONBOARDING_INITIATE_PERMISSION)
+    else:
+        await ensure_permissions(user, db, "LIFECYCLE_ADMIN")
     return HrEventResponse.model_validate(
         await service(db, user, request).create_hr_event(payload)
     )
