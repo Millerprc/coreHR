@@ -22,7 +22,13 @@ interface HireFormValues {
   readonly social_insurance_legal_entity_id?: string
   readonly tax_legal_entity_id?: string
   readonly existing_person_id?: string
+  readonly use_existing_primary_document?: boolean
   readonly probation_end_date?: string
+  readonly primary_document_type_code?: string
+  readonly primary_document_number?: string
+  readonly primary_document_issuing_country_code?: string
+  readonly primary_document_issue_date?: string
+  readonly primary_document_expiry_date?: string
   readonly reason: string
 }
 
@@ -55,6 +61,14 @@ export function ApplicationPanel({ token, canAdmin }: ApplicationPanelProps) {
   const [applicationForm] = Form.useForm()
   const [hireForm] = Form.useForm<HireFormValues>()
   const sameLegalEntities = Form.useWatch("same_legal_entities", hireForm) ?? true
+  const existingPersonId = Form.useWatch("existing_person_id", hireForm)
+  const useExistingPrimaryDocumentValue = Form.useWatch(
+    "use_existing_primary_document",
+    hireForm,
+  )
+  const useExistingPrimaryDocument = Boolean(
+    existingPersonId && useExistingPrimaryDocumentValue,
+  )
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -143,6 +157,8 @@ export function ApplicationPanel({ token, canAdmin }: ApplicationPanelProps) {
       employee_type_code: "REGULAR",
       same_legal_entities: true,
       contract_legal_entity_id: legalEntities.length === 1 ? legalEntities[0].id : undefined,
+      primary_document_type_code: "NATIONAL_ID",
+      primary_document_issuing_country_code: "CN",
     })
     setHireOpen(true)
   }
@@ -172,6 +188,9 @@ export function ApplicationPanel({ token, canAdmin }: ApplicationPanelProps) {
 
   async function confirmHire(values: HireFormValues): Promise<void> {
     if (!hireApplicationRecord || !hireIdempotencyKey) return
+    const reuseDocument = Boolean(
+      values.existing_person_id && values.use_existing_primary_document,
+    )
     setSaving(true)
     setError(null)
     try {
@@ -185,6 +204,17 @@ export function ApplicationPanel({ token, canAdmin }: ApplicationPanelProps) {
         tax_legal_entity_id: values.same_legal_entities ? null : values.tax_legal_entity_id || null,
         existing_person_id: values.existing_person_id || null,
         probation_end_date: values.probation_end_date || null,
+        primary_document_type_code: reuseDocument
+          ? null
+          : values.primary_document_type_code?.trim().toUpperCase() || null,
+        primary_document_number: reuseDocument
+          ? null
+          : values.primary_document_number?.trim() || null,
+        primary_document_issuing_country_code: reuseDocument
+          ? null
+          : values.primary_document_issuing_country_code?.trim().toUpperCase() || null,
+        primary_document_issue_date: reuseDocument ? null : values.primary_document_issue_date || null,
+        primary_document_expiry_date: reuseDocument ? null : values.primary_document_expiry_date || null,
         reason: values.reason.trim(),
       })
       closeHire()
@@ -323,11 +353,26 @@ export function ApplicationPanel({ token, canAdmin }: ApplicationPanelProps) {
             filterOption={false}
             loading={personSearching}
             onSearch={(value) => void searchPersons(value)}
+            onChange={(value) => {
+              hireForm.setFieldValue("use_existing_primary_document", Boolean(value))
+            }}
             options={personOptions}
             placeholder="输入至少两个字或工号搜索"
           />
         </Form.Item>
         <Form.Item label="试用期结束日期" name="probation_end_date"><Input type="date" /></Form.Item>
+        <Typography.Title level={5}>主要证件</Typography.Title>
+        <Typography.Paragraph type="secondary">待入职劳动关系生效前必须存在一张已核验的有效主要证件。证件号码将加密保存，普通页面只显示脱敏值。</Typography.Paragraph>
+        {existingPersonId && <Form.Item name="use_existing_primary_document" valuePropName="checked">
+          <Checkbox>沿用人员档案中计划入职日有效且已核验的主要证件</Checkbox>
+        </Form.Item>}
+        {!useExistingPrimaryDocument && <>
+          <Form.Item label="证件类型代码" name="primary_document_type_code" rules={[{ required: true }]}><Input placeholder="例如 NATIONAL_ID、PASSPORT" /></Form.Item>
+          <Form.Item label="证件号码" name="primary_document_number" rules={[{ required: true }]}><Input autoComplete="off" /></Form.Item>
+          <Form.Item label="签发国家/地区" name="primary_document_issuing_country_code" rules={[{ required: true }]}><Input maxLength={3} /></Form.Item>
+          <Form.Item label="签发日期" name="primary_document_issue_date"><Input type="date" /></Form.Item>
+          <Form.Item label="到期日期" name="primary_document_expiry_date"><Input type="date" /></Form.Item>
+        </>}
         <Form.Item label="录用原因" name="reason" rules={[{ required: true }]}><Input.TextArea rows={3} /></Form.Item>
       </Form>
     </Modal>

@@ -1,5 +1,7 @@
+from base64 import urlsafe_b64encode
 from datetime import date, timedelta
-from uuid import uuid4
+import json
+from uuid import UUID, uuid4
 
 import pytest
 from httpx import AsyncClient
@@ -7,14 +9,17 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from hris.modules.workforce.models import (
+    AuditLog,
     Employment,
     EmploymentAssignment,
     JobCatalog,
     LegalEntity,
     Organization,
     Person,
+    PersonDocument,
 )
-from hris.modules.workflow.models import Candidate, JobApplication
+from hris.core.config import get_settings
+from hris.modules.workflow.models import ApplicationHireConversion, Candidate, JobApplication
 
 
 pytestmark = pytest.mark.asyncio
@@ -22,6 +27,19 @@ pytestmark = pytest.mark.asyncio
 
 def _auth(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
+
+
+def _configure_synthetic_keys(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(
+        "COREHR_PERSONNEL_ENCRYPTION_KEYS",
+        json.dumps({"synthetic-v1": urlsafe_b64encode(bytes(range(32))).decode()}),
+    )
+    monkeypatch.setenv("COREHR_PERSONNEL_ACTIVE_KEY_VERSION", "synthetic-v1")
+    monkeypatch.setenv(
+        "COREHR_PERSONNEL_SEARCH_KEY",
+        urlsafe_b64encode(bytes(reversed(range(32)))).decode(),
+    )
+    get_settings.cache_clear()
 
 
 async def _application_at_offer(
@@ -99,7 +117,9 @@ async def test_hire_application_creates_pending_start_records_idempotently(
     business_client: AsyncClient,
     admin_token: str,
     db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _configure_synthetic_keys(monkeypatch)
     application, organization, job, legal = await _application_at_offer(
         business_client,
         admin_token,
@@ -140,6 +160,10 @@ async def test_hire_application_creates_pending_start_records_idempotently(
         "nationality_code": "CHN",
         "country_code": "CHN",
         "probation_end_date": "2026-11-30",
+        "primary_document_type_code": "SYNTHETIC_ID",
+        "primary_document_number": "SYN-HIRE-0001",
+        "primary_document_issuing_country_code": "CN",
+        "primary_document_issue_date": "2026-01-01",
         "reason": "Synthetic accepted offer",
     }
     first = await business_client.post(
@@ -190,13 +214,38 @@ async def test_hire_application_creates_pending_start_records_idempotently(
         select(func.count()).select_from(Employment).where(Employment.person_id == person.id)
     )
     assert employment_count == 1
+    document = await db_session.scalar(
+        select(PersonDocument).where(PersonDocument.person_id == person.id)
+    )
+    assert document is not None
+    assert document.is_primary is True
+    assert document.verification_status == "verified"
+    assert not hasattr(document, "document_number")
+    conversion = await db_session.scalar(
+        select(ApplicationHireConversion).where(
+            ApplicationHireConversion.application_id == UUID(application_id)
+        )
+    )
+    hire_audit = await db_session.scalar(
+        select(AuditLog).where(
+            AuditLog.action == "hire",
+            AuditLog.object_id == UUID(application_id),
+        )
+    )
+    assert conversion is not None
+    assert hire_audit is not None
+    persisted_security_data = f"{conversion.request_checksum} {hire_audit.after_payload}"
+    assert payload["primary_document_number"] not in persisted_security_data
+    get_settings.cache_clear()
 
 
 async def test_hire_application_can_reuse_existing_person_and_employee_number(
     business_client: AsyncClient,
     admin_token: str,
     db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _configure_synthetic_keys(monkeypatch)
     application, _organization, _job, legal = await _application_at_offer(
         business_client,
         admin_token,
@@ -211,6 +260,21 @@ async def test_hire_application_can_reuse_existing_person_and_employee_number(
     )
     db_session.add(existing_person)
     await db_session.flush()
+
+    document = await business_client.post(
+        f"/api/v1/workforce/persons/{existing_person.id}/documents",
+        headers=_auth(admin_token),
+        json={
+            "document_type_code": "SYNTHETIC_ID",
+            "document_number": "SYN-REHIRE-0002",
+            "issuing_country_code": "CN",
+            "is_primary": True,
+            "verification_status": "verified",
+            "effective_from": "2026-01-01",
+            "change_reason": "Synthetic pre-existing verified document",
+        },
+    )
+    assert document.status_code == 201, document.text
 
     response = await business_client.post(
         f"/api/v1/lifecycle/applications/{application['id']}/hire",
@@ -228,3 +292,4 @@ async def test_hire_application_can_reuse_existing_person_and_employee_number(
     assert response.json()["person_id"] == str(existing_person.id)
     refreshed = await db_session.get(Person, existing_person.id)
     assert refreshed is not None and refreshed.employee_number == "992002"
+    get_settings.cache_clear()

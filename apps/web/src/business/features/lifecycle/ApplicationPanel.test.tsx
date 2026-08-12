@@ -80,6 +80,9 @@ describe("ApplicationPanel", () => {
     fireEvent.change(within(dialog).getByLabelText("计划入职日期"), {
       target: { value: "2026-09-01" },
     })
+    fireEvent.change(within(dialog).getByLabelText("证件号码"), {
+      target: { value: "SYN-HIRE-UI-0001" },
+    })
     fireEvent.change(within(dialog).getByLabelText("录用原因"), {
       target: { value: "Synthetic accepted offer" },
     })
@@ -100,6 +103,9 @@ describe("ApplicationPanel", () => {
       planned_start_date: "2026-09-01",
       employee_type_code: "REGULAR",
       contract_legal_entity_id: "legal-1",
+      primary_document_type_code: "NATIONAL_ID",
+      primary_document_number: "SYN-HIRE-UI-0001",
+      primary_document_issuing_country_code: "CN",
       reason: "Synthetic accepted offer",
     })
     expect(body.idempotency_key).toMatch(/^[0-9a-f-]{36}$/)

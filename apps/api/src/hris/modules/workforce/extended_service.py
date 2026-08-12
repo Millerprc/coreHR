@@ -46,6 +46,7 @@ from hris.modules.workforce.models import (
     Organization,
     OrganizationVersion,
     Person,
+    PersonDocument,
     SnapshotBatch,
 )
 
@@ -764,6 +765,28 @@ class ExtendedWorkforceService:
         person = await self._session.get(Person, payload.person_id)
         if person is None:
             raise ApiError(status_code=404, code="PERSON_NOT_FOUND", message="人员不存在")
+        primary_document = await self._session.scalar(
+            select(PersonDocument.id).where(
+                PersonDocument.person_id == payload.person_id,
+                PersonDocument.is_primary.is_(True),
+                PersonDocument.verification_status == "verified",
+                PersonDocument.effective_from <= payload.planned_start_date,
+                or_(
+                    PersonDocument.effective_to.is_(None),
+                    PersonDocument.effective_to >= payload.planned_start_date,
+                ),
+                or_(
+                    PersonDocument.expiry_date.is_(None),
+                    PersonDocument.expiry_date >= payload.planned_start_date,
+                ),
+            ).limit(1)
+        )
+        if primary_document is None:
+            raise ApiError(
+                status_code=422,
+                code="VERIFIED_PRIMARY_DOCUMENT_REQUIRED",
+                message="创建待入职劳动关系前，计划入职日必须存在一张已核验且有效的主要证件",
+            )
         if person.employee_number is None:
             person.employee_number = await self._allocate_employee_number()
 

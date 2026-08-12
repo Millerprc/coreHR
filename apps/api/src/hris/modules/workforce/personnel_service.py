@@ -34,12 +34,20 @@ from hris.modules.workforce.models import (
 )
 from hris.modules.workforce.personnel_schemas import (
     EducationRecordCreate,
+    EducationRecordUpdate,
     EmergencyContactCreate,
+    EmergencyContactUpdate,
     FamilyMemberCreate,
+    FamilyMemberUpdate,
     PersonAddressCreate,
+    PersonAddressUpdate,
     PersonContactCreate,
+    PersonContactUpdate,
     PersonDocumentCreate,
+    PersonDocumentUpdate,
+    SensitiveRecordExpire,
     WorkExperienceCreate,
+    WorkExperienceUpdate,
 )
 
 
@@ -64,6 +72,28 @@ class PersonnelService:
         if person is None:
             raise ApiError(status_code=404, code="PERSON_NOT_FOUND", message="人员不存在")
         return person
+
+    @staticmethod
+    def _record_model(record_type: str) -> type[Any]:
+        model = {
+            "document": PersonDocument,
+            "contact": PersonContact,
+            "address": PersonAddress,
+            "emergency_contact": EmergencyContact,
+            "education": EducationRecord,
+            "work_experience": WorkExperience,
+            "family_member": FamilyMember,
+        }.get(record_type)
+        if model is None:
+            raise ApiError(status_code=422, code="SENSITIVE_RECORD_TYPE_UNSUPPORTED", message="不支持该档案类型")
+        return model
+
+    async def _record(self, person_id: UUID, record_type: str, record_id: UUID) -> Any:
+        await self._person(person_id)
+        record = await self._session.get(self._record_model(record_type), record_id, with_for_update=True)
+        if record is None or record.person_id != person_id:
+            raise ApiError(status_code=404, code="SENSITIVE_RECORD_NOT_FOUND", message="敏感记录不存在")
+        return record
 
     def _audit(
         self,
@@ -102,6 +132,51 @@ class PersonnelService:
             f"{prefix}_nonce": value.nonce,
             f"{prefix}_ciphertext": value.ciphertext,
         }
+
+    @staticmethod
+    def _ensure_period(record: Any, changes: dict[str, Any]) -> None:
+        effective_from = changes.get("effective_from", record.effective_from)
+        effective_to = changes.get("effective_to", record.effective_to)
+        if effective_to is not None and effective_to < effective_from:
+            raise ApiError(status_code=422, code="EFFECTIVE_PERIOD_INVALID", message="失效日期不能早于生效日期")
+
+    def _protect_changed(
+        self,
+        *,
+        record: Any,
+        changes: dict[str, Any],
+        field: str,
+        security_field_code: str,
+        normalizer: Any,
+        masker: Any,
+        include_digest: bool = False,
+        allow_clear: bool = False,
+    ) -> str | None:
+        if field not in changes:
+            return None
+        raw_value = changes.pop(field)
+        if raw_value is None:
+            if not allow_clear:
+                raise ApiError(status_code=422, code="SENSITIVE_FIELD_REQUIRED", message="受保护字段不能为空")
+            for suffix in ("key_version", "nonce", "ciphertext"):
+                setattr(record, f"{field}_{suffix}", None)
+            setattr(record, f"masked_{field}", None)
+            if include_digest:
+                setattr(record, f"{field}_digest", None)
+            return None
+        protected = self._protector().protect(
+            raw_value,
+            field_code=security_field_code,
+            record_id=record.id,
+            normalizer=normalizer,
+            masker=masker,
+        )
+        for column, value in self._protected_columns(protected, field).items():
+            setattr(record, column, value)
+        setattr(record, f"masked_{field}", protected.masked_value)
+        if include_digest:
+            setattr(record, f"{field}_digest", protected.search_digest)
+        return protected.masked_value
 
     async def _ensure_primary_available(
         self,
@@ -161,6 +236,7 @@ class PersonnelService:
         )
         self._session.add(record)
         await self._session.flush()
+        await self._session.refresh(record)
         self._audit(
             action="create",
             object_type="person_document",
@@ -507,6 +583,240 @@ class PersonnelService:
             ).all()
         )
 
+    async def update_record(
+        self,
+        *,
+        person_id: UUID,
+        record_type: str,
+        record_id: UUID,
+        payload: (
+            PersonDocumentUpdate
+            | PersonContactUpdate
+            | PersonAddressUpdate
+            | EmergencyContactUpdate
+            | EducationRecordUpdate
+            | WorkExperienceUpdate
+            | FamilyMemberUpdate
+        ),
+    ) -> Any:
+        record = await self._record(person_id, record_type, record_id)
+        changes = payload.model_dump(exclude={"change_reason"}, exclude_unset=True)
+        if not changes:
+            raise ApiError(status_code=422, code="SENSITIVE_RECORD_CHANGE_EMPTY", message="没有可保存的档案变更")
+        self._ensure_period(record, changes)
+        field_codes = sorted(changes)
+        masked_values: dict[str, str] = {}
+        required_fields = {
+            "document": {"document_type_code", "issuing_country_code", "is_primary", "verification_status", "effective_from"},
+            "contact": {"contact_type", "is_primary", "effective_from"},
+            "address": {"address_type", "country_code", "effective_from"},
+            "emergency_contact": {"relationship_code", "effective_from"},
+            "education": {"education_level_code", "study_start_date", "effective_from"},
+            "work_experience": {"work_start_date", "effective_from"},
+            "family_member": {"relationship_code", "effective_from"},
+        }[record_type]
+        if any(changes.get(field) is None for field in required_fields if field in changes):
+            raise ApiError(status_code=422, code="SENSITIVE_RECORD_FIELD_REQUIRED", message="档案必填字段不能为空")
+
+        if record_type == "document":
+            candidate_primary = changes.get("is_primary", record.is_primary)
+            if candidate_primary:
+                await self._ensure_primary_available(
+                    PersonDocument,
+                    person_id=person_id,
+                    effective_from=changes.get("effective_from", record.effective_from),
+                    effective_to=changes.get("effective_to", record.effective_to),
+                    extra_filters=[PersonDocument.id != record.id],
+                    error_code="PRIMARY_DOCUMENT_PERIOD_OVERLAP",
+                )
+            masked = self._protect_changed(
+                record=record,
+                changes=changes,
+                field="document_number",
+                security_field_code="document_number",
+                normalizer=normalize_document_number,
+                masker=mask_document_number,
+                include_digest=True,
+            )
+            if masked is not None:
+                masked_values["document_number"] = masked
+            duplicate = await self._session.scalar(
+                select(PersonDocument.id).where(
+                    PersonDocument.person_id == person_id,
+                    PersonDocument.document_type_code == changes.get("document_type_code", record.document_type_code),
+                    PersonDocument.issuing_country_code == changes.get("issuing_country_code", record.issuing_country_code),
+                    PersonDocument.document_number_digest == record.document_number_digest,
+                    PersonDocument.id != record.id,
+                )
+            )
+            if duplicate is not None:
+                raise ApiError(status_code=409, code="PERSON_DOCUMENT_EXISTS", message="该人员证件已存在")
+        elif record_type == "contact":
+            candidate_type = changes.get("contact_type", record.contact_type)
+            if candidate_type != record.contact_type and "contact_value" not in changes:
+                raise ApiError(status_code=422, code="CONTACT_VALUE_REQUIRED", message="更改联系方式类型时必须重新输入联系方式")
+            candidate_primary = changes.get("is_primary", record.is_primary)
+            if candidate_primary:
+                await self._ensure_primary_available(
+                    PersonContact,
+                    person_id=person_id,
+                    effective_from=changes.get("effective_from", record.effective_from),
+                    effective_to=changes.get("effective_to", record.effective_to),
+                    extra_filters=[
+                        PersonContact.contact_type == candidate_type,
+                        PersonContact.id != record.id,
+                    ],
+                    error_code="PRIMARY_CONTACT_PERIOD_OVERLAP",
+                )
+            normalizer = normalize_email if candidate_type.endswith("email") else normalize_phone
+            masker = mask_email if candidate_type.endswith("email") else mask_phone
+            masked = self._protect_changed(
+                record=record,
+                changes=changes,
+                field="contact_value",
+                security_field_code=candidate_type,
+                normalizer=normalizer,
+                masker=masker,
+                include_digest=True,
+            )
+            if masked is not None:
+                masked_values["contact_value"] = masked
+            duplicate = await self._session.scalar(
+                select(PersonContact.id).where(
+                    PersonContact.person_id == person_id,
+                    PersonContact.contact_type == candidate_type,
+                    PersonContact.contact_value_digest == record.contact_value_digest,
+                    PersonContact.effective_from == changes.get("effective_from", record.effective_from),
+                    PersonContact.id != record.id,
+                )
+            )
+            if duplicate is not None:
+                raise ApiError(status_code=409, code="PERSON_CONTACT_EXISTS", message="该联系方式已存在")
+        elif record_type == "address":
+            masked = self._protect_changed(
+                record=record,
+                changes=changes,
+                field="address_detail",
+                security_field_code="address_detail",
+                normalizer=normalize_text,
+                masker=mask_text,
+            )
+            if masked is not None:
+                masked_values["address_detail"] = masked
+        elif record_type == "emergency_contact":
+            for field, code, normalizer, masker, include_digest in (
+                ("name", "emergency_contact_name", normalize_text, mask_text, False),
+                ("phone", "emergency_contact_phone", normalize_phone, mask_phone, True),
+            ):
+                masked = self._protect_changed(
+                    record=record,
+                    changes=changes,
+                    field=field,
+                    security_field_code=code,
+                    normalizer=normalizer,
+                    masker=masker,
+                    include_digest=include_digest,
+                )
+                if masked is not None:
+                    masked_values[field] = masked
+        elif record_type == "education":
+            for field, code in (
+                ("institution_name", "education_institution_name"),
+                ("major_name", "education_major_name"),
+            ):
+                masked = self._protect_changed(
+                    record=record,
+                    changes=changes,
+                    field=field,
+                    security_field_code=code,
+                    normalizer=normalize_text,
+                    masker=mask_text,
+                    allow_clear=field == "major_name",
+                )
+                if masked is not None:
+                    masked_values[field] = masked
+        elif record_type == "work_experience":
+            for field, code in (
+                ("employer_name", "work_employer_name"),
+                ("job_title", "work_job_title"),
+            ):
+                masked = self._protect_changed(
+                    record=record,
+                    changes=changes,
+                    field=field,
+                    security_field_code=code,
+                    normalizer=normalize_text,
+                    masker=mask_text,
+                    allow_clear=field == "job_title",
+                )
+                if masked is not None:
+                    masked_values[field] = masked
+        elif record_type == "family_member":
+            masked = self._protect_changed(
+                record=record,
+                changes=changes,
+                field="name",
+                security_field_code="family_member_name",
+                normalizer=normalize_text,
+                masker=mask_text,
+            )
+            if masked is not None:
+                masked_values["name"] = masked
+
+        for field, value in changes.items():
+            setattr(record, field, value)
+        if isinstance(record, EducationRecord):
+            if record.study_end_date is not None and record.study_end_date < record.study_start_date:
+                raise ApiError(status_code=422, code="STUDY_PERIOD_INVALID", message="毕业日期不能早于入学日期")
+        if isinstance(record, WorkExperience):
+            if record.work_end_date is not None and record.work_end_date < record.work_start_date:
+                raise ApiError(status_code=422, code="WORK_PERIOD_INVALID", message="结束日期不能早于开始日期")
+        if isinstance(record, PersonDocument):
+            if (
+                record.issue_date is not None
+                and record.expiry_date is not None
+                and record.expiry_date < record.issue_date
+            ):
+                raise ApiError(status_code=422, code="DOCUMENT_PERIOD_INVALID", message="证件到期日期不能早于签发日期")
+        await self._session.flush()
+        await self._session.refresh(record)
+        self._audit(
+            action="correct",
+            object_type=f"person_{record_type}",
+            object_id=record.id,
+            person_id=person_id,
+            reason=payload.change_reason,
+            fields=field_codes,
+            masked_values=masked_values,
+        )
+        return record
+
+    async def expire_record(
+        self,
+        *,
+        person_id: UUID,
+        record_type: str,
+        record_id: UUID,
+        payload: SensitiveRecordExpire,
+    ) -> Any:
+        record = await self._record(person_id, record_type, record_id)
+        if payload.effective_to < record.effective_from:
+            raise ApiError(status_code=422, code="EFFECTIVE_PERIOD_INVALID", message="失效日期不能早于生效日期")
+        if record.effective_to is not None and record.effective_to <= payload.effective_to:
+            raise ApiError(status_code=409, code="SENSITIVE_RECORD_ALREADY_EXPIRED", message="档案记录已在该日期或更早失效")
+        record.effective_to = payload.effective_to
+        await self._session.flush()
+        await self._session.refresh(record)
+        self._audit(
+            action="expire",
+            object_type=f"person_{record_type}",
+            object_id=record.id,
+            person_id=person_id,
+            reason=payload.reason,
+            fields=["effective_to"],
+        )
+        return record
+
     async def reveal(
         self,
         *,
@@ -562,10 +872,8 @@ class PersonnelService:
         model_config = model_fields.get(record_type)
         if model_config is None or field_code not in model_config[1]:
             raise ApiError(status_code=422, code="SENSITIVE_FIELD_UNSUPPORTED", message="不支持读取该敏感字段")
-        model, field_map = model_config
-        record = await self._session.get(model, record_id)
-        if record is None or record.person_id != person_id:
-            raise ApiError(status_code=404, code="SENSITIVE_RECORD_NOT_FOUND", message="敏感记录不存在")
+        _model, field_map = model_config
+        record = await self._record(person_id, record_type, record_id)
         prefix, security_field_code = field_map[field_code]
         if security_field_code == "dynamic_contact":
             security_field_code = record.contact_type

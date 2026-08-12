@@ -74,6 +74,29 @@ export const workforceApi = {
     apiRequest<readonly FamilyMember[]>(`/api/v1/workforce/persons/${personId}/family-members`, token),
   createFamilyMember: (token: string, personId: string, body: unknown) =>
     apiRequest<FamilyMember>(`/api/v1/workforce/persons/${personId}/family-members`, token, { method: "POST", body }),
+  updateSensitiveRecord: (
+    token: string,
+    personId: string,
+    resourcePath: string,
+    recordId: string,
+    body: unknown,
+  ) => apiRequest(
+    `/api/v1/workforce/persons/${personId}/${resourcePath}/${recordId}`,
+    token,
+    { method: "PATCH", body },
+  ),
+  expireSensitiveRecord: (
+    token: string,
+    personId: string,
+    recordType: string,
+    recordId: string,
+    effectiveTo: string,
+    reason: string,
+  ) => apiRequest(
+    `/api/v1/workforce/persons/${personId}/records/${recordType}/${recordId}/expire`,
+    token,
+    { method: "POST", body: { effective_to: effectiveTo, reason } },
+  ),
   revealSensitiveValue: (
     token: string,
     personId: string,

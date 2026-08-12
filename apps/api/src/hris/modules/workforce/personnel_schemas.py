@@ -28,12 +28,36 @@ class PersonDocumentCreate(EffectiveDatedInput):
 
     @model_validator(mode="after")
     def validate_document_dates(self) -> "PersonDocumentCreate":
+        if not any(character.isalnum() for character in self.document_number):
+            raise ValueError("document_number规范化后不能为空")
         if (
             self.issue_date is not None
             and self.expiry_date is not None
             and self.expiry_date < self.issue_date
         ):
             raise ValueError("expiry_date不能早于issue_date")
+        return self
+
+
+class PersonDocumentUpdate(BaseModel):
+    document_type_code: str | None = Field(default=None, min_length=1, max_length=50)
+    document_number: str | None = Field(default=None, min_length=1, max_length=255)
+    issuing_country_code: str | None = Field(default=None, min_length=2, max_length=3)
+    issue_date: date | None = None
+    expiry_date: date | None = None
+    is_primary: bool | None = None
+    verification_status: str | None = Field(default=None, min_length=1, max_length=30)
+    effective_from: date | None = None
+    effective_to: date | None = None
+    change_reason: str = Field(min_length=1, max_length=500)
+
+    @model_validator(mode="after")
+    def validate_document_number(self) -> "PersonDocumentUpdate":
+        if (
+            self.document_number is not None
+            and not any(character.isalnum() for character in self.document_number)
+        ):
+            raise ValueError("document_number规范化后不能为空")
         return self
 
 
@@ -65,6 +89,15 @@ class PersonContactCreate(EffectiveDatedInput):
     change_reason: str = Field(min_length=1, max_length=500)
 
 
+class PersonContactUpdate(BaseModel):
+    contact_type: ContactType | None = None
+    contact_value: str | None = Field(default=None, min_length=1, max_length=320)
+    is_primary: bool | None = None
+    effective_from: date | None = None
+    effective_to: date | None = None
+    change_reason: str = Field(min_length=1, max_length=500)
+
+
 class PersonContactResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -87,6 +120,16 @@ class PersonAddressCreate(EffectiveDatedInput):
     change_reason: str = Field(min_length=1, max_length=500)
 
 
+class PersonAddressUpdate(BaseModel):
+    address_type: Literal["residential", "mailing"] | None = None
+    country_code: str | None = Field(default=None, min_length=2, max_length=3)
+    region_code: str | None = Field(default=None, max_length=50)
+    address_detail: str | None = Field(default=None, min_length=1, max_length=500)
+    effective_from: date | None = None
+    effective_to: date | None = None
+    change_reason: str = Field(min_length=1, max_length=500)
+
+
 class PersonAddressResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -106,6 +149,15 @@ class EmergencyContactCreate(EffectiveDatedInput):
     name: str = Field(min_length=1, max_length=200)
     relationship_code: str = Field(min_length=1, max_length=50)
     phone: str = Field(min_length=1, max_length=50)
+    change_reason: str = Field(min_length=1, max_length=500)
+
+
+class EmergencyContactUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    relationship_code: str | None = Field(default=None, min_length=1, max_length=50)
+    phone: str | None = Field(default=None, min_length=1, max_length=50)
+    effective_from: date | None = None
+    effective_to: date | None = None
     change_reason: str = Field(min_length=1, max_length=500)
 
 
@@ -138,6 +190,17 @@ class EducationRecordCreate(EffectiveDatedInput):
         return self
 
 
+class EducationRecordUpdate(BaseModel):
+    institution_name: str | None = Field(default=None, min_length=1, max_length=300)
+    education_level_code: str | None = Field(default=None, min_length=1, max_length=50)
+    major_name: str | None = Field(default=None, max_length=200)
+    study_start_date: date | None = None
+    study_end_date: date | None = None
+    effective_from: date | None = None
+    effective_to: date | None = None
+    change_reason: str = Field(min_length=1, max_length=500)
+
+
 class EducationRecordResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -168,6 +231,16 @@ class WorkExperienceCreate(EffectiveDatedInput):
         return self
 
 
+class WorkExperienceUpdate(BaseModel):
+    employer_name: str | None = Field(default=None, min_length=1, max_length=300)
+    job_title: str | None = Field(default=None, max_length=200)
+    work_start_date: date | None = None
+    work_end_date: date | None = None
+    effective_from: date | None = None
+    effective_to: date | None = None
+    change_reason: str = Field(min_length=1, max_length=500)
+
+
 class WorkExperienceResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -186,6 +259,14 @@ class WorkExperienceResponse(BaseModel):
 class FamilyMemberCreate(EffectiveDatedInput):
     name: str = Field(min_length=1, max_length=200)
     relationship_code: str = Field(min_length=1, max_length=50)
+    change_reason: str = Field(min_length=1, max_length=500)
+
+
+class FamilyMemberUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    relationship_code: str | None = Field(default=None, min_length=1, max_length=50)
+    effective_from: date | None = None
+    effective_to: date | None = None
     change_reason: str = Field(min_length=1, max_length=500)
 
 
@@ -222,3 +303,8 @@ class SensitiveRevealResponse(BaseModel):
     record_id: UUID
     field_code: str
     value: str
+
+
+class SensitiveRecordExpire(BaseModel):
+    effective_to: date
+    reason: str = Field(min_length=1, max_length=500)

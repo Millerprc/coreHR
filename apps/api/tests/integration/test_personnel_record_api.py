@@ -110,7 +110,9 @@ async def test_person_legal_name_defaults_display_and_sensitive_audit_has_no_pla
 async def test_four_legal_entities_keep_effective_dated_versions(
     business_client: AsyncClient,
     admin_token: str,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _configure_synthetic_keys(monkeypatch)
     first_legal_id = await _legal_entity(
         business_client,
         admin_token,
@@ -131,6 +133,33 @@ async def test_four_legal_entities_keep_effective_dated_versions(
         },
     )
     assert person.status_code == 201, person.text
+    missing_document = await business_client.post(
+        "/api/v1/workforce/employments",
+        headers=_auth(admin_token),
+        json={
+            "person_id": person.json()["id"],
+            "employee_type_code": "REGULAR",
+            "planned_start_date": "2026-08-10",
+            "contract_legal_entity_id": first_legal_id,
+            "change_reason": "Reject missing identity",
+        },
+    )
+    assert missing_document.status_code == 422
+    assert missing_document.json()["code"] == "VERIFIED_PRIMARY_DOCUMENT_REQUIRED"
+    document = await business_client.post(
+        f"/api/v1/workforce/persons/{person.json()['id']}/documents",
+        headers=_auth(admin_token),
+        json={
+            "document_type_code": "SYNTHETIC_ID",
+            "document_number": "SYN-ENTITY-0001",
+            "issuing_country_code": "CN",
+            "is_primary": True,
+            "verification_status": "verified",
+            "effective_from": "2026-08-10",
+            "change_reason": "Verify synthetic employment identity",
+        },
+    )
+    assert document.status_code == 201, document.text
     employment = await business_client.post(
         "/api/v1/workforce/employments",
         headers=_auth(admin_token),
@@ -191,6 +220,7 @@ async def test_four_legal_entities_keep_effective_dated_versions(
     assert august_payroll["legal_entity_id"] == first_legal_id
     assert august_payroll["effective_to"] == date(2026, 8, 31).isoformat()
     assert september_payroll["legal_entity_id"] == second_legal_id
+    get_settings.cache_clear()
 
 
 async def test_sensitive_document_is_encrypted_masked_permissioned_and_audited(
@@ -363,4 +393,87 @@ async def test_optional_related_records_are_modeled_and_masked(
     )
     assert revealed.status_code == 200, revealed.text
     assert revealed.json()["value"] == "Synthetic University"
+    get_settings.cache_clear()
+
+
+async def test_sensitive_record_correction_and_expiry_keep_plaintext_out_of_audit(
+    business_client: AsyncClient,
+    admin_token: str,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _configure_synthetic_keys(monkeypatch)
+    person = await business_client.post(
+        "/api/v1/workforce/persons",
+        headers=_auth(admin_token),
+        json={
+            "legal_name": "Synthetic Correction Person",
+            "reserve_employee_number": False,
+            "change_reason": "Create synthetic correction person",
+        },
+    )
+    person_id = person.json()["id"]
+    invalid_document = await business_client.post(
+        f"/api/v1/workforce/persons/{person_id}/documents",
+        headers=_auth(admin_token),
+        json={
+            "document_type_code": "SYNTHETIC_ID",
+            "document_number": "---",
+            "issuing_country_code": "CN",
+            "effective_from": "2026-08-01",
+            "change_reason": "Reject empty normalized identity",
+        },
+    )
+    assert invalid_document.status_code == 422
+    created = await business_client.post(
+        f"/api/v1/workforce/persons/{person_id}/contacts",
+        headers=_auth(admin_token),
+        json={
+            "contact_type": "personal_phone",
+            "contact_value": "13800000001",
+            "is_primary": True,
+            "effective_from": "2026-08-01",
+            "change_reason": "Add synthetic contact",
+        },
+    )
+    assert created.status_code == 201, created.text
+    record_id = created.json()["id"]
+
+    corrected = await business_client.patch(
+        f"/api/v1/workforce/persons/{person_id}/contacts/{record_id}",
+        headers=_auth(admin_token),
+        json={
+            "contact_value": "13900000002",
+            "change_reason": "Correct synthetic contact",
+        },
+    )
+    assert corrected.status_code == 200, corrected.text
+    assert "13900000002" not in corrected.text
+    revealed = await business_client.post(
+        f"/api/v1/workforce/persons/{person_id}/sensitive-values/contact/{record_id}/contact_value/reveal",
+        headers=_auth(admin_token),
+        json={"reason": "Verify corrected synthetic contact"},
+    )
+    assert revealed.status_code == 200, revealed.text
+    assert revealed.json()["value"] == "13900000002"
+
+    expired = await business_client.post(
+        f"/api/v1/workforce/persons/{person_id}/records/contact/{record_id}/expire",
+        headers=_auth(admin_token),
+        json={"effective_to": "2026-08-31", "reason": "Expire synthetic contact"},
+    )
+    assert expired.status_code == 200, expired.text
+    assert expired.json()["effective_to"] == "2026-08-31"
+
+    audits = list(
+        (
+            await db_session.scalars(
+                select(AuditLog).where(AuditLog.object_id == UUID(record_id))
+            )
+        ).all()
+    )
+    serialized = " ".join(f"{item.before_payload} {item.after_payload}" for item in audits)
+    assert "13800000001" not in serialized
+    assert "13900000002" not in serialized
+    assert {item.action for item in audits} >= {"create", "correct", "expire", "reveal"}
     get_settings.cache_clear()

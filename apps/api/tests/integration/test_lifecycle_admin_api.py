@@ -1,4 +1,6 @@
+from base64 import urlsafe_b64encode
 from datetime import date, timedelta
+import json
 from uuid import uuid4
 
 import pytest
@@ -6,6 +8,7 @@ from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from hris.modules.workforce.models import JobCatalog, LegalEntity, Organization, Person
+from hris.core.config import get_settings
 
 
 pytestmark = pytest.mark.asyncio
@@ -19,7 +22,18 @@ async def test_candidate_application_and_contract_admin_lifecycle(
     business_client: AsyncClient,
     admin_token: str,
     db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setenv(
+        "COREHR_PERSONNEL_ENCRYPTION_KEYS",
+        json.dumps({"synthetic-v1": urlsafe_b64encode(bytes(range(32))).decode()}),
+    )
+    monkeypatch.setenv("COREHR_PERSONNEL_ACTIVE_KEY_VERSION", "synthetic-v1")
+    monkeypatch.setenv(
+        "COREHR_PERSONNEL_SEARCH_KEY",
+        urlsafe_b64encode(bytes(reversed(range(32)))).decode(),
+    )
+    get_settings.cache_clear()
     today = date.today()
     organization = Organization(code="735001")
     job = JobCatalog(
@@ -105,6 +119,9 @@ async def test_candidate_application_and_contract_admin_lifecycle(
             "employee_type_code": "REGULAR",
             "contract_legal_entity_id": str(legal.id),
             "existing_person_id": str(person.id),
+            "primary_document_type_code": "SYNTHETIC_ID",
+            "primary_document_number": "SYN-LIFECYCLE-0001",
+            "primary_document_issuing_country_code": "CN",
             "reason": "Synthetic accepted offer",
         },
     )
@@ -150,3 +167,4 @@ async def test_candidate_application_and_contract_admin_lifecycle(
     )
     assert contract_page.status_code == 200
     assert contract_page.json()["items"][0]["status"] == "terminated"
+    get_settings.cache_clear()

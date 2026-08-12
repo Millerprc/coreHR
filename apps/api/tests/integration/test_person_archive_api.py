@@ -1,10 +1,13 @@
+from base64 import urlsafe_b64encode
 from datetime import date, timedelta
+import json
 
 import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from hris.modules.workforce.models import Organization
+from hris.core.config import get_settings
 
 
 pytestmark = pytest.mark.asyncio
@@ -18,7 +21,18 @@ async def test_person_archive_keeps_employment_assignment_and_agreement_history(
     business_client: AsyncClient,
     admin_token: str,
     db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setenv(
+        "COREHR_PERSONNEL_ENCRYPTION_KEYS",
+        json.dumps({"synthetic-v1": urlsafe_b64encode(bytes(range(32))).decode()}),
+    )
+    monkeypatch.setenv("COREHR_PERSONNEL_ACTIVE_KEY_VERSION", "synthetic-v1")
+    monkeypatch.setenv(
+        "COREHR_PERSONNEL_SEARCH_KEY",
+        urlsafe_b64encode(bytes(reversed(range(32)))).decode(),
+    )
+    get_settings.cache_clear()
     first_organization = Organization(code="731001")
     second_organization = Organization(code="731002")
     db_session.add_all([first_organization, second_organization])
@@ -88,6 +102,20 @@ async def test_person_archive_keeps_employment_assignment_and_agreement_history(
     person_id = person.json()["id"]
     assert person.json()["employee_number"].isdigit()
     assert len(person.json()["employee_number"]) == 6
+    document = await business_client.post(
+        f"/api/v1/workforce/persons/{person_id}/documents",
+        headers=_auth(admin_token),
+        json={
+            "document_type_code": "SYNTHETIC_ID",
+            "document_number": "SYN-ARCHIVE-0001",
+            "issuing_country_code": "CN",
+            "is_primary": True,
+            "verification_status": "verified",
+            "effective_from": "2026-08-10",
+            "change_reason": "登记合成主要证件",
+        },
+    )
+    assert document.status_code == 201, document.text
 
     employment = await business_client.post(
         "/api/v1/workforce/employments",
@@ -167,6 +195,7 @@ async def test_person_archive_keeps_employment_assignment_and_agreement_history(
     assert len(archive.json()["employments"]) == 1
     assert len(archive.json()["assignments"]) == 1
     assert len(archive.json()["agreements"]) == 1
+    get_settings.cache_clear()
 
 
 async def test_employment_overlap_does_not_block_non_employment_agreements(

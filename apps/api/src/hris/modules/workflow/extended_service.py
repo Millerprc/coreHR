@@ -10,6 +10,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from hris.core.config import get_settings
 from hris.core.errors import ApiError
+from hris.core.personnel_security import (
+    SensitiveDataError,
+    normalize_document_number,
+    protector_from_settings,
+)
 from hris.modules.platform.numbering import next_number
 from hris.modules.workflow.extended_schemas import (
     ApplicationHireCreate,
@@ -47,6 +52,8 @@ from hris.modules.workforce.extended_schemas import (
     PersonCreate,
 )
 from hris.modules.workforce.extended_service import ExtendedWorkforceService
+from hris.modules.workforce.personnel_schemas import PersonDocumentCreate
+from hris.modules.workforce.personnel_service import PersonnelService
 from hris.modules.workforce.models import (
     AgreementRelationship,
     AuditLog,
@@ -464,12 +471,29 @@ class LifecycleService:
         )
         return application
 
-    @staticmethod
-    def _hire_checksum(application_id: UUID, payload: ApplicationHireCreate) -> str:
+    def _hire_checksum(self, application_id: UUID, payload: ApplicationHireCreate) -> str:
         value = {
             "application_id": str(application_id),
-            **payload.model_dump(mode="json", exclude={"idempotency_key"}),
+            **payload.model_dump(
+                mode="json",
+                exclude={"idempotency_key", "primary_document_number"},
+            ),
         }
+        if payload.primary_document_number is not None:
+            try:
+                value["primary_document_number_digest"] = protector_from_settings(
+                    get_settings()
+                ).digest(
+                    payload.primary_document_number,
+                    field_code="document_number",
+                    normalizer=normalize_document_number,
+                )
+            except SensitiveDataError:
+                raise ApiError(
+                    status_code=503,
+                    code="PERSONNEL_SENSITIVE_KEY_UNAVAILABLE",
+                    message="人员敏感字段密钥未就绪，已拒绝本次操作",
+                ) from None
         canonical = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
@@ -609,6 +633,27 @@ class LifecycleService:
                     code="PERSON_NOT_FOUND",
                     message="existing person not found",
                 )
+
+        if payload.primary_document_number is not None:
+            personnel = PersonnelService(
+                self._session,
+                actor_id=self._actor_id,
+                trace_id=self._trace_id,
+            )
+            await personnel.create_document(
+                person.id,
+                PersonDocumentCreate(
+                    document_type_code=payload.primary_document_type_code or "",
+                    document_number=payload.primary_document_number,
+                    issuing_country_code=payload.primary_document_issuing_country_code or "",
+                    issue_date=payload.primary_document_issue_date,
+                    expiry_date=payload.primary_document_expiry_date,
+                    is_primary=True,
+                    verification_status="verified",
+                    effective_from=payload.planned_start_date,
+                    change_reason=payload.reason,
+                ),
+            )
 
         employment = await workforce.create_employment(
             EmploymentCreate(

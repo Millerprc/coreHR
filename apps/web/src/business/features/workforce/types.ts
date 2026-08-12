@@ -138,6 +138,8 @@ export interface EducationRecord {
   readonly masked_major_name: string | null
   readonly study_start_date: string
   readonly study_end_date: string | null
+  readonly effective_from: string
+  readonly effective_to: string | null
 }
 
 
@@ -147,6 +149,8 @@ export interface WorkExperience {
   readonly masked_job_title: string | null
   readonly work_start_date: string
   readonly work_end_date: string | null
+  readonly effective_from: string
+  readonly effective_to: string | null
 }
 
 

@@ -153,7 +153,42 @@ class ApplicationHireCreate(BaseModel):
     nationality_code: str | None = Field(default=None, min_length=2, max_length=3)
     country_code: str | None = Field(default=None, min_length=2, max_length=3)
     probation_end_date: date | None = None
+    primary_document_type_code: str | None = Field(default=None, min_length=1, max_length=50)
+    primary_document_number: str | None = Field(default=None, min_length=1, max_length=255)
+    primary_document_issuing_country_code: str | None = Field(default=None, min_length=2, max_length=3)
+    primary_document_issue_date: date | None = None
+    primary_document_expiry_date: date | None = None
     reason: str = Field(min_length=1, max_length=500)
+
+    @model_validator(mode="after")
+    def validate_primary_document(self) -> "ApplicationHireCreate":
+        identity_fields = (
+            self.primary_document_type_code,
+            self.primary_document_number,
+            self.primary_document_issuing_country_code,
+        )
+        if any(identity_fields) and not all(identity_fields):
+            raise ValueError("主要证件类型、号码和签发国家/地区必须同时填写")
+        if (
+            self.primary_document_number is not None
+            and not any(
+                character.isalnum()
+                for character in self.primary_document_number
+            )
+        ):
+            raise ValueError("主要证件号码规范化后不能为空")
+        if (
+            self.primary_document_issue_date is not None
+            and self.primary_document_expiry_date is not None
+            and self.primary_document_expiry_date < self.primary_document_issue_date
+        ):
+            raise ValueError("主要证件到期日期不能早于签发日期")
+        if (
+            self.primary_document_expiry_date is not None
+            and self.primary_document_expiry_date < self.planned_start_date
+        ):
+            raise ValueError("主要证件在计划入职日前已到期")
+        return self
 
 
 class ApplicationHireConversionResponse(BaseModel):

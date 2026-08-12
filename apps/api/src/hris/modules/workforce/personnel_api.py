@@ -1,4 +1,4 @@
-from typing import Annotated
+from typing import Annotated, Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Request, status
@@ -10,21 +10,29 @@ from hris.modules.platform.models import UserAccount
 from hris.modules.workforce.personnel_schemas import (
     EducationRecordCreate,
     EducationRecordResponse,
+    EducationRecordUpdate,
     EmergencyContactCreate,
     EmergencyContactResponse,
+    EmergencyContactUpdate,
     FamilyMemberCreate,
     FamilyMemberResponse,
+    FamilyMemberUpdate,
     PersonAddressCreate,
     PersonAddressResponse,
+    PersonAddressUpdate,
     PersonContactCreate,
     PersonContactResponse,
+    PersonContactUpdate,
     PersonDocumentCreate,
     PersonDocumentResponse,
+    PersonDocumentUpdate,
+    SensitiveRecordExpire,
     SensitiveRecordType,
     SensitiveRevealRequest,
     SensitiveRevealResponse,
     WorkExperienceCreate,
     WorkExperienceResponse,
+    WorkExperienceUpdate,
 )
 from hris.modules.workforce.personnel_service import PersonnelService
 
@@ -276,6 +284,193 @@ async def list_family_members(
         FamilyMemberResponse.model_validate(item)
         for item in await service(db, user, request).list_family_members(person_id)
     ]
+
+
+async def _update_record(
+    *,
+    person_id: UUID,
+    record_type: SensitiveRecordType,
+    record_id: UUID,
+    payload: Any,
+    request: Request,
+    db: AsyncSession,
+    user: UserAccount,
+) -> object:
+    return await service(db, user, request).update_record(
+        person_id=person_id,
+        record_type=record_type,
+        record_id=record_id,
+        payload=payload,
+    )
+
+
+@router.patch("/{person_id}/documents/{record_id}", response_model=PersonDocumentResponse)
+async def update_document(
+    person_id: UUID,
+    record_id: UUID,
+    payload: PersonDocumentUpdate,
+    request: Request,
+    db: DbSession,
+    user: SensitiveEditor,
+) -> object:
+    return await _update_record(
+        person_id=person_id,
+        record_type="document",
+        record_id=record_id,
+        payload=payload,
+        request=request,
+        db=db,
+        user=user,
+    )
+
+
+@router.patch("/{person_id}/contacts/{record_id}", response_model=PersonContactResponse)
+async def update_contact(
+    person_id: UUID,
+    record_id: UUID,
+    payload: PersonContactUpdate,
+    request: Request,
+    db: DbSession,
+    user: SensitiveEditor,
+) -> object:
+    return await _update_record(
+        person_id=person_id,
+        record_type="contact",
+        record_id=record_id,
+        payload=payload,
+        request=request,
+        db=db,
+        user=user,
+    )
+
+
+@router.patch("/{person_id}/addresses/{record_id}", response_model=PersonAddressResponse)
+async def update_address(
+    person_id: UUID,
+    record_id: UUID,
+    payload: PersonAddressUpdate,
+    request: Request,
+    db: DbSession,
+    user: SensitiveEditor,
+) -> object:
+    return await _update_record(
+        person_id=person_id,
+        record_type="address",
+        record_id=record_id,
+        payload=payload,
+        request=request,
+        db=db,
+        user=user,
+    )
+
+
+@router.patch("/{person_id}/emergency-contacts/{record_id}", response_model=EmergencyContactResponse)
+async def update_emergency_contact(
+    person_id: UUID,
+    record_id: UUID,
+    payload: EmergencyContactUpdate,
+    request: Request,
+    db: DbSession,
+    user: SensitiveEditor,
+) -> object:
+    return await _update_record(
+        person_id=person_id,
+        record_type="emergency_contact",
+        record_id=record_id,
+        payload=payload,
+        request=request,
+        db=db,
+        user=user,
+    )
+
+
+@router.patch("/{person_id}/education-records/{record_id}", response_model=EducationRecordResponse)
+async def update_education_record(
+    person_id: UUID,
+    record_id: UUID,
+    payload: EducationRecordUpdate,
+    request: Request,
+    db: DbSession,
+    user: SensitiveEditor,
+) -> object:
+    return await _update_record(
+        person_id=person_id,
+        record_type="education",
+        record_id=record_id,
+        payload=payload,
+        request=request,
+        db=db,
+        user=user,
+    )
+
+
+@router.patch("/{person_id}/work-experiences/{record_id}", response_model=WorkExperienceResponse)
+async def update_work_experience(
+    person_id: UUID,
+    record_id: UUID,
+    payload: WorkExperienceUpdate,
+    request: Request,
+    db: DbSession,
+    user: SensitiveEditor,
+) -> object:
+    return await _update_record(
+        person_id=person_id,
+        record_type="work_experience",
+        record_id=record_id,
+        payload=payload,
+        request=request,
+        db=db,
+        user=user,
+    )
+
+
+@router.patch("/{person_id}/family-members/{record_id}", response_model=FamilyMemberResponse)
+async def update_family_member(
+    person_id: UUID,
+    record_id: UUID,
+    payload: FamilyMemberUpdate,
+    request: Request,
+    db: DbSession,
+    user: SensitiveEditor,
+) -> object:
+    return await _update_record(
+        person_id=person_id,
+        record_type="family_member",
+        record_id=record_id,
+        payload=payload,
+        request=request,
+        db=db,
+        user=user,
+    )
+
+
+@router.post(
+    "/{person_id}/records/{record_type}/{record_id}/expire",
+    response_model=(
+        PersonDocumentResponse
+        | PersonContactResponse
+        | PersonAddressResponse
+        | EmergencyContactResponse
+        | EducationRecordResponse
+        | WorkExperienceResponse
+        | FamilyMemberResponse
+    ),
+)
+async def expire_sensitive_record(
+    person_id: UUID,
+    record_type: SensitiveRecordType,
+    record_id: UUID,
+    payload: SensitiveRecordExpire,
+    request: Request,
+    db: DbSession,
+    user: SensitiveEditor,
+) -> object:
+    return await service(db, user, request).expire_record(
+        person_id=person_id,
+        record_type=record_type,
+        record_id=record_id,
+        payload=payload,
+    )
 
 
 @router.post(
