@@ -510,6 +510,97 @@ class EmergencyContact(UuidPrimaryKeyMixin, TimestampMixin, Base):
     phone_digest: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
 
 
+class EducationRecord(UuidPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "education_records"
+    __table_args__ = (
+        CheckConstraint(
+            "study_end_date IS NULL OR study_end_date >= study_start_date",
+            name="study_period_order",
+        ),
+        CheckConstraint(
+            "effective_to IS NULL OR effective_to >= effective_from",
+            name="effective_period_order",
+        ),
+    )
+
+    person_id: Mapped[UUID] = mapped_column(
+        Uuid,
+        ForeignKey("persons.id"),
+        nullable=False,
+        index=True,
+    )
+    education_level_code: Mapped[str] = mapped_column(String(50), nullable=False)
+    study_start_date: Mapped[date] = mapped_column(Date, nullable=False)
+    study_end_date: Mapped[date | None] = mapped_column(Date)
+    effective_from: Mapped[date] = mapped_column(Date, nullable=False)
+    effective_to: Mapped[date | None] = mapped_column(Date)
+    institution_name_key_version: Mapped[str] = mapped_column(String(50), nullable=False)
+    institution_name_nonce: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    institution_name_ciphertext: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    masked_institution_name: Mapped[str] = mapped_column(String(300), nullable=False)
+    major_name_key_version: Mapped[str | None] = mapped_column(String(50))
+    major_name_nonce: Mapped[bytes | None] = mapped_column(LargeBinary)
+    major_name_ciphertext: Mapped[bytes | None] = mapped_column(LargeBinary)
+    masked_major_name: Mapped[str | None] = mapped_column(String(200))
+
+
+class WorkExperience(UuidPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "work_experiences"
+    __table_args__ = (
+        CheckConstraint(
+            "work_end_date IS NULL OR work_end_date >= work_start_date",
+            name="work_period_order",
+        ),
+        CheckConstraint(
+            "effective_to IS NULL OR effective_to >= effective_from",
+            name="effective_period_order",
+        ),
+    )
+
+    person_id: Mapped[UUID] = mapped_column(
+        Uuid,
+        ForeignKey("persons.id"),
+        nullable=False,
+        index=True,
+    )
+    work_start_date: Mapped[date] = mapped_column(Date, nullable=False)
+    work_end_date: Mapped[date | None] = mapped_column(Date)
+    effective_from: Mapped[date] = mapped_column(Date, nullable=False)
+    effective_to: Mapped[date | None] = mapped_column(Date)
+    employer_name_key_version: Mapped[str] = mapped_column(String(50), nullable=False)
+    employer_name_nonce: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    employer_name_ciphertext: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    masked_employer_name: Mapped[str] = mapped_column(String(300), nullable=False)
+    job_title_key_version: Mapped[str | None] = mapped_column(String(50))
+    job_title_nonce: Mapped[bytes | None] = mapped_column(LargeBinary)
+    job_title_ciphertext: Mapped[bytes | None] = mapped_column(LargeBinary)
+    masked_job_title: Mapped[str | None] = mapped_column(String(200))
+
+
+class FamilyMember(UuidPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "family_members"
+    __table_args__ = (
+        CheckConstraint(
+            "effective_to IS NULL OR effective_to >= effective_from",
+            name="effective_period_order",
+        ),
+    )
+
+    person_id: Mapped[UUID] = mapped_column(
+        Uuid,
+        ForeignKey("persons.id"),
+        nullable=False,
+        index=True,
+    )
+    relationship_code: Mapped[str] = mapped_column(String(50), nullable=False)
+    effective_from: Mapped[date] = mapped_column(Date, nullable=False)
+    effective_to: Mapped[date | None] = mapped_column(Date)
+    name_key_version: Mapped[str] = mapped_column(String(50), nullable=False)
+    name_nonce: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    name_ciphertext: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    masked_name: Mapped[str] = mapped_column(String(200), nullable=False)
+
+
 class Employment(UuidPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "employments"
     __table_args__ = (

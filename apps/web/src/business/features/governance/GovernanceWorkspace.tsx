@@ -45,6 +45,7 @@ interface ImportFormValues {
 
 
 const entityLabels: Readonly<Record<ImportEntityType, string>> = {
+  person_basic: "人员基础档案（非敏感层）",
   dictionary: "数据字典",
   dictionary_item: "字典项",
   organization_type: "组织类型",
@@ -58,6 +59,7 @@ const entityLabels: Readonly<Record<ImportEntityType, string>> = {
 
 
 const exportEntityLabels: Readonly<Record<ExportEntityType, string>> = {
+  person_basic: entityLabels.person_basic,
   dictionary: entityLabels.dictionary,
   dictionary_item: entityLabels.dictionary_item,
   organization_type: entityLabels.organization_type,
@@ -281,8 +283,8 @@ export function GovernanceWorkspace({ token, canAdmin }: GovernanceWorkspaceProp
       <Alert
         type="info"
         showIcon
-        title="当前只开放无人员敏感信息的主数据初始化"
-        description="支持数据字典、字典项、组织类型、法人、职务和组织；人员、证件、薪酬及联系方式不会由该入口接收。"
+        title="人员初始化已按敏感等级分层"
+        description="人员基础层只接收工号与姓名；证件、生日、联系方式、地址、薪酬等敏感字段不会进入通用导入批次。"
       />
       {error && <Alert closable onClose={() => setError(null)} type="error" showIcon title={error} />}
       {loading ? <Skeleton active paragraph={{ rows: 8 }} /> : (
@@ -365,9 +367,9 @@ export function GovernanceWorkspace({ token, canAdmin }: GovernanceWorkspaceProp
         destroyOnHidden
       >
         <Alert
-          type="warning"
+          type="info"
           showIcon
-          title="仅接受主数据代码和名称，不要上传人员、证件、薪酬或联系方式"
+          title="人员基础档案仅接收工号、法定姓名、显示姓名和曾用名；证件、生日、联系方式、地址等敏感字段禁止放入该CSV。"
         />
         <Form form={form} layout="vertical" requiredMark={false} onFinish={(values) => void validateBatch(values)}>
           <Form.Item label="主数据类型" name="entity_type" rules={[{ required: true }]}>

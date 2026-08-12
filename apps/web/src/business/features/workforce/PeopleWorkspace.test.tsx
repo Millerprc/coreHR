@@ -18,12 +18,16 @@ describe("PeopleWorkspace", () => {
           person: {
             id: personId,
             employee_number: "990001",
+            legal_name: "合成人员",
             display_name: "合成人员",
             former_name: null,
             gender_code: null,
             birth_date: null,
+            ethnicity_code: null,
             nationality_code: null,
             country_code: "CN",
+            marital_status_code: null,
+            political_status_code: null,
             status: "active",
           },
           employments: [{
@@ -41,6 +45,7 @@ describe("PeopleWorkspace", () => {
             tax_legal_entity_id: null,
             version: 1,
           }],
+          legal_entity_relations: [],
           assignments: [],
           agreements: [],
         })
@@ -49,12 +54,16 @@ describe("PeopleWorkspace", () => {
         return Response.json({ items: [{
           id: personId,
           employee_number: "990001",
+          legal_name: "合成人员",
           display_name: "合成人员",
           former_name: null,
           gender_code: null,
           birth_date: null,
+          ethnicity_code: null,
           nationality_code: null,
           country_code: "CN",
+          marital_status_code: null,
+          political_status_code: null,
           status: "active",
         }], total: 1, limit: 200, offset: 0 })
       }

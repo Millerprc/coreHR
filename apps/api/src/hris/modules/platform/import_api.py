@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, Query, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from hris.core.database import get_db
-from hris.modules.platform.dependencies import require_permission
+from hris.modules.platform.dependencies import ensure_permissions, require_permission
 from hris.modules.platform.import_models import ImportBatch, ImportBatchRow
 from hris.modules.platform.import_schemas import (
     ExportEntityType,
@@ -58,6 +58,8 @@ async def export_current_master_data(
     user: GovernanceViewer,
     request: Request,
 ) -> Response:
+    if entity_type == "person_basic":
+        await ensure_permissions(user, db, "PERSON_EXPORT")
     content, filename, row_count = await MasterDataExportService(
         db,
         actor_id=user.id,
@@ -102,6 +104,8 @@ async def validate_import_batch(
     user: GovernanceAdmin,
     request: Request,
 ) -> ImportBatchResponse:
+    if payload.entity_type == "person_basic":
+        await ensure_permissions(user, db, "PERSON_IMPORT")
     batch, rows = await _service(db, user, request).validate_batch(payload)
     return _detail(batch, rows)
 
@@ -154,6 +158,9 @@ async def execute_import_batch(
     user: GovernanceAdmin,
     request: Request,
 ) -> ImportBatchResponse:
+    batch_record = await db.get(ImportBatch, batch_id)
+    if batch_record is not None and batch_record.entity_type == "person_basic":
+        await ensure_permissions(user, db, "PERSON_IMPORT")
     batch, rows = await _service(db, user, request).execute_batch(
         batch_id,
         reason=payload.reason,

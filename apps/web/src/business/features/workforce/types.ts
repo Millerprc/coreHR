@@ -9,12 +9,16 @@ export interface Page<T> {
 export interface Person {
   readonly id: string
   readonly employee_number: string | null
+  readonly legal_name: string
   readonly display_name: string
   readonly former_name: string | null
   readonly gender_code: string | null
   readonly birth_date: string | null
+  readonly ethnicity_code: string | null
   readonly nationality_code: string | null
   readonly country_code: string | null
+  readonly marital_status_code: string | null
+  readonly political_status_code: string | null
   readonly status: string
 }
 
@@ -48,6 +52,19 @@ export interface EmploymentAssignment {
 }
 
 
+export interface EmploymentLegalEntityRelation {
+  readonly id: string
+  readonly employment_id: string
+  readonly relation_kind: "contract" | "payroll" | "social_insurance" | "tax"
+  readonly legal_entity_id: string
+  readonly effective_from: string
+  readonly effective_to: string | null
+  readonly source_event_id: string | null
+  readonly version: number
+  readonly change_reason: string
+}
+
+
 export interface AgreementRelationship {
   readonly id: string
   readonly person_id: string
@@ -63,8 +80,93 @@ export interface AgreementRelationship {
 export interface PersonArchive {
   readonly person: Person
   readonly employments: readonly Employment[]
+  readonly legal_entity_relations: readonly EmploymentLegalEntityRelation[]
   readonly assignments: readonly EmploymentAssignment[]
   readonly agreements: readonly AgreementRelationship[]
+}
+
+
+export interface PersonDocument {
+  readonly id: string
+  readonly document_type_code: string
+  readonly masked_document_number: string
+  readonly issuing_country_code: string
+  readonly issue_date: string | null
+  readonly expiry_date: string | null
+  readonly is_primary: boolean
+  readonly verification_status: string
+  readonly effective_from: string
+  readonly effective_to: string | null
+}
+
+
+export interface PersonContact {
+  readonly id: string
+  readonly contact_type: "personal_phone" | "work_phone" | "personal_email" | "work_email"
+  readonly masked_contact_value: string
+  readonly is_primary: boolean
+  readonly effective_from: string
+  readonly effective_to: string | null
+}
+
+
+export interface PersonAddress {
+  readonly id: string
+  readonly address_type: "residential" | "mailing"
+  readonly country_code: string
+  readonly region_code: string | null
+  readonly masked_address_detail: string
+  readonly effective_from: string
+  readonly effective_to: string | null
+}
+
+
+export interface EmergencyContact {
+  readonly id: string
+  readonly masked_name: string
+  readonly relationship_code: string
+  readonly masked_phone: string
+  readonly effective_from: string
+  readonly effective_to: string | null
+}
+
+
+export interface EducationRecord {
+  readonly id: string
+  readonly masked_institution_name: string
+  readonly education_level_code: string
+  readonly masked_major_name: string | null
+  readonly study_start_date: string
+  readonly study_end_date: string | null
+}
+
+
+export interface WorkExperience {
+  readonly id: string
+  readonly masked_employer_name: string
+  readonly masked_job_title: string | null
+  readonly work_start_date: string
+  readonly work_end_date: string | null
+}
+
+
+export interface FamilyMember {
+  readonly id: string
+  readonly masked_name: string
+  readonly relationship_code: string
+  readonly effective_from: string
+  readonly effective_to: string | null
+}
+
+
+export interface PersonnelSubrecords {
+  readonly documents: readonly PersonDocument[]
+  readonly contacts: readonly PersonContact[]
+  readonly addresses: readonly PersonAddress[]
+  readonly emergencyContacts: readonly EmergencyContact[]
+  readonly educationRecords: readonly EducationRecord[]
+  readonly workExperiences: readonly WorkExperience[]
+  readonly familyMembers: readonly FamilyMember[]
 }
 
 

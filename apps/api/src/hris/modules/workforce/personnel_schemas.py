@@ -123,7 +123,94 @@ class EmergencyContactResponse(BaseModel):
     updated_at: datetime
 
 
-SensitiveRecordType = Literal["document", "contact", "address", "emergency_contact"]
+class EducationRecordCreate(EffectiveDatedInput):
+    institution_name: str = Field(min_length=1, max_length=300)
+    education_level_code: str = Field(min_length=1, max_length=50)
+    major_name: str | None = Field(default=None, max_length=200)
+    study_start_date: date
+    study_end_date: date | None = None
+    change_reason: str = Field(min_length=1, max_length=500)
+
+    @model_validator(mode="after")
+    def validate_study_period(self) -> "EducationRecordCreate":
+        if self.study_end_date is not None and self.study_end_date < self.study_start_date:
+            raise ValueError("study_end_date不能早于study_start_date")
+        return self
+
+
+class EducationRecordResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    person_id: UUID
+    masked_institution_name: str
+    education_level_code: str
+    masked_major_name: str | None
+    study_start_date: date
+    study_end_date: date | None
+    effective_from: date
+    effective_to: date | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class WorkExperienceCreate(EffectiveDatedInput):
+    employer_name: str = Field(min_length=1, max_length=300)
+    job_title: str | None = Field(default=None, max_length=200)
+    work_start_date: date
+    work_end_date: date | None = None
+    change_reason: str = Field(min_length=1, max_length=500)
+
+    @model_validator(mode="after")
+    def validate_work_period(self) -> "WorkExperienceCreate":
+        if self.work_end_date is not None and self.work_end_date < self.work_start_date:
+            raise ValueError("work_end_date不能早于work_start_date")
+        return self
+
+
+class WorkExperienceResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    person_id: UUID
+    masked_employer_name: str
+    masked_job_title: str | None
+    work_start_date: date
+    work_end_date: date | None
+    effective_from: date
+    effective_to: date | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class FamilyMemberCreate(EffectiveDatedInput):
+    name: str = Field(min_length=1, max_length=200)
+    relationship_code: str = Field(min_length=1, max_length=50)
+    change_reason: str = Field(min_length=1, max_length=500)
+
+
+class FamilyMemberResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    person_id: UUID
+    masked_name: str
+    relationship_code: str
+    effective_from: date
+    effective_to: date | None
+    created_at: datetime
+    updated_at: datetime
+
+
+SensitiveRecordType = Literal[
+    "document",
+    "contact",
+    "address",
+    "emergency_contact",
+    "education",
+    "work_experience",
+    "family_member",
+]
 
 
 class SensitiveRevealRequest(BaseModel):

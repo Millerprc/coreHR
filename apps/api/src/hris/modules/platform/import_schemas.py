@@ -16,6 +16,7 @@ ImportEntityType = Literal[
     "job",
     "job_version",
     "organization",
+    "person_basic",
 ]
 
 ExportEntityType = Literal[
@@ -26,6 +27,7 @@ ExportEntityType = Literal[
     "job_dimension",
     "job",
     "organization",
+    "person_basic",
 ]
 
 
@@ -94,6 +96,13 @@ class OrganizationImport(ImportRequest):
         if self.effective_to is not None and self.effective_to < self.effective_from:
             raise ValueError("effective_to不能早于effective_from")
         return self
+
+
+class PersonBasicImport(ImportRequest):
+    employee_number: str = Field(pattern=r"^[0-9]{6}$")
+    legal_name: str = Field(min_length=1, max_length=200)
+    display_name: str | None = Field(default=None, min_length=1, max_length=200)
+    former_name: str | None = Field(default=None, max_length=200)
 
 
 class JobDimensionImport(ImportRequest):

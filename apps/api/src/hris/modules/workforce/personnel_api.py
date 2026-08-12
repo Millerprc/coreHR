@@ -8,8 +8,12 @@ from hris.core.database import get_db
 from hris.modules.platform.dependencies import require_permissions
 from hris.modules.platform.models import UserAccount
 from hris.modules.workforce.personnel_schemas import (
+    EducationRecordCreate,
+    EducationRecordResponse,
     EmergencyContactCreate,
     EmergencyContactResponse,
+    FamilyMemberCreate,
+    FamilyMemberResponse,
     PersonAddressCreate,
     PersonAddressResponse,
     PersonContactCreate,
@@ -19,6 +23,8 @@ from hris.modules.workforce.personnel_schemas import (
     SensitiveRecordType,
     SensitiveRevealRequest,
     SensitiveRevealResponse,
+    WorkExperienceCreate,
+    WorkExperienceResponse,
 )
 from hris.modules.workforce.personnel_service import PersonnelService
 
@@ -179,6 +185,96 @@ async def list_emergency_contacts(
     return [
         EmergencyContactResponse.model_validate(item)
         for item in await service(db, user, request).list_emergency_contacts(person_id)
+    ]
+
+
+@router.post(
+    "/{person_id}/education-records",
+    response_model=EducationRecordResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_education_record(
+    person_id: UUID,
+    payload: EducationRecordCreate,
+    request: Request,
+    db: DbSession,
+    user: SensitiveEditor,
+) -> EducationRecordResponse:
+    return EducationRecordResponse.model_validate(
+        await service(db, user, request).create_education_record(person_id, payload)
+    )
+
+
+@router.get("/{person_id}/education-records", response_model=list[EducationRecordResponse])
+async def list_education_records(
+    person_id: UUID,
+    request: Request,
+    db: DbSession,
+    user: SensitiveViewer,
+) -> list[EducationRecordResponse]:
+    return [
+        EducationRecordResponse.model_validate(item)
+        for item in await service(db, user, request).list_education_records(person_id)
+    ]
+
+
+@router.post(
+    "/{person_id}/work-experiences",
+    response_model=WorkExperienceResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_work_experience(
+    person_id: UUID,
+    payload: WorkExperienceCreate,
+    request: Request,
+    db: DbSession,
+    user: SensitiveEditor,
+) -> WorkExperienceResponse:
+    return WorkExperienceResponse.model_validate(
+        await service(db, user, request).create_work_experience(person_id, payload)
+    )
+
+
+@router.get("/{person_id}/work-experiences", response_model=list[WorkExperienceResponse])
+async def list_work_experiences(
+    person_id: UUID,
+    request: Request,
+    db: DbSession,
+    user: SensitiveViewer,
+) -> list[WorkExperienceResponse]:
+    return [
+        WorkExperienceResponse.model_validate(item)
+        for item in await service(db, user, request).list_work_experiences(person_id)
+    ]
+
+
+@router.post(
+    "/{person_id}/family-members",
+    response_model=FamilyMemberResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_family_member(
+    person_id: UUID,
+    payload: FamilyMemberCreate,
+    request: Request,
+    db: DbSession,
+    user: SensitiveEditor,
+) -> FamilyMemberResponse:
+    return FamilyMemberResponse.model_validate(
+        await service(db, user, request).create_family_member(person_id, payload)
+    )
+
+
+@router.get("/{person_id}/family-members", response_model=list[FamilyMemberResponse])
+async def list_family_members(
+    person_id: UUID,
+    request: Request,
+    db: DbSession,
+    user: SensitiveViewer,
+) -> list[FamilyMemberResponse]:
+    return [
+        FamilyMemberResponse.model_validate(item)
+        for item in await service(db, user, request).list_family_members(person_id)
     ]
 
 

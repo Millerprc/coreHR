@@ -25,6 +25,7 @@ from hris.modules.platform.import_schemas import (
     JobImport,
     JobVersionImport,
     OrganizationImport,
+    PersonBasicImport,
 )
 from hris.modules.platform.models import (
     DataDictionary,
@@ -35,6 +36,7 @@ from hris.modules.workforce.extended_schemas import (
     JobDimensionVersionCreate,
     JobVersionCreate,
     LegalEntityCreate,
+    PersonCreate,
 )
 from hris.modules.workforce.extended_service import ExtendedWorkforceService
 from hris.modules.workforce.models import (
@@ -47,6 +49,7 @@ from hris.modules.workforce.models import (
     Organization,
     OrganizationType,
     OrganizationVersion,
+    Person,
 )
 from hris.modules.workforce.organization_models import OrganizationEvent
 from hris.modules.workforce.organization_schemas import OrganizationTypeCreate
@@ -62,6 +65,7 @@ _TARGET_TYPES: dict[str, str] = {
     "job": "job",
     "job_version": "job_version",
     "organization": "organization",
+    "person_basic": "person",
 }
 
 _TEMPLATES: dict[str, tuple[list[str], list[str]]] = {
@@ -206,6 +210,10 @@ _TEMPLATES: dict[str, tuple[list[str], list[str]]] = {
             "effective_to",
         ],
         ["code", "name", "organization_type_code", "effective_from"],
+    ),
+    "person_basic": (
+        ["employee_number", "legal_name", "display_name", "former_name"],
+        ["employee_number", "legal_name"],
     ),
 }
 
@@ -521,6 +529,7 @@ class ImportService:
             "job": JobImport,
             "job_version": JobVersionImport,
             "organization": OrganizationImport,
+            "person_basic": PersonBasicImport,
         }[payload.entity_type]
         parsed: dict[int, BaseModel] = {}
         errors: defaultdict[int, list[dict[str, Any]]] = defaultdict(list)
@@ -586,6 +595,20 @@ class ImportService:
     ) -> dict[str, Any]:
         if not parsed:
             return {}
+        if entity_type == "person_basic":
+            employee_numbers = {
+                model.employee_number
+                for model in parsed.values()
+                if isinstance(model, PersonBasicImport)
+            }
+            people = list(
+                (
+                    await self._session.scalars(
+                        select(Person).where(Person.employee_number.in_(employee_numbers))
+                    )
+                ).all()
+            )
+            return {item.employee_number: item for item in people if item.employee_number}
         if entity_type == "dictionary_item":
             dictionary_codes = {
                 model.dictionary_code
@@ -1692,7 +1715,23 @@ class ImportService:
         return ordered
 
     async def _create_target(self, batch: ImportBatch, row: ImportBatchRow) -> Any:
-        if batch.entity_type == "dictionary":
+        if batch.entity_type == "person_basic":
+            payload = PersonBasicImport.model_validate(row.payload)
+            target = await ExtendedWorkforceService(
+                self._session,
+                actor_id=self._actor_id,
+                trace_id=self._trace_id,
+            ).create_person(
+                PersonCreate(
+                    employee_number=payload.employee_number,
+                    legal_name=payload.legal_name,
+                    display_name=payload.display_name,
+                    former_name=payload.former_name,
+                    reserve_employee_number=False,
+                    change_reason="人员非敏感基础层初始化导入",
+                )
+            )
+        elif batch.entity_type == "dictionary":
             payload = DictionaryCreate.model_validate(row.payload)
             target = DataDictionary(
                 **payload.model_dump(),
@@ -2052,6 +2091,8 @@ class ImportService:
     def _target_key(entity_type: str, model: BaseModel | None) -> str | None:
         if model is None:
             return None
+        if entity_type == "person_basic" and isinstance(model, PersonBasicImport):
+            return model.employee_number
         if entity_type == "dictionary_item" and isinstance(
             model, DictionaryItemImport
         ):

@@ -8,6 +8,7 @@ export type ImportEntityType =
   | "job"
   | "job_version"
   | "organization"
+  | "person_basic"
 
 
 export type ExportEntityType = Exclude<

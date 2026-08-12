@@ -19,6 +19,18 @@ def _auth(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
+def _configure_synthetic_keys(monkeypatch: pytest.MonkeyPatch) -> None:
+    encryption_key = urlsafe_b64encode(bytes(range(32))).decode()
+    search_key = urlsafe_b64encode(bytes(reversed(range(32)))).decode()
+    monkeypatch.setenv(
+        "COREHR_PERSONNEL_ENCRYPTION_KEYS",
+        json.dumps({"synthetic-v1": encryption_key}),
+    )
+    monkeypatch.setenv("COREHR_PERSONNEL_ACTIVE_KEY_VERSION", "synthetic-v1")
+    monkeypatch.setenv("COREHR_PERSONNEL_SEARCH_KEY", search_key)
+    get_settings.cache_clear()
+
+
 async def _legal_entity(
     client: AsyncClient,
     token: str,
@@ -224,15 +236,7 @@ async def test_sensitive_document_is_encrypted_masked_permissioned_and_audited(
     assert unavailable.json()["code"] == "PERSONNEL_SENSITIVE_KEY_UNAVAILABLE"
     assert document_payload["document_number"] not in unavailable.text
 
-    encryption_key = urlsafe_b64encode(bytes(range(32))).decode()
-    search_key = urlsafe_b64encode(bytes(reversed(range(32)))).decode()
-    monkeypatch.setenv(
-        "COREHR_PERSONNEL_ENCRYPTION_KEYS",
-        json.dumps({"synthetic-v1": encryption_key}),
-    )
-    monkeypatch.setenv("COREHR_PERSONNEL_ACTIVE_KEY_VERSION", "synthetic-v1")
-    monkeypatch.setenv("COREHR_PERSONNEL_SEARCH_KEY", search_key)
-    get_settings.cache_clear()
+    _configure_synthetic_keys(monkeypatch)
 
     created = await business_client.post(
         f"/api/v1/workforce/persons/{person_id}/documents",
@@ -286,4 +290,77 @@ async def test_sensitive_document_is_encrypted_masked_permissioned_and_audited(
     assert audit.reason == "Verify synthetic identity for test"
     assert document_payload["document_number"] not in str(audit.after_payload)
     assert "SYN199001010001" not in str(audit.after_payload)
+    get_settings.cache_clear()
+
+
+async def test_optional_related_records_are_modeled_and_masked(
+    business_client: AsyncClient,
+    admin_token: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _configure_synthetic_keys(monkeypatch)
+    person = await business_client.post(
+        "/api/v1/workforce/persons",
+        headers=_auth(admin_token),
+        json={
+            "legal_name": "Synthetic Related Record Person",
+            "reserve_employee_number": False,
+            "change_reason": "Create synthetic related record person",
+        },
+    )
+    assert person.status_code == 201, person.text
+    person_id = person.json()["id"]
+
+    education = await business_client.post(
+        f"/api/v1/workforce/persons/{person_id}/education-records",
+        headers=_auth(admin_token),
+        json={
+            "institution_name": "Synthetic University",
+            "education_level_code": "BACHELOR",
+            "major_name": "Synthetic Engineering",
+            "study_start_date": "2010-09-01",
+            "study_end_date": "2014-06-30",
+            "effective_from": "2026-08-12",
+            "change_reason": "Add synthetic education record",
+        },
+    )
+    assert education.status_code == 201, education.text
+    assert "Synthetic University" not in education.text
+    assert education.json()["masked_institution_name"]
+
+    work = await business_client.post(
+        f"/api/v1/workforce/persons/{person_id}/work-experiences",
+        headers=_auth(admin_token),
+        json={
+            "employer_name": "Synthetic Former Employer",
+            "job_title": "Synthetic Engineer",
+            "work_start_date": "2014-07-01",
+            "work_end_date": "2026-08-01",
+            "effective_from": "2026-08-12",
+            "change_reason": "Add synthetic work record",
+        },
+    )
+    assert work.status_code == 201, work.text
+    assert "Synthetic Former Employer" not in work.text
+
+    family = await business_client.post(
+        f"/api/v1/workforce/persons/{person_id}/family-members",
+        headers=_auth(admin_token),
+        json={
+            "name": "Synthetic Family Member",
+            "relationship_code": "SPOUSE",
+            "effective_from": "2026-08-12",
+            "change_reason": "Add synthetic family member",
+        },
+    )
+    assert family.status_code == 201, family.text
+    assert "Synthetic Family Member" not in family.text
+
+    revealed = await business_client.post(
+        f"/api/v1/workforce/persons/{person_id}/sensitive-values/education/{education.json()['id']}/institution_name/reveal",
+        headers=_auth(admin_token),
+        json={"reason": "Verify synthetic education for test"},
+    )
+    assert revealed.status_code == 200, revealed.text
+    assert revealed.json()["value"] == "Synthetic University"
     get_settings.cache_clear()

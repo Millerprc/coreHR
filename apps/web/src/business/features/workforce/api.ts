@@ -10,6 +10,13 @@ import type {
   Page,
   Person,
   PersonArchive,
+  PersonAddress,
+  PersonContact,
+  PersonDocument,
+  EmergencyContact,
+  EducationRecord,
+  FamilyMember,
+  WorkExperience,
   RecruitmentRequest,
 } from "./types"
 
@@ -39,8 +46,50 @@ export const workforceApi = {
     apiRequest<Person>("/api/v1/workforce/persons", token, { method: "POST", body }),
   updatePerson: (token: string, personId: string, body: unknown) =>
     apiRequest<Person>(`/api/v1/workforce/persons/${personId}`, token, { method: "PATCH", body }),
+  personDocuments: (token: string, personId: string) =>
+    apiRequest<readonly PersonDocument[]>(`/api/v1/workforce/persons/${personId}/documents`, token),
+  createPersonDocument: (token: string, personId: string, body: unknown) =>
+    apiRequest<PersonDocument>(`/api/v1/workforce/persons/${personId}/documents`, token, { method: "POST", body }),
+  personContacts: (token: string, personId: string) =>
+    apiRequest<readonly PersonContact[]>(`/api/v1/workforce/persons/${personId}/contacts`, token),
+  createPersonContact: (token: string, personId: string, body: unknown) =>
+    apiRequest<PersonContact>(`/api/v1/workforce/persons/${personId}/contacts`, token, { method: "POST", body }),
+  personAddresses: (token: string, personId: string) =>
+    apiRequest<readonly PersonAddress[]>(`/api/v1/workforce/persons/${personId}/addresses`, token),
+  createPersonAddress: (token: string, personId: string, body: unknown) =>
+    apiRequest<PersonAddress>(`/api/v1/workforce/persons/${personId}/addresses`, token, { method: "POST", body }),
+  emergencyContacts: (token: string, personId: string) =>
+    apiRequest<readonly EmergencyContact[]>(`/api/v1/workforce/persons/${personId}/emergency-contacts`, token),
+  createEmergencyContact: (token: string, personId: string, body: unknown) =>
+    apiRequest<EmergencyContact>(`/api/v1/workforce/persons/${personId}/emergency-contacts`, token, { method: "POST", body }),
+  educationRecords: (token: string, personId: string) =>
+    apiRequest<readonly EducationRecord[]>(`/api/v1/workforce/persons/${personId}/education-records`, token),
+  createEducationRecord: (token: string, personId: string, body: unknown) =>
+    apiRequest<EducationRecord>(`/api/v1/workforce/persons/${personId}/education-records`, token, { method: "POST", body }),
+  workExperiences: (token: string, personId: string) =>
+    apiRequest<readonly WorkExperience[]>(`/api/v1/workforce/persons/${personId}/work-experiences`, token),
+  createWorkExperience: (token: string, personId: string, body: unknown) =>
+    apiRequest<WorkExperience>(`/api/v1/workforce/persons/${personId}/work-experiences`, token, { method: "POST", body }),
+  familyMembers: (token: string, personId: string) =>
+    apiRequest<readonly FamilyMember[]>(`/api/v1/workforce/persons/${personId}/family-members`, token),
+  createFamilyMember: (token: string, personId: string, body: unknown) =>
+    apiRequest<FamilyMember>(`/api/v1/workforce/persons/${personId}/family-members`, token, { method: "POST", body }),
+  revealSensitiveValue: (
+    token: string,
+    personId: string,
+    recordType: string,
+    recordId: string,
+    fieldCode: string,
+    reason: string,
+  ) => apiRequest<{ readonly value: string }>(
+    `/api/v1/workforce/persons/${personId}/sensitive-values/${recordType}/${recordId}/${fieldCode}/reveal`,
+    token,
+    { method: "POST", body: { reason } },
+  ),
   createEmployment: (token: string, body: unknown) =>
     apiRequest("/api/v1/workforce/employments", token, { method: "POST", body }),
+  createLegalEntityRelationVersion: (token: string, employmentId: string, body: unknown) =>
+    apiRequest(`/api/v1/workforce/employments/${employmentId}/legal-entity-relations`, token, { method: "POST", body }),
   createAssignment: (token: string, body: unknown) =>
     apiRequest("/api/v1/workforce/employment-assignments", token, { method: "POST", body }),
   createAgreement: (token: string, body: unknown) =>

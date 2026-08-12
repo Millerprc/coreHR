@@ -23,17 +23,23 @@ from hris.core.personnel_security import (
 )
 from hris.modules.workforce.models import (
     AuditLog,
+    EducationRecord,
     EmergencyContact,
+    FamilyMember,
     Person,
     PersonAddress,
     PersonContact,
     PersonDocument,
+    WorkExperience,
 )
 from hris.modules.workforce.personnel_schemas import (
+    EducationRecordCreate,
     EmergencyContactCreate,
+    FamilyMemberCreate,
     PersonAddressCreate,
     PersonContactCreate,
     PersonDocumentCreate,
+    WorkExperienceCreate,
 )
 
 
@@ -333,6 +339,174 @@ class PersonnelService:
             ).all()
         )
 
+    async def create_education_record(
+        self, person_id: UUID, payload: EducationRecordCreate
+    ) -> EducationRecord:
+        await self._person(person_id)
+        record_id = uuid4()
+        protector = self._protector()
+        institution = protector.protect(
+            payload.institution_name,
+            field_code="education_institution_name",
+            record_id=record_id,
+            normalizer=normalize_text,
+            masker=mask_text,
+        )
+        major = (
+            protector.protect(
+                payload.major_name,
+                field_code="education_major_name",
+                record_id=record_id,
+                normalizer=normalize_text,
+                masker=mask_text,
+            )
+            if payload.major_name
+            else None
+        )
+        record = EducationRecord(
+            id=record_id,
+            person_id=person_id,
+            **payload.model_dump(exclude={"institution_name", "major_name", "change_reason"}),
+            **self._protected_columns(institution, "institution_name"),
+            **(self._protected_columns(major, "major_name") if major else {}),
+            masked_institution_name=institution.masked_value,
+            masked_major_name=major.masked_value if major else None,
+        )
+        self._session.add(record)
+        await self._session.flush()
+        fields = ["institution_name"] + (["major_name"] if major else [])
+        masked_values = {"institution_name": record.masked_institution_name}
+        if record.masked_major_name:
+            masked_values["major_name"] = record.masked_major_name
+        self._audit(
+            action="create",
+            object_type="education_record",
+            object_id=record.id,
+            person_id=person_id,
+            reason=payload.change_reason,
+            fields=fields,
+            masked_values=masked_values,
+        )
+        return record
+
+    async def list_education_records(self, person_id: UUID) -> list[EducationRecord]:
+        await self._person(person_id)
+        return list(
+            (
+                await self._session.scalars(
+                    select(EducationRecord)
+                    .where(EducationRecord.person_id == person_id)
+                    .order_by(EducationRecord.study_start_date.desc())
+                )
+            ).all()
+        )
+
+    async def create_work_experience(
+        self, person_id: UUID, payload: WorkExperienceCreate
+    ) -> WorkExperience:
+        await self._person(person_id)
+        record_id = uuid4()
+        protector = self._protector()
+        employer = protector.protect(
+            payload.employer_name,
+            field_code="work_employer_name",
+            record_id=record_id,
+            normalizer=normalize_text,
+            masker=mask_text,
+        )
+        job_title = (
+            protector.protect(
+                payload.job_title,
+                field_code="work_job_title",
+                record_id=record_id,
+                normalizer=normalize_text,
+                masker=mask_text,
+            )
+            if payload.job_title
+            else None
+        )
+        record = WorkExperience(
+            id=record_id,
+            person_id=person_id,
+            **payload.model_dump(exclude={"employer_name", "job_title", "change_reason"}),
+            **self._protected_columns(employer, "employer_name"),
+            **(self._protected_columns(job_title, "job_title") if job_title else {}),
+            masked_employer_name=employer.masked_value,
+            masked_job_title=job_title.masked_value if job_title else None,
+        )
+        self._session.add(record)
+        await self._session.flush()
+        fields = ["employer_name"] + (["job_title"] if job_title else [])
+        masked_values = {"employer_name": record.masked_employer_name}
+        if record.masked_job_title:
+            masked_values["job_title"] = record.masked_job_title
+        self._audit(
+            action="create",
+            object_type="work_experience",
+            object_id=record.id,
+            person_id=person_id,
+            reason=payload.change_reason,
+            fields=fields,
+            masked_values=masked_values,
+        )
+        return record
+
+    async def list_work_experiences(self, person_id: UUID) -> list[WorkExperience]:
+        await self._person(person_id)
+        return list(
+            (
+                await self._session.scalars(
+                    select(WorkExperience)
+                    .where(WorkExperience.person_id == person_id)
+                    .order_by(WorkExperience.work_start_date.desc())
+                )
+            ).all()
+        )
+
+    async def create_family_member(
+        self, person_id: UUID, payload: FamilyMemberCreate
+    ) -> FamilyMember:
+        await self._person(person_id)
+        record_id = uuid4()
+        name = self._protector().protect(
+            payload.name,
+            field_code="family_member_name",
+            record_id=record_id,
+            normalizer=normalize_text,
+            masker=mask_text,
+        )
+        record = FamilyMember(
+            id=record_id,
+            person_id=person_id,
+            **payload.model_dump(exclude={"name", "change_reason"}),
+            **self._protected_columns(name, "name"),
+            masked_name=name.masked_value,
+        )
+        self._session.add(record)
+        await self._session.flush()
+        self._audit(
+            action="create",
+            object_type="family_member",
+            object_id=record.id,
+            person_id=person_id,
+            reason=payload.change_reason,
+            fields=["name"],
+            masked_values={"name": record.masked_name},
+        )
+        return record
+
+    async def list_family_members(self, person_id: UUID) -> list[FamilyMember]:
+        await self._person(person_id)
+        return list(
+            (
+                await self._session.scalars(
+                    select(FamilyMember)
+                    .where(FamilyMember.person_id == person_id)
+                    .order_by(FamilyMember.effective_from.desc())
+                )
+            ).all()
+        )
+
     async def reveal(
         self,
         *,
@@ -363,6 +537,27 @@ class PersonnelService:
                     "phone": ("phone", "emergency_contact_phone"),
                 },
             ),
+            "education": (
+                EducationRecord,
+                {
+                    "institution_name": (
+                        "institution_name",
+                        "education_institution_name",
+                    ),
+                    "major_name": ("major_name", "education_major_name"),
+                },
+            ),
+            "work_experience": (
+                WorkExperience,
+                {
+                    "employer_name": ("employer_name", "work_employer_name"),
+                    "job_title": ("job_title", "work_job_title"),
+                },
+            ),
+            "family_member": (
+                FamilyMember,
+                {"name": ("name", "family_member_name")},
+            ),
         }
         model_config = model_fields.get(record_type)
         if model_config is None or field_code not in model_config[1]:
@@ -374,10 +569,15 @@ class PersonnelService:
         prefix, security_field_code = field_map[field_code]
         if security_field_code == "dynamic_contact":
             security_field_code = record.contact_type
+        key_version = getattr(record, f"{prefix}_key_version")
+        nonce = getattr(record, f"{prefix}_nonce")
+        ciphertext = getattr(record, f"{prefix}_ciphertext")
+        if key_version is None or nonce is None or ciphertext is None:
+            raise ApiError(status_code=409, code="SENSITIVE_FIELD_EMPTY", message="该敏感字段没有可读取的值")
         protected = ProtectedValue(
-            key_version=getattr(record, f"{prefix}_key_version"),
-            nonce=getattr(record, f"{prefix}_nonce"),
-            ciphertext=getattr(record, f"{prefix}_ciphertext"),
+            key_version=key_version,
+            nonce=nonce,
+            ciphertext=ciphertext,
             masked_value=getattr(record, f"masked_{prefix}"),
             search_digest=getattr(record, f"{prefix}_digest", ""),
         )

@@ -17,10 +17,11 @@ import {
 import { useCallback, useEffect, useMemo, useState } from "react"
 
 import { workforceApi } from "./api"
+import { PersonnelSubrecordsPanel } from "./PersonnelSubrecordsPanel"
 import type { LegalEntity, OrganizationOption, Person, PersonArchive } from "./types"
 
 
-type Action = "person" | "edit" | "employment" | "assignment" | "agreement" | "legal" | null
+type Action = "person" | "edit" | "employment" | "legalEntityRelation" | "assignment" | "agreement" | "legal" | null
 
 
 interface PeopleWorkspaceProps {
@@ -82,12 +83,16 @@ export function PeopleWorkspace({ token, canAdmin }: PeopleWorkspaceProps) {
     form.resetFields()
     if (nextAction === "edit" && archive) {
       form.setFieldsValue({
+        legal_name: archive.person.legal_name,
         display_name: archive.person.display_name,
         former_name: archive.person.former_name,
         gender_code: archive.person.gender_code,
         birth_date: archive.person.birth_date,
+        ethnicity_code: archive.person.ethnicity_code,
         country_code: archive.person.country_code,
         nationality_code: archive.person.nationality_code,
+        marital_status_code: archive.person.marital_status_code,
+        political_status_code: archive.person.political_status_code,
       })
     }
   }
@@ -97,8 +102,10 @@ export function PeopleWorkspace({ token, canAdmin }: PeopleWorkspaceProps) {
     setError(null)
     try {
       if (action === "person") {
+        const personValues = { ...values }
+        if (!personValues.display_name) delete personValues.display_name
         const created = await workforceApi.createPerson(token, {
-          ...values,
+          ...personValues,
           reserve_employee_number: true,
           change_reason: values.change_reason,
         })
@@ -110,6 +117,10 @@ export function PeopleWorkspace({ token, canAdmin }: PeopleWorkspaceProps) {
         await load(search)
       } else if (action === "employment" && archive) {
         await workforceApi.createEmployment(token, { ...values, person_id: archive.person.id })
+        await openArchive(archive.person.id)
+      } else if (action === "legalEntityRelation" && archive) {
+        const { employment_id, ...command } = values
+        await workforceApi.createLegalEntityRelationVersion(token, String(employment_id), command)
         await openArchive(archive.person.id)
       } else if (action === "assignment" && archive) {
         await workforceApi.createAssignment(token, values)
@@ -144,6 +155,7 @@ export function PeopleWorkspace({ token, canAdmin }: PeopleWorkspaceProps) {
   )
 
   const modalTitle: Record<Exclude<Action, null>, string> = {
+    legalEntityRelation: "调整四类法人主体",
     person: "新建人员档案",
     edit: "更正基础档案",
     employment: "建立劳动关系",
@@ -202,13 +214,22 @@ export function PeopleWorkspace({ token, canAdmin }: PeopleWorkspaceProps) {
               key: "basic",
               label: "基础信息",
               children: <Descriptions bordered size="small" column={2}>
+                <Descriptions.Item label="法定姓名">{archive.person.legal_name}</Descriptions.Item>
                 <Descriptions.Item label="姓名">{archive.person.display_name}</Descriptions.Item>
                 <Descriptions.Item label="曾用名">{archive.person.former_name || "—"}</Descriptions.Item>
                 <Descriptions.Item label="性别">{archive.person.gender_code || "—"}</Descriptions.Item>
                 <Descriptions.Item label="出生日期">{archive.person.birth_date || "—"}</Descriptions.Item>
                 <Descriptions.Item label="国籍">{archive.person.nationality_code || "—"}</Descriptions.Item>
                 <Descriptions.Item label="国家/地区">{archive.person.country_code || "—"}</Descriptions.Item>
+                <Descriptions.Item label="民族代码">{archive.person.ethnicity_code || "—"}</Descriptions.Item>
+                <Descriptions.Item label="婚姻状况代码">{archive.person.marital_status_code || "—"}</Descriptions.Item>
+                <Descriptions.Item label="政治面貌代码">{archive.person.political_status_code || "—"}</Descriptions.Item>
               </Descriptions>,
+            },
+            {
+              key: "personnel-subrecords",
+              label: "敏感与经历档案",
+              children: <PersonnelSubrecordsPanel token={token} personId={archive.person.id} canAdmin={canAdmin} />,
             },
             {
               key: "employment",
@@ -219,6 +240,18 @@ export function PeopleWorkspace({ token, canAdmin }: PeopleWorkspaceProps) {
                 { title: "计划入职", dataIndex: "planned_start_date" },
                 { title: "实际入职", dataIndex: "actual_start_date", render: (value) => value || "—" },
                 { title: "结束日期", dataIndex: "end_date", render: (value) => value || "—" },
+              ]} /></>,
+            },
+            {
+              key: "legal-entity-history",
+              label: `四类主体版本 ${archive.legal_entity_relations.length}`,
+              children: <><Space className="tab-actions">{canAdmin && <Button type="primary" disabled={!archive.employments.length} onClick={() => openAction("legalEntityRelation")}>新增主体版本</Button>}</Space><Table rowKey="id" pagination={false} dataSource={[...archive.legal_entity_relations]} columns={[
+                { title: "关系类型", dataIndex: "relation_kind" },
+                { title: "法人主体", dataIndex: "legal_entity_id", render: (value) => legalEntities.find((item) => item.id === value)?.name ?? value },
+                { title: "生效日期", dataIndex: "effective_from" },
+                { title: "失效日期", dataIndex: "effective_to", render: (value) => value || "—" },
+                { title: "版本", dataIndex: "version" },
+                { title: "变更原因", dataIndex: "change_reason" },
               ]} /></>,
             },
             {
@@ -256,14 +289,28 @@ export function PeopleWorkspace({ token, canAdmin }: PeopleWorkspaceProps) {
         onOk={() => form.submit()}
         onCancel={() => setAction(null)}
       >
-        <Form form={form} layout="vertical" requiredMark={false} onFinish={(values) => void save(values)}>
+        <Form
+          form={form}
+          layout="vertical"
+          requiredMark={false}
+          onValuesChange={(changedValues) => {
+            if (action === "person" && changedValues.legal_name && !form.getFieldValue("display_name")) {
+              form.setFieldValue("display_name", changedValues.legal_name)
+            }
+          }}
+          onFinish={(values) => void save(values)}
+        >
           {(action === "person" || action === "edit") && <>
-            <Form.Item label="姓名" name="display_name" rules={[{ required: true }]}><Input /></Form.Item>
+            <Form.Item label="法定姓名" name="legal_name" rules={[{ required: true }]}><Input /></Form.Item>
+            <Form.Item label="显示姓名（留空则同法定姓名）" name="display_name"><Input /></Form.Item>
             <Form.Item label="曾用名" name="former_name"><Input /></Form.Item>
             <Form.Item label="性别代码" name="gender_code"><Input /></Form.Item>
             <Form.Item label="出生日期" name="birth_date"><Input type="date" /></Form.Item>
             <Form.Item label="国籍代码" name="nationality_code"><Input maxLength={3} /></Form.Item>
             <Form.Item label="国家/地区代码" name="country_code"><Input maxLength={3} /></Form.Item>
+            <Form.Item label="民族代码" name="ethnicity_code"><Input /></Form.Item>
+            <Form.Item label="婚姻状况代码" name="marital_status_code"><Input /></Form.Item>
+            <Form.Item label="政治面貌代码" name="political_status_code"><Input /></Form.Item>
           </>}
           {action === "employment" && <>
             <Form.Item label="人员类型" name="employee_type_code" rules={[{ required: true }]}><Input placeholder="例如 REGULAR、CAMPUS" /></Form.Item>
@@ -272,6 +319,14 @@ export function PeopleWorkspace({ token, canAdmin }: PeopleWorkspaceProps) {
             <Form.Item label="发薪主体（留空则同合同主体）" name="payroll_legal_entity_id"><Select allowClear showSearch optionFilterProp="label" options={legalOptions} /></Form.Item>
             <Form.Item label="社保主体（留空则同合同主体）" name="social_insurance_legal_entity_id"><Select allowClear showSearch optionFilterProp="label" options={legalOptions} /></Form.Item>
             <Form.Item label="个税主体（留空则同合同主体）" name="tax_legal_entity_id"><Select allowClear showSearch optionFilterProp="label" options={legalOptions} /></Form.Item>
+          </>}
+          {action === "legalEntityRelation" && <>
+            <Form.Item label="劳动关系" name="employment_id" rules={[{ required: true }]}><Select options={archive?.employments.map((item) => ({ label: `${item.employee_type_code} · ${item.planned_start_date}`, value: item.id }))} /></Form.Item>
+            <Form.Item label="主体类型" name="relation_kind" rules={[{ required: true }]}><Select options={[
+              { value: "contract", label: "劳动合同主体" }, { value: "payroll", label: "发薪主体" }, { value: "social_insurance", label: "社保主体" }, { value: "tax", label: "个税主体" },
+            ]} /></Form.Item>
+            <Form.Item label="法人主体" name="legal_entity_id" rules={[{ required: true }]}><Select showSearch optionFilterProp="label" options={legalOptions} /></Form.Item>
+            <Form.Item label="生效日期" name="effective_from" initialValue={today} rules={[{ required: true }]}><Input type="date" /></Form.Item>
           </>}
           {action === "assignment" && <>
             <Form.Item label="劳动关系" name="employment_id" rules={[{ required: true }]}><Select options={archive?.employments.map((item) => ({ label: `${item.employee_type_code} · ${item.planned_start_date}`, value: item.id }))} /></Form.Item>

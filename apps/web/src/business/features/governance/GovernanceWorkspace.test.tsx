@@ -74,7 +74,7 @@ describe("GovernanceWorkspace", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "新建导入批次" }))
     expect(screen.getByRole("dialog", { name: "新建主数据导入" })).toBeInTheDocument()
-    expect(screen.getByText("仅接受主数据代码和名称，不要上传人员、证件、薪酬或联系方式")).toBeInTheDocument()
+    expect(screen.getByText(/人员基础档案仅接收工号、法定姓名/)).toBeInTheDocument()
     expect(screen.getByRole("button", { name: "下载CSV模板" })).toBeInTheDocument()
   })
 

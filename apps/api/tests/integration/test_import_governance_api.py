@@ -23,6 +23,7 @@ from hris.modules.workforce.models import (
     Organization,
     OrganizationType,
     OrganizationVersion,
+    Person,
 )
 from hris.modules.workforce.organization_models import OrganizationEvent
 
@@ -32,6 +33,82 @@ pytestmark = pytest.mark.asyncio
 
 def _headers(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
+
+
+async def test_person_basic_import_is_non_sensitive_and_keeps_employee_number(
+    business_client: AsyncClient,
+    db_session: AsyncSession,
+    admin_token: str,
+) -> None:
+    template = await business_client.get(
+        "/api/v1/governance/import-templates/person_basic",
+        headers=_headers(admin_token),
+    )
+    assert template.status_code == 200, template.text
+    assert template.json()["required_columns"] == ["employee_number", "legal_name"]
+    assert set(template.json()["columns"]) == {
+        "employee_number",
+        "legal_name",
+        "display_name",
+        "former_name",
+    }
+    assert "birth_date" not in template.json()["columns"]
+    assert "document_number" not in template.json()["columns"]
+
+    validated = await business_client.post(
+        "/api/v1/governance/import-batches/validate",
+        headers=_headers(admin_token),
+        json={
+            "entity_type": "person_basic",
+            "source_system": "synthetic_ehr",
+            "source_table": "synthetic_person_basic",
+            "file_name": "synthetic-person-basic.csv",
+            "idempotency_key": str(uuid4()),
+            "rows": [
+                {
+                    "source_record_id": "synthetic-person-1",
+                    "data": {
+                        "employee_number": "991001",
+                        "legal_name": "Synthetic Imported Person",
+                    },
+                }
+            ],
+        },
+    )
+    assert validated.status_code == 201, validated.text
+    assert validated.json()["status"] == "validated"
+
+    executed = await business_client.post(
+        f"/api/v1/governance/import-batches/{validated.json()['id']}/execute",
+        headers=_headers(admin_token),
+        json={"reason": "Execute synthetic non-sensitive personnel import"},
+    )
+    assert executed.status_code == 200, executed.text
+    assert executed.json()["status"] == "completed"
+    person = await db_session.scalar(
+        select(Person).where(Person.employee_number == "991001")
+    )
+    assert person is not None
+    assert person.legal_name == "Synthetic Imported Person"
+    assert person.display_name == "Synthetic Imported Person"
+
+    row = await db_session.scalar(
+        select(ImportBatchRow).where(
+            ImportBatchRow.batch_id == UUID(validated.json()["id"])
+        )
+    )
+    assert row is not None
+    assert set(row.payload) == {"employee_number", "legal_name"}
+
+    exported = await business_client.get(
+        "/api/v1/governance/exports/person_basic",
+        headers=_headers(admin_token),
+    )
+    assert exported.status_code == 200, exported.text
+    header = exported.content.decode("utf-8-sig").splitlines()[0]
+    assert header == "source_record_id,employee_number,legal_name,display_name,former_name"
+    assert "birth_date" not in exported.text
+    assert "document_number" not in exported.text
 
 
 async def _seed_job_dimensions(db_session: AsyncSession) -> None:

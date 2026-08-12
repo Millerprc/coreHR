@@ -31,6 +31,8 @@ from hris.modules.workforce.models import (
     EmploymentAssignment,
     EmploymentLegalEntityRelation,
     EmergencyContact,
+    EducationRecord,
+    FamilyMember,
     HeadcountFreeze,
     HeadcountPlan,
     HeadcountSnapshot,
@@ -56,6 +58,7 @@ from hris.modules.workforce.models import (
     ReportingRelation,
     RevenueTarget,
     SnapshotBatch,
+    WorkExperience,
 )
 
 __all__ = [
@@ -74,6 +77,8 @@ __all__ = [
     "EmploymentAssignment",
     "EmploymentLegalEntityRelation",
     "EmergencyContact",
+    "EducationRecord",
+    "FamilyMember",
     "HeadcountFreeze",
     "HeadcountPlan",
     "HeadcountSnapshot",
@@ -106,6 +111,7 @@ __all__ = [
     "ScheduleAssignment",
     "Shift",
     "SnapshotBatch",
+    "WorkExperience",
     "WorkflowDefinition",
     "WorkflowInstance",
     "WorkflowTask",

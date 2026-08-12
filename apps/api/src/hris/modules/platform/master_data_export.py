@@ -24,6 +24,7 @@ from hris.modules.workforce.models import (
     Organization,
     OrganizationType,
     OrganizationVersion,
+    Person,
 )
 
 
@@ -109,7 +110,29 @@ class MasterDataExportService:
             return await self._job_dimension_rows(as_of)
         if entity_type == "job":
             return await self._job_rows(as_of)
+        if entity_type == "person_basic":
+            return await self._person_basic_rows()
         return await self._organization_rows(as_of)
+
+    async def _person_basic_rows(self) -> list[dict[str, Any]]:
+        items = (
+            await self._session.scalars(
+                select(Person)
+                .where(Person.employee_number.is_not(None))
+                .order_by(Person.employee_number)
+                .limit(_MAX_EXPORT_ROWS + 1)
+            )
+        ).all()
+        return [
+            {
+                "source_record_id": f"person:{item.employee_number}",
+                "employee_number": item.employee_number,
+                "legal_name": item.legal_name,
+                "display_name": item.display_name,
+                "former_name": item.former_name,
+            }
+            for item in items
+        ]
 
     async def _dictionary_rows(self) -> list[dict[str, Any]]:
         items = (
