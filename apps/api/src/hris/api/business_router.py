@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends
 from hris.modules.attendance.api import router as attendance_configuration_router
 from hris.modules.attendance.extended_api import router as attendance_operations_router
 from hris.modules.platform.api import router as auth_router
+from hris.modules.platform.account_admin_api import router as account_admin_router
 from hris.modules.platform.configuration_api import router as configuration_router
 from hris.modules.platform.dependencies import require_permission
 from hris.modules.platform.import_api import router as import_router
@@ -17,6 +18,7 @@ from hris.modules.workforce.personnel_api import router as personnel_router
 business_router = APIRouter()
 business_router.include_router(system_router)
 business_router.include_router(auth_router)
+business_router.include_router(account_admin_router)
 business_router.include_router(configuration_router)
 business_router.include_router(import_router)
 business_router.include_router(organization_router)

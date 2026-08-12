@@ -141,7 +141,7 @@ async def admin_token(db_session: AsyncSession) -> str:
     return await _seed_access_token(
         db_session,
         username="synthetic-admin",
-        role_code="SYNTHETIC_ADMIN",
+        role_code="SYSTEM_ADMIN",
         permission_code="*",
         raw_token="synthetic-admin-token",
     )

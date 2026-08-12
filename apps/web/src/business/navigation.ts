@@ -8,6 +8,7 @@ export type WorkspaceKey =
   | "lifecycle"
   | "attendance"
   | "governance"
+  | "accounts"
 
 
 export interface WorkspaceDefinition {
@@ -43,6 +44,7 @@ export const workspaces: readonly WorkspaceDefinition[] = [
     permission: "DATA_GOVERNANCE_VIEW",
     available: true,
   },
+  { key: "accounts", label: "账号与权限", permission: "*", available: true },
 ]
 
 

@@ -17,6 +17,7 @@ import { useCallback, useEffect, useMemo, useState } from "react"
 import { getPageCount, logout } from "./client"
 import { DictionaryWorkspace } from "./features/configuration/DictionaryWorkspace"
 import { GovernanceWorkspace } from "./features/governance/GovernanceWorkspace"
+import { AccountWorkspace } from "./features/platform/AccountWorkspace"
 import { AttendanceWorkspace } from "./features/attendance/AttendanceWorkspace"
 import { LifecycleWorkspace } from "./features/lifecycle/LifecycleWorkspace"
 import { OrganizationWorkspace } from "./features/organization/OrganizationWorkspace"
@@ -182,6 +183,8 @@ export function AppShell({ token, user, onSignedOut }: AppShellProps) {
     content = <AttendanceWorkspace token={token} canAdmin={can("ATTENDANCE_ADMIN")} />
   } else if (selected === "governance") {
     content = <GovernanceWorkspace token={token} canAdmin={can("DATA_GOVERNANCE_ADMIN")} />
+  } else if (selected === "accounts") {
+    content = <AccountWorkspace token={token} currentUserId={user.id} />
   } else if (selected === "dashboard") {
     content = <DashboardWorkspace token={token} onNavigate={navigate} />
   } else {
