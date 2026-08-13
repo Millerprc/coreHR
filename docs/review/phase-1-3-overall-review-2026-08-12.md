@@ -4,6 +4,8 @@
 >
 > 代码快照：`checkpoint-p1-p3-mvp-2026-08-12`（`main`）
 >
+> 后续工程复验：[2026-08-13 工程复验记录](./phase-1-3-engineering-reverification-2026-08-13.md)
+>
 > 适用对象：业务规则确认人、HR 系统主管理员
 >
 > Review 入口：<http://127.0.0.1:5173/business.html>

@@ -6,7 +6,7 @@
 
 第零阶段工程底座已经完成，业务第一至第三阶段的主管理员工程 MVP 已落地，并通过自动化测试、本机 Docker 和浏览器整栈验证。
 
-这里的“工程 MVP”不等于生产替换验收完成：正式编码对照、完整档案字段、真实人事流程图、合同正式字段/附件规则、企业考勤细则和打卡接口仍需补充。准确状态见[一至三阶段整体 Review 报告](./docs/review/phase-1-3-overall-review-2026-08-12.md)。
+这里的“工程 MVP”不等于生产替换验收完成：正式编码对照、完整档案字段、真实人事流程图、合同正式字段/附件规则、企业考勤细则和打卡接口仍需补充。准确状态见[一至三阶段整体 Review 报告](./docs/review/phase-1-3-overall-review-2026-08-12.md)，当前提交的自动化证据见[2026-08-13 工程复验记录](./docs/review/phase-1-3-engineering-reverification-2026-08-13.md)。
 
 ### 已落地能力
 
@@ -107,6 +107,7 @@ scripts/                 启动、停止和自动检查脚本
 - [技术架构基线](./docs/01-foundation/04-技术架构基线.md)
 - [代码结构与编码规范](./docs/01-foundation/10-代码结构与编码规范.md)
 - [一至三阶段整体 Review 报告（当前）](./docs/review/phase-1-3-overall-review-2026-08-12.md)
+- [一至三阶段工程复验记录（2026-08-13）](./docs/review/phase-1-3-engineering-reverification-2026-08-13.md)
 - [一至三阶段实现符合性审查（前一快照）](./docs/review/phase-1-3-implementation-conformance-review.md)
 - [一至三阶段整体 Review 指南](./docs/review/phase-1-3-user-review-guide.md)
 - [第一阶段人员档案实施 Review](./docs/review/phase-1-personnel-record-implementation-review-2026-08-12.md)
