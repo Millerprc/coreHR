@@ -87,7 +87,7 @@ export COREHR_BOOTSTRAP_TOKEN="一次性随机初始化凭证"
 apps/api/                FastAPI 服务、业务模块、迁移和后端测试
 apps/web/                React 管理端、状态页和前端测试
 deploy/                  Docker Compose 与环境变量示例
-docs/01-foundation/      项目基线、第一阶段规格、PRD 和决策记录
+docs/01-foundation/      项目基线、第一至第三阶段规格/PRD和决策记录
 docs/adr/                架构决策记录
 docs/delivery/           阶段交付回执
 docs/implementation/     实施计划与运行手册
@@ -99,6 +99,10 @@ scripts/                 启动、停止和自动检查脚本
 - [正式文档目录](./docs/01-foundation/00-正式文档目录.md)
 - [第一阶段需求规格](./docs/01-foundation/01-第一阶段需求规格.md)
 - [第一阶段 PRD](./docs/01-foundation/02-第一阶段PRD.md)
+- [第二阶段需求规格](./docs/01-foundation/12-第二阶段需求规格.md)
+- [第二阶段 PRD](./docs/01-foundation/13-第二阶段PRD.md)
+- [第三阶段需求规格](./docs/01-foundation/14-第三阶段需求规格.md)
+- [第三阶段 PRD](./docs/01-foundation/15-第三阶段PRD.md)
 - [项目决策](./docs/01-foundation/03-项目决策.md)
 - [技术架构基线](./docs/01-foundation/04-技术架构基线.md)
 - [代码结构与编码规范](./docs/01-foundation/10-代码结构与编码规范.md)

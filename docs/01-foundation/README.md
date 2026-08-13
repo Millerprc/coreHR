@@ -1,4 +1,4 @@
-# HRIS 第一阶段文档入口
+# HRIS 正式文档入口
 
 本目录唯一正式入口为：
 
@@ -9,7 +9,11 @@
 - [00-正式文档目录.md](./00-正式文档目录.md)
 - [10-代码结构与编码规范.md](./10-代码结构与编码规范.md)
 - [业务一至三阶段实施计划](../implementation/phase-1-3-plan.md)
-- [一至三阶段实现符合性审查](../review/phase-1-3-implementation-conformance-review.md)
+- [第二阶段需求规格](./12-第二阶段需求规格.md)
+- [第二阶段PRD](./13-第二阶段PRD.md)
+- [第三阶段需求规格](./14-第三阶段需求规格.md)
+- [第三阶段PRD](./15-第三阶段PRD.md)
+- [一至三阶段整体Review报告](../review/phase-1-3-overall-review-2026-08-12.md)
 
 当前说明：
 
