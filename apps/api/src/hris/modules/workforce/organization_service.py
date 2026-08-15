@@ -78,6 +78,10 @@ class OrganizationService:
         self._actor_id = actor_id
         self._trace_id = trace_id
         self._timezone = ZoneInfo(get_settings().business_timezone)
+        self._hierarchy_locked = False
+        self._hierarchy_versions: list[OrganizationVersion] | None = None
+        self._hierarchy_events: list[OrganizationEvent] | None = None
+        self._aggregate_versions: dict[UUID, int] = {}
 
     def business_date(self) -> date:
         return datetime.now(self._timezone).date()
@@ -171,6 +175,7 @@ class OrganizationService:
         return OrganizationTypeView.model_validate(organization_type)
 
     async def create(self, payload: OrganizationCreate) -> OrganizationView:
+        await self.lock_hierarchy()
         await self._lock_idempotency(payload.command.idempotency_key)
         existing_event = await self._event_by_idempotency(
             payload.command.idempotency_key
@@ -187,7 +192,10 @@ class OrganizationService:
 
         await self._organization_type(payload.organization_type_id, active_required=True)
         if payload.parent_organization_id is not None:
-            await self._state_as_of(payload.parent_organization_id, payload.effective_from)
+            await self._require_active_parent(
+                payload.parent_organization_id,
+                payload.effective_from,
+            )
 
         code = await next_number(
             self._session,
@@ -225,6 +233,8 @@ class OrganizationService:
         )
         self._session.add(version)
         await self._session.flush()
+        if self._hierarchy_versions is not None:
+            self._hierarchy_versions.append(version)
 
         event = OrganizationEvent(
             organization_id=organization.id,
@@ -260,7 +270,19 @@ class OrganizationService:
         organization_id: UUID,
         payload: OrganizationVersionCreate,
     ) -> OrganizationEventView:
+        await self.lock_hierarchy()
         await self._lock_idempotency(payload.command.idempotency_key)
+        event_payload = {
+            "name": payload.name,
+            "organization_type_id": str(payload.organization_type_id),
+            "parent_organization_id": (
+                str(payload.parent_organization_id)
+                if payload.parent_organization_id
+                else None
+            ),
+            "country_code": payload.country_code,
+            "status": payload.status,
+        }
         existing_event = await self._event_by_idempotency(
             payload.command.idempotency_key
         )
@@ -268,6 +290,11 @@ class OrganizationService:
             if (
                 existing_event.event_type != "VERSION_CHANGE"
                 or existing_event.organization_id != organization_id
+                or existing_event.effective_date != payload.effective_date
+                or existing_event.payload != event_payload
+                or existing_event.expected_version != payload.command.expected_version
+                or existing_event.change_reason != payload.command.change_reason
+                or existing_event.status not in {"planned", "applied", "cancelled"}
             ):
                 self._raise_idempotency_conflict()
             return OrganizationEventView.model_validate(existing_event)
@@ -320,7 +347,7 @@ class OrganizationService:
                 message="组织类型未启用",
             )
         if payload.parent_organization_id is not None:
-            await self._state_as_of(
+            await self._require_active_parent(
                 payload.parent_organization_id,
                 payload.effective_date,
             )
@@ -341,23 +368,16 @@ class OrganizationService:
             event_type="VERSION_CHANGE",
             effective_date=payload.effective_date,
             status="planned",
-            payload={
-                "name": payload.name,
-                "organization_type_id": str(payload.organization_type_id),
-                "parent_organization_id": (
-                    str(payload.parent_organization_id)
-                    if payload.parent_organization_id
-                    else None
-                ),
-                "country_code": payload.country_code,
-                "status": payload.status,
-            },
+            payload=event_payload,
             expected_version=payload.command.expected_version,
             idempotency_key=payload.command.idempotency_key,
             change_reason=payload.command.change_reason,
         )
         self._session.add(event)
         await self._session.flush()
+        self._aggregate_versions[organization_id] = aggregate_version + 1
+        if self._hierarchy_events is not None:
+            self._hierarchy_events.append(event)
         await self._audit(
             action="organization.version.schedule",
             object_type="organization_event",
@@ -405,6 +425,7 @@ class OrganizationService:
                 message="只有待生效事件可以取消",
             )
 
+        await self.lock_hierarchy()
         await self._lock_organization(event.organization_id)
         aggregate_version = await self._aggregate_version(event.organization_id)
         if command.expected_version != aggregate_version:
@@ -450,6 +471,7 @@ class OrganizationService:
         return OrganizationEventView.model_validate(event)
 
     async def apply_due_events(self, business_date: date) -> int:
+        await self.lock_hierarchy()
         events = list(
             (
                 await self._session.scalars(
@@ -1703,19 +1725,64 @@ class OrganizationService:
         return state
 
     async def _parent_map_as_of(self, effective_at: date) -> dict[UUID, UUID | None]:
-        organization_ids = list((await self._session.scalars(select(Organization.id))).all())
+        if self._hierarchy_versions is None:
+            self._hierarchy_versions = list(
+                (
+                    await self._session.scalars(
+                        select(OrganizationVersion).order_by(
+                            OrganizationVersion.effective_from,
+                            OrganizationVersion.version,
+                        )
+                    )
+                ).all()
+            )
+        if self._hierarchy_events is None:
+            self._hierarchy_events = list(
+                (
+                    await self._session.scalars(
+                        select(OrganizationEvent)
+                        .where(
+                            OrganizationEvent.event_type == "VERSION_CHANGE",
+                            OrganizationEvent.status == "planned",
+                        )
+                        .order_by(
+                            OrganizationEvent.effective_date,
+                            OrganizationEvent.expected_version,
+                        )
+                    )
+                ).all()
+            )
+
         parents: dict[UUID, UUID | None] = {}
-        for organization_id in organization_ids:
-            try:
-                state = await self._state_as_of(organization_id, effective_at)
-            except ApiError as exc:
-                if exc.code == "ORGANIZATION_NOT_EFFECTIVE":
-                    continue
-                raise
-            parents[organization_id] = state["parent_organization_id"]
+        for version in self._hierarchy_versions:
+            if version.effective_from <= effective_at and (
+                version.effective_to is None or version.effective_to >= effective_at
+            ):
+                parents[version.organization_id] = version.parent_organization_id
+        for event in self._hierarchy_events:
+            if event.status != "planned" or event.effective_date > effective_at:
+                continue
+            parent_id = event.payload.get("parent_organization_id")
+            parents[event.organization_id] = UUID(parent_id) if parent_id else None
         return parents
 
+    async def _require_active_parent(
+        self,
+        organization_id: UUID,
+        effective_at: date,
+    ) -> None:
+        state = await self._state_as_of(organization_id, effective_at)
+        if state["status"] != "active":
+            raise ApiError(
+                status_code=422,
+                code="ORGANIZATION_PARENT_NOT_ACTIVE",
+                message="上级组织在生效日期未启用",
+            )
+
     async def _aggregate_version(self, organization_id: UUID) -> int:
+        cached = self._aggregate_versions.get(organization_id)
+        if cached is not None:
+            return cached
         actual = await self._latest_actual_version(organization_id)
         last_expected = await self._session.scalar(
             select(func.max(OrganizationEvent.expected_version)).where(
@@ -1724,7 +1791,12 @@ class OrganizationService:
                 OrganizationEvent.status == "planned",
             )
         )
-        return max(actual.version, (last_expected + 1) if last_expected else 0)
+        aggregate_version = max(
+            actual.version,
+            (last_expected + 1) if last_expected else 0,
+        )
+        self._aggregate_versions[organization_id] = aggregate_version
+        return aggregate_version
 
     async def _latest_actual_version(
         self,
@@ -1774,6 +1846,8 @@ class OrganizationService:
         event.status = "applied"
         event.applied_at = datetime.now(UTC)
         await self._session.flush()
+        if self._hierarchy_versions is not None:
+            self._hierarchy_versions.append(next_version)
         await self._session.refresh(event)
         await self._audit(
             action="organization.version.apply",
@@ -2063,6 +2137,23 @@ class OrganizationService:
             text("SELECT pg_advisory_xact_lock(hashtext(:aggregate_key))"),
             {"aggregate_key": f"corehr:organization:{organization_id}"},
         )
+
+    async def lock_hierarchy(self) -> None:
+        if self._hierarchy_locked:
+            return
+        await self._session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtext(:hierarchy_key))"),
+            {"hierarchy_key": "corehr:organization-hierarchy"},
+        )
+        self._hierarchy_locked = True
+
+    async def aggregate_version(self, organization_id: UUID) -> int:
+        return await self._aggregate_version(organization_id)
+
+    def reset_hierarchy_projection(self) -> None:
+        self._hierarchy_versions = None
+        self._hierarchy_events = None
+        self._aggregate_versions.clear()
 
     async def _lock_idempotency(self, idempotency_key: UUID) -> None:
         await self._session.execute(

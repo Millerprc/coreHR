@@ -55,6 +55,7 @@ const entityLabels: Readonly<Record<ImportEntityType, string>> = {
   job: "职务",
   job_version: "职务历史版本",
   organization: "组织",
+  organization_version: "组织历史版本",
 }
 
 
@@ -348,6 +349,7 @@ export function GovernanceWorkspace({ token, canAdmin }: GovernanceWorkspaceProp
           <Select
             id="master-data-export-type"
             aria-label="主数据类型"
+            virtual={false}
             className="full-width"
             value={exportType}
             options={Object.entries(exportEntityLabels).map(([value, label]) => ({ value, label }))}
@@ -374,6 +376,8 @@ export function GovernanceWorkspace({ token, canAdmin }: GovernanceWorkspaceProp
         <Form form={form} layout="vertical" requiredMark={false} onFinish={(values) => void validateBatch(values)}>
           <Form.Item label="主数据类型" name="entity_type" rules={[{ required: true }]}>
             <Select
+              aria-label="主数据类型"
+              virtual={false}
               options={Object.entries(entityLabels).map(([value, label]) => ({ value, label }))}
               onChange={(value: ImportEntityType) => void loadTemplate(value)}
             />

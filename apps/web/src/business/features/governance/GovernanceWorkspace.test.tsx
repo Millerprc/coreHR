@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react"
+import { fireEvent, render, screen, within } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
 import { GovernanceWorkspace } from "./GovernanceWorkspace"
@@ -76,6 +76,16 @@ describe("GovernanceWorkspace", () => {
     expect(screen.getByRole("dialog", { name: "新建主数据导入" })).toBeInTheDocument()
     expect(screen.getByText(/人员基础档案仅接收工号、法定姓名/)).toBeInTheDocument()
     expect(screen.getByRole("button", { name: "下载CSV模板" })).toBeInTheDocument()
+    fireEvent.mouseDown(screen.getByRole("combobox", { name: "主数据类型" }))
+    fireEvent.click(await screen.findByText("组织历史版本"))
+    await vi.waitFor(() => {
+      expect(fetch).toHaveBeenCalledWith(
+        "/api/v1/governance/import-templates/organization_version",
+        expect.objectContaining({
+          headers: expect.objectContaining({ Authorization: "Bearer synthetic-token" }),
+        }),
+      )
+    })
   })
 
   it("opens a current non-sensitive master data export form", async () => {
@@ -86,5 +96,9 @@ describe("GovernanceWorkspace", () => {
     expect(screen.getByRole("button", { name: "下载CSV" })).toBeInTheDocument()
     expect(screen.getByText("只导出当前有效的非敏感主数据")).toBeInTheDocument()
     expect(screen.getByText(/不包含人员、证件、薪酬或联系方式/)).toBeInTheDocument()
+    fireEvent.mouseDown(screen.getByRole("combobox", { name: "主数据类型" }))
+    const listbox = await screen.findByRole("listbox")
+    expect(within(listbox).getByRole("option", { name: /^组织$/ })).toBeInTheDocument()
+    expect(within(listbox).queryByRole("option", { name: "组织历史版本" })).not.toBeInTheDocument()
   })
 })

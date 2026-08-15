@@ -18,7 +18,7 @@ describe("App", () => {
               name: "组织、人事与编制",
               status: "uat_ready",
               available_capabilities: ["有效日期组织与人员主数据"],
-              available_endpoints: ["/api/v1/workforce/organizations"],
+              available_endpoints: ["/api/v1/organizations"],
               pending_inputs: ["员工档案表头"],
             },
           ],

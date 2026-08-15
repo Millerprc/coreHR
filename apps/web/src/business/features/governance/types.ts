@@ -8,12 +8,13 @@ export type ImportEntityType =
   | "job"
   | "job_version"
   | "organization"
+  | "organization_version"
   | "person_basic"
 
 
 export type ExportEntityType = Exclude<
   ImportEntityType,
-  "job_dimension_version" | "job_version"
+  "job_dimension_version" | "job_version" | "organization_version"
 >
 
 

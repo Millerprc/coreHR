@@ -16,6 +16,7 @@ ImportEntityType = Literal[
     "job",
     "job_version",
     "organization",
+    "organization_version",
     "person_basic",
 ]
 
@@ -95,6 +96,26 @@ class OrganizationImport(ImportRequest):
     def validate_effective_period(self) -> "OrganizationImport":
         if self.effective_to is not None and self.effective_to < self.effective_from:
             raise ValueError("effective_to不能早于effective_from")
+        return self
+
+
+class OrganizationVersionImport(ImportRequest):
+    organization_code: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,49}$")
+    name: str = Field(min_length=1, max_length=200)
+    organization_type_code: str = Field(pattern=r"^[A-Z][A-Z0-9_]{0,49}$")
+    parent_code: str | None = Field(
+        default=None,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,49}$",
+    )
+    country_code: str | None = Field(default=None, pattern=r"^[A-Z]{2,3}$")
+    status: Literal["active", "inactive"] = "active"
+    effective_from: date
+    change_reason: str = Field(min_length=1, max_length=500)
+
+    @model_validator(mode="after")
+    def reject_self_parent(self) -> "OrganizationVersionImport":
+        if self.parent_code == self.organization_code:
+            raise ValueError("组织不能以自身为上级")
         return self
 
 

@@ -399,3 +399,61 @@ async def test_apply_cancel_history_audit_and_outbox(
     assert apply_audit.trace_id == applied.headers["X-Trace-ID"]
     assert outbox is not None
     assert set(outbox.payload) == {"organization_id", "event_id", "version"}
+
+
+async def test_organization_version_rejects_inactive_parent(
+    business_client: AsyncClient,
+    admin_token: str,
+) -> None:
+    today = datetime.now(ZoneInfo("Asia/Shanghai")).date()
+    tomorrow = today + timedelta(days=1)
+    day_after = today + timedelta(days=2)
+    organization_type = await _create_type(
+        business_client,
+        admin_token,
+        "INACTIVE_PARENT_TEST",
+        "停用上级测试类型",
+    )
+    parent = await _create_organization(
+        business_client,
+        admin_token,
+        name="合成待停用上级",
+        organization_type_id=str(organization_type["id"]),
+        effective_from=today.isoformat(),
+    )
+    child = await _create_organization(
+        business_client,
+        admin_token,
+        name="合成下级",
+        organization_type_id=str(organization_type["id"]),
+        effective_from=today.isoformat(),
+    )
+    deactivate_parent = await business_client.post(
+        f"/api/v1/organizations/{parent['id']}/versions",
+        headers=_auth(admin_token),
+        json={
+            "name": parent["name"],
+            "organization_type_id": parent["organization_type_id"],
+            "country_code": "CN",
+            "status": "inactive",
+            "effective_date": tomorrow.isoformat(),
+            "command": _command(expected_version=1),
+        },
+    )
+    assert deactivate_parent.status_code == 201, deactivate_parent.text
+
+    rejected = await business_client.post(
+        f"/api/v1/organizations/{child['id']}/versions",
+        headers=_auth(admin_token),
+        json={
+            "name": child["name"],
+            "organization_type_id": child["organization_type_id"],
+            "parent_organization_id": parent["id"],
+            "country_code": "CN",
+            "status": "active",
+            "effective_date": day_after.isoformat(),
+            "command": _command(expected_version=1),
+        },
+    )
+    assert rejected.status_code == 422, rejected.text
+    assert rejected.json()["code"] == "ORGANIZATION_PARENT_NOT_ACTIVE"

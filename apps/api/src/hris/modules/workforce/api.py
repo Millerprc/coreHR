@@ -5,9 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from hris.core.database import get_db
 from hris.modules.workforce.schemas import (
-    OrganizationCreate,
     OrganizationListResponse,
-    OrganizationResponse,
     OrganizationTypeCreate,
     OrganizationTypeResponse,
 )
@@ -31,18 +29,6 @@ async def create_organization_type(
     return OrganizationTypeResponse.model_validate(result)
 
 
-@router.post(
-    "/organizations",
-    response_model=OrganizationResponse,
-    status_code=status.HTTP_201_CREATED,
-)
-async def create_organization(
-    payload: OrganizationCreate,
-    db: DbSession,
-) -> OrganizationResponse:
-    return await WorkforceService(db).create_organization(payload)
-
-
 @router.get("/organizations", response_model=OrganizationListResponse)
 async def list_organizations(
     db: DbSession,
@@ -59,4 +45,3 @@ async def list_organizations(
         limit=limit,
         offset=offset,
     )
-

@@ -63,7 +63,7 @@ async def list_modules() -> ModuleRegistryResponse:
                     "人员、劳动/协议关系、任职、编制、快照与招聘需求",
                 ],
                 available_endpoints=[
-                    "/api/v1/workforce/organizations",
+                    "/api/v1/organizations",
                     "/api/v1/workforce/persons",
                     "/api/v1/workforce/headcount-results",
                     "/api/v1/governance/import-batches",

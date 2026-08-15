@@ -7,11 +7,12 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, ValidationError
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from hris.core.config import get_settings
+from hris.core.concurrency import VersionCommand
 from hris.core.errors import ApiError
 from hris.modules.platform.configuration_schemas import DictionaryCreate
 from hris.modules.platform.governance_models import OutboxEvent
@@ -25,6 +26,7 @@ from hris.modules.platform.import_schemas import (
     JobImport,
     JobVersionImport,
     OrganizationImport,
+    OrganizationVersionImport,
     PersonBasicImport,
 )
 from hris.modules.platform.models import (
@@ -52,7 +54,11 @@ from hris.modules.workforce.models import (
     Person,
 )
 from hris.modules.workforce.organization_models import OrganizationEvent
-from hris.modules.workforce.organization_schemas import OrganizationTypeCreate
+from hris.modules.workforce.organization_schemas import (
+    OrganizationTypeCreate,
+    OrganizationVersionCreate,
+)
+from hris.modules.workforce.organization_service import OrganizationService
 
 
 _TARGET_TYPES: dict[str, str] = {
@@ -65,6 +71,7 @@ _TARGET_TYPES: dict[str, str] = {
     "job": "job",
     "job_version": "job_version",
     "organization": "organization",
+    "organization_version": "organization_version",
     "person_basic": "person",
 }
 
@@ -211,6 +218,25 @@ _TEMPLATES: dict[str, tuple[list[str], list[str]]] = {
         ],
         ["code", "name", "organization_type_code", "effective_from"],
     ),
+    "organization_version": (
+        [
+            "organization_code",
+            "name",
+            "organization_type_code",
+            "parent_code",
+            "country_code",
+            "status",
+            "effective_from",
+            "change_reason",
+        ],
+        [
+            "organization_code",
+            "name",
+            "organization_type_code",
+            "effective_from",
+            "change_reason",
+        ],
+    ),
     "person_basic": (
         ["employee_number", "legal_name", "display_name", "former_name"],
         ["employee_number", "legal_name"],
@@ -294,8 +320,23 @@ class ImportService:
             await self._validate_job_versions(parsed, errors)
         elif payload.entity_type == "organization":
             await self._validate_organization_relations(parsed, existing_targets, errors)
+        elif payload.entity_type == "organization_version":
+            await self._validate_organization_versions(parsed, errors)
 
         links = await self._existing_links(payload)
+        linked_organization_events: dict[UUID, OrganizationEvent] = {}
+        if payload.entity_type == "organization_version" and links:
+            event_ids = {link.target_id for link in links.values()}
+            linked_organization_events = {
+                event.id: event
+                for event in (
+                    await self._session.scalars(
+                        select(OrganizationEvent).where(
+                            OrganizationEvent.id.in_(event_ids)
+                        )
+                    )
+                ).all()
+            }
         rows: list[ImportBatchRow] = []
         target_type = _TARGET_TYPES[payload.entity_type]
         for index, source_row in enumerate(payload.rows, start=1):
@@ -323,6 +364,49 @@ class ImportService:
                             "来源记录内容已变化，必须先确认更新策略",
                         )
                     )
+                elif payload.entity_type == "organization_version":
+                    linked_event = linked_organization_events.get(link.target_id)
+                    organization = (
+                        existing_targets.get(parsed_row.organization_code)
+                        if isinstance(parsed_row, OrganizationVersionImport)
+                        else None
+                    )
+                    organization_type = (
+                        existing_targets.get(
+                            f"organization_type:{parsed_row.organization_type_code}"
+                        )
+                        if isinstance(parsed_row, OrganizationVersionImport)
+                        else None
+                    )
+                    parent = (
+                        existing_targets.get(parsed_row.parent_code)
+                        if isinstance(parsed_row, OrganizationVersionImport)
+                        and parsed_row.parent_code is not None
+                        else None
+                    )
+                    if not isinstance(
+                        parsed_row,
+                        OrganizationVersionImport,
+                    ) or not self._organization_version_event_matches(
+                        source_system=payload.source_system,
+                        source_table=payload.source_table,
+                        source_record_id=source_row.source_record_id,
+                        payload=parsed_row,
+                        event=linked_event,
+                        organization=organization,
+                        organization_type=organization_type,
+                        parent=parent,
+                    ):
+                        row_errors.append(
+                            self._error(
+                                "EXTERNAL_LINK_TARGET_INVALID",
+                                None,
+                                "来源追踪记录指向的组织版本事件已不存在或不一致",
+                            )
+                        )
+                    else:
+                        status = "skipped"
+                        target_id = link.target_id
                 elif target is None or target.id != link.target_id:
                     row_errors.append(
                         self._error(
@@ -405,11 +489,98 @@ class ImportService:
             valid_rows = self._order_version_rows(valid_rows, JobVersionImport)
         elif batch.entity_type == "organization":
             valid_rows = await self._order_organization_rows(valid_rows)
+        elif batch.entity_type == "organization_version":
+            valid_rows = self._order_organization_version_rows(valid_rows)
 
+        organization_service: OrganizationService | None = None
+        organization_version_organizations: dict[str, Organization] | None = None
+        organization_version_types: dict[str, OrganizationType] | None = None
+        if batch.entity_type in {"organization", "organization_version"}:
+            organization_service = OrganizationService(
+                self._session,
+                actor_id=self._actor_id,
+                trace_id=self._trace_id,
+            )
+            await organization_service.lock_hierarchy()
+        if batch.entity_type == "organization_version":
+            version_payloads = [
+                OrganizationVersionImport.model_validate(row.payload)
+                for row in valid_rows
+            ]
+            organization_codes = {
+                code
+                for payload in version_payloads
+                for code in (payload.organization_code, payload.parent_code)
+                if code is not None
+            }
+            type_codes = {
+                payload.organization_type_code for payload in version_payloads
+            }
+            organizations = list(
+                (
+                    await self._session.scalars(
+                        select(Organization).where(
+                            Organization.code.in_(organization_codes)
+                        )
+                    )
+                ).all()
+            ) if organization_codes else []
+            organization_types = list(
+                (
+                    await self._session.scalars(
+                        select(OrganizationType).where(
+                            OrganizationType.code.in_(type_codes)
+                        )
+                    )
+                ).all()
+            ) if type_codes else []
+            organization_version_organizations = {
+                organization.code: organization for organization in organizations
+            }
+            organization_version_types = {
+                organization_type.code: organization_type
+                for organization_type in organization_types
+            }
+
+        execution_links = await self._execution_links(batch, valid_rows)
+        execution_link_events: dict[UUID, OrganizationEvent] = {}
+        if batch.entity_type == "organization_version" and execution_links:
+            event_ids = {link.target_id for link in execution_links.values()}
+            execution_link_events = {
+                event.id: event
+                for event in (
+                    await self._session.scalars(
+                        select(OrganizationEvent).where(
+                            OrganizationEvent.id.in_(event_ids)
+                        )
+                    )
+                ).all()
+            }
         for row in valid_rows:
+            existing_link = execution_links.get(row.source_record_id)
+            if existing_link is not None:
+                await self._apply_execution_link(
+                    batch,
+                    row,
+                    existing_link,
+                    organization_version_organizations=(
+                        organization_version_organizations
+                    ),
+                    organization_version_types=organization_version_types,
+                    organization_version_events=execution_link_events,
+                )
+                continue
             try:
                 async with self._session.begin_nested():
-                    target = await self._create_target(batch, row)
+                    target = await self._create_target(
+                        batch,
+                        row,
+                        organization_service=organization_service,
+                        organization_version_organizations=(
+                            organization_version_organizations
+                        ),
+                        organization_version_types=organization_version_types,
+                    )
                     await self._session.flush()
                     self._session.add(
                         ExternalRecordLink(
@@ -424,6 +595,20 @@ class ImportService:
                     )
                     await self._session.flush()
             except IntegrityError:
+                if organization_service is not None:
+                    organization_service.reset_hierarchy_projection()
+                existing_link = await self._execution_link(batch, row)
+                if existing_link is not None:
+                    await self._apply_execution_link(
+                        batch,
+                        row,
+                        existing_link,
+                        organization_version_organizations=(
+                            organization_version_organizations
+                        ),
+                        organization_version_types=organization_version_types,
+                    )
+                    continue
                 row.status = "rejected"
                 row.errors = [
                     self._error(
@@ -438,6 +623,8 @@ class ImportService:
             except ApiError as exc:
                 if exc.status_code >= 500:
                     raise
+                if organization_service is not None:
+                    organization_service.reset_hierarchy_projection()
                 row.status = "rejected"
                 row.errors = [
                     self._error(exc.code, None, exc.message)
@@ -515,6 +702,150 @@ class ImportService:
         )
         return {link.source_record_id: link for link in result.all()}
 
+    async def _execution_link(
+        self,
+        batch: ImportBatch,
+        row: ImportBatchRow,
+    ) -> ExternalRecordLink | None:
+        return await self._session.scalar(
+            select(ExternalRecordLink)
+            .where(
+                ExternalRecordLink.source_system == batch.source_system,
+                ExternalRecordLink.source_table == batch.source_table,
+                ExternalRecordLink.source_record_id == row.source_record_id,
+                ExternalRecordLink.target_type == _TARGET_TYPES[batch.entity_type],
+            )
+            .with_for_update()
+        )
+
+    async def _execution_links(
+        self,
+        batch: ImportBatch,
+        rows: list[ImportBatchRow],
+    ) -> dict[str, ExternalRecordLink]:
+        if not rows:
+            return {}
+        links = await self._session.scalars(
+            select(ExternalRecordLink)
+            .where(
+                ExternalRecordLink.source_system == batch.source_system,
+                ExternalRecordLink.source_table == batch.source_table,
+                ExternalRecordLink.source_record_id.in_(
+                    row.source_record_id for row in rows
+                ),
+                ExternalRecordLink.target_type == _TARGET_TYPES[batch.entity_type],
+            )
+            .with_for_update()
+        )
+        return {link.source_record_id: link for link in links.all()}
+
+    async def _apply_execution_link(
+        self,
+        batch: ImportBatch,
+        row: ImportBatchRow,
+        link: ExternalRecordLink,
+        *,
+        organization_version_organizations: dict[str, Organization] | None = None,
+        organization_version_types: dict[str, OrganizationType] | None = None,
+        organization_version_events: dict[UUID, OrganizationEvent] | None = None,
+    ) -> None:
+        if link.source_checksum != row.source_checksum:
+            row.status = "rejected"
+            row.errors = [
+                self._error(
+                    "SOURCE_RECORD_CHANGED",
+                    None,
+                    "来源记录内容已变化，必须先确认更新策略",
+                )
+            ]
+            row.target_type = None
+            row.target_id = None
+            return
+        if batch.entity_type == "organization_version":
+            payload = OrganizationVersionImport.model_validate(row.payload)
+            organization = (organization_version_organizations or {}).get(
+                payload.organization_code
+            )
+            organization_type = (organization_version_types or {}).get(
+                payload.organization_type_code
+            )
+            parent = (
+                (organization_version_organizations or {}).get(payload.parent_code)
+                if payload.parent_code is not None
+                else None
+            )
+            event = (organization_version_events or {}).get(link.target_id)
+            if event is None:
+                event = await self._session.get(OrganizationEvent, link.target_id)
+            if not self._organization_version_event_matches(
+                source_system=batch.source_system,
+                source_table=batch.source_table,
+                source_record_id=row.source_record_id,
+                payload=payload,
+                event=event,
+                organization=organization,
+                organization_type=organization_type,
+                parent=parent,
+            ):
+                row.status = "rejected"
+                row.errors = [
+                    self._error(
+                        "EXTERNAL_LINK_TARGET_INVALID",
+                        None,
+                        "来源追踪记录指向的组织版本事件已不存在或不一致",
+                    )
+                ]
+                row.target_type = None
+                row.target_id = None
+                return
+        row.status = "skipped"
+        row.errors = []
+        row.target_type = link.target_type
+        row.target_id = link.target_id
+
+    @staticmethod
+    def _organization_version_event_matches(
+        *,
+        source_system: str,
+        source_table: str,
+        source_record_id: str,
+        payload: OrganizationVersionImport,
+        event: OrganizationEvent | None,
+        organization: Organization | None,
+        organization_type: OrganizationType | None,
+        parent: Organization | None,
+    ) -> bool:
+        if (
+            event is None
+            or organization is None
+            or organization_type is None
+            or (payload.parent_code is not None and parent is None)
+        ):
+            return False
+        expected_idempotency = uuid5(
+            NAMESPACE_URL,
+            (
+                "corehr:organization-version-import:"
+                f"{source_system}:{source_table}:{source_record_id}"
+            ),
+        )
+        expected_payload = {
+            "name": payload.name,
+            "organization_type_id": str(organization_type.id),
+            "parent_organization_id": str(parent.id) if parent else None,
+            "country_code": payload.country_code,
+            "status": payload.status,
+        }
+        return (
+            event.organization_id == organization.id
+            and event.event_type == "VERSION_CHANGE"
+            and event.effective_date == payload.effective_from
+            and event.payload == expected_payload
+            and event.idempotency_key == expected_idempotency
+            and event.change_reason == payload.change_reason
+            and event.status in {"planned", "applied", "cancelled"}
+        )
+
     def _parse_rows(
         self,
         payload: ImportBatchValidate,
@@ -529,6 +860,7 @@ class ImportService:
             "job": JobImport,
             "job_version": JobVersionImport,
             "organization": OrganizationImport,
+            "organization_version": OrganizationVersionImport,
             "person_basic": PersonBasicImport,
         }[payload.entity_type]
         parsed: dict[int, BaseModel] = {}
@@ -690,6 +1022,79 @@ class ImportService:
             result = {item.code: item for item in organizations}
             result.update(
                 {f"organization_type:{item.code}": item for item in organization_types}
+            )
+            return result
+
+        if entity_type == "organization_version":
+            models = [
+                model
+                for model in parsed.values()
+                if isinstance(model, OrganizationVersionImport)
+            ]
+            organization_codes = {
+                code
+                for model in models
+                for code in (model.organization_code, model.parent_code)
+                if code is not None
+            }
+            type_codes = {model.organization_type_code for model in models}
+            organizations = list(
+                (
+                    await self._session.scalars(
+                        select(Organization).where(
+                            Organization.code.in_(organization_codes)
+                        )
+                    )
+                ).all()
+            ) if organization_codes else []
+            organization_by_id = {item.id: item for item in organizations}
+            organization_types = list(
+                (
+                    await self._session.scalars(
+                        select(OrganizationType).where(
+                            OrganizationType.code.in_(type_codes)
+                        )
+                    )
+                ).all()
+            ) if type_codes else []
+            requested_dates = {
+                (model.organization_code, model.effective_from)
+                for model in models
+            }
+            events = list(
+                (
+                    await self._session.scalars(
+                        select(OrganizationEvent).where(
+                            OrganizationEvent.organization_id.in_(
+                                organization_by_id
+                            ),
+                            OrganizationEvent.event_type == "VERSION_CHANGE",
+                            OrganizationEvent.status.in_(("planned", "applied")),
+                        )
+                    )
+                ).all()
+            ) if organization_by_id else []
+            result: dict[str, Any] = {
+                item.code: item for item in organizations
+            }
+            result.update(
+                {
+                    f"organization_type:{item.code}": item
+                    for item in organization_types
+                }
+            )
+            result.update(
+                {
+                    (
+                        f"{organization_by_id[event.organization_id].code}:"
+                        f"{event.effective_date.isoformat()}"
+                    ): event
+                    for event in events
+                    if (
+                        organization_by_id[event.organization_id].code,
+                        event.effective_date,
+                    ) in requested_dates
+                }
             )
             return result
 
@@ -1670,6 +2075,408 @@ class ImportService:
                     )
                     dependency_changed = True
 
+    async def _validate_organization_versions(
+        self,
+        parsed: dict[int, BaseModel],
+        errors: defaultdict[int, list[dict[str, Any]]],
+    ) -> None:
+        incoming: defaultdict[
+            str,
+            list[tuple[int, OrganizationVersionImport]],
+        ] = defaultdict(list)
+        for index, model in parsed.items():
+            if isinstance(model, OrganizationVersionImport):
+                incoming[model.organization_code].append((index, model))
+
+        requested_codes = set(incoming)
+        requested_codes.update(
+            model.parent_code
+            for rows in incoming.values()
+            for _index, model in rows
+            if model.parent_code is not None
+        )
+        organizations = list(
+            (
+                await self._session.scalars(
+                    select(Organization).where(
+                        Organization.code.in_(requested_codes)
+                    )
+                )
+            ).all()
+        )
+        organization_by_code = {item.code: item for item in organizations}
+        organization_by_id = {item.id: item for item in organizations}
+
+        versions: list[OrganizationVersion] = []
+        version_events: list[OrganizationEvent] = []
+        loaded_organization_ids: set[UUID] = set()
+        pending_organization_ids = set(organization_by_id)
+        while pending_organization_ids:
+            current_ids = pending_organization_ids - loaded_organization_ids
+            if not current_ids:
+                break
+            loaded_organization_ids.update(current_ids)
+            current_versions = list(
+                (
+                    await self._session.scalars(
+                        select(OrganizationVersion).where(
+                            OrganizationVersion.organization_id.in_(current_ids)
+                        )
+                    )
+                ).all()
+            )
+            current_events = list(
+                (
+                    await self._session.scalars(
+                        select(OrganizationEvent).where(
+                            OrganizationEvent.organization_id.in_(current_ids),
+                            OrganizationEvent.event_type == "VERSION_CHANGE",
+                            OrganizationEvent.status.in_(("planned", "applied")),
+                        )
+                    )
+                ).all()
+            )
+            versions.extend(current_versions)
+            version_events.extend(current_events)
+            parent_ids = {
+                version.parent_organization_id
+                for version in current_versions
+                if version.parent_organization_id is not None
+            }
+            parent_ids.update(
+                UUID(str(parent_id))
+                for event in current_events
+                if (parent_id := event.payload.get("parent_organization_id"))
+            )
+            missing_parent_ids = parent_ids - set(organization_by_id)
+            if not missing_parent_ids:
+                pending_organization_ids = set()
+                continue
+            parent_organizations = list(
+                (
+                    await self._session.scalars(
+                        select(Organization).where(
+                            Organization.id.in_(missing_parent_ids)
+                        )
+                    )
+                ).all()
+            )
+            organization_by_code.update(
+                {item.code: item for item in parent_organizations}
+            )
+            organization_by_id.update(
+                {item.id: item for item in parent_organizations}
+            )
+            pending_organization_ids = {item.id for item in parent_organizations}
+
+        type_codes = {
+            model.organization_type_code
+            for rows in incoming.values()
+            for _index, model in rows
+        }
+        type_ids = {version.organization_type_id for version in versions}
+        type_ids.update(
+            UUID(str(event.payload["organization_type_id"]))
+            for event in version_events
+        )
+        organization_types = list(
+            (
+                await self._session.scalars(
+                    select(OrganizationType).where(
+                        or_(
+                            OrganizationType.code.in_(type_codes),
+                            OrganizationType.id.in_(type_ids),
+                        )
+                    )
+                )
+            ).all()
+        )
+        type_by_code = {item.code: item for item in organization_types}
+        type_by_id = {item.id: item for item in organization_types}
+
+        versions_by_organization: defaultdict[
+            UUID,
+            list[OrganizationVersion],
+        ] = defaultdict(list)
+        for version in versions:
+            versions_by_organization[version.organization_id].append(version)
+        for items in versions_by_organization.values():
+            items.sort(key=lambda item: (item.effective_from, item.version))
+
+        planned_by_organization: defaultdict[
+            UUID,
+            list[OrganizationEvent],
+        ] = defaultdict(list)
+        event_dates_by_organization: defaultdict[UUID, set[date]] = defaultdict(set)
+        for event in version_events:
+            event_dates_by_organization[event.organization_id].add(
+                event.effective_date
+            )
+            if event.status == "planned":
+                planned_by_organization[event.organization_id].append(event)
+        for items in planned_by_organization.values():
+            items.sort(key=lambda item: (item.effective_date, item.expected_version))
+
+        for organization_code, rows in incoming.items():
+            organization = organization_by_code.get(organization_code)
+            if organization is None:
+                for index, _model in rows:
+                    errors[index].append(
+                        self._error(
+                            "ORGANIZATION_NOT_FOUND",
+                            "organization_code",
+                            "组织稳定代码不存在，请先导入组织首版本",
+                        )
+                    )
+                continue
+            existing_starts = [
+                item.effective_from
+                for item in versions_by_organization[organization.id]
+            ]
+            existing_starts.extend(
+                item.effective_date
+                for item in planned_by_organization[organization.id]
+            )
+            latest_start = max(existing_starts) if existing_starts else None
+            for index, model in sorted(rows, key=lambda item: item[1].effective_from):
+                if latest_start is not None and model.effective_from <= latest_start:
+                    if model.effective_from in event_dates_by_organization[
+                        organization.id
+                    ]:
+                        continue
+                    errors[index].append(
+                        self._error(
+                            "ORGANIZATION_VERSION_DATE_NOT_FORWARD",
+                            "effective_from",
+                            "组织版本导入只能按日期向后追加，不能倒插或重复",
+                        )
+                    )
+                    continue
+                latest_start = model.effective_from
+
+        def incoming_at(
+            organization_code: str,
+            effective_at: date,
+            *,
+            excluded_index: int | None = None,
+        ) -> tuple[int, OrganizationVersionImport] | None:
+            candidates = [
+                item
+                for item in incoming.get(organization_code, [])
+                if item[0] != excluded_index
+                and item[1].effective_from <= effective_at
+                and not errors[item[0]]
+            ]
+            return max(candidates, key=lambda item: item[1].effective_from) if candidates else None
+
+        def projected_state(
+            organization_code: str,
+            effective_at: date,
+            *,
+            excluded_index: int | None = None,
+        ) -> dict[str, str | None] | None:
+            organization = organization_by_code.get(organization_code)
+            if organization is None:
+                return None
+            actual_candidates = [
+                item
+                for item in versions_by_organization[organization.id]
+                if item.effective_from <= effective_at
+                and (item.effective_to is None or item.effective_to >= effective_at)
+            ]
+            if not actual_candidates:
+                return None
+            actual = max(
+                actual_candidates,
+                key=lambda item: (item.effective_from, item.version),
+            )
+            organization_type = type_by_id.get(actual.organization_type_id)
+            parent = (
+                organization_by_id.get(actual.parent_organization_id)
+                if actual.parent_organization_id is not None
+                else None
+            )
+            state: dict[str, str | None] = {
+                "organization_type_code": (
+                    organization_type.code if organization_type else None
+                ),
+                "parent_code": parent.code if parent else None,
+                "status": actual.status,
+            }
+            for event in planned_by_organization[organization.id]:
+                if event.effective_date > effective_at:
+                    break
+                event_type = type_by_id.get(UUID(event.payload["organization_type_id"]))
+                parent_id = event.payload.get("parent_organization_id")
+                event_parent = (
+                    organization_by_id.get(UUID(str(parent_id)))
+                    if parent_id
+                    else None
+                )
+                state = {
+                    "organization_type_code": event_type.code if event_type else None,
+                    "parent_code": event_parent.code if event_parent else None,
+                    "status": str(event.payload["status"]),
+                }
+            incoming_version = incoming_at(
+                organization_code,
+                effective_at,
+                excluded_index=excluded_index,
+            )
+            if incoming_version is not None:
+                model = incoming_version[1]
+                state = {
+                    "organization_type_code": model.organization_type_code,
+                    "parent_code": model.parent_code,
+                    "status": model.status,
+                }
+            return state
+
+        for rows in incoming.values():
+            for index, model in rows:
+                organization_type = type_by_code.get(model.organization_type_code)
+                if organization_type is None:
+                    errors[index].append(
+                        self._error(
+                            "ORGANIZATION_TYPE_NOT_FOUND",
+                            "organization_type_code",
+                            "组织类型不存在",
+                        )
+                    )
+                elif not organization_type.is_active:
+                    prior_state = projected_state(
+                        model.organization_code,
+                        model.effective_from,
+                        excluded_index=index,
+                    )
+                    if (
+                        prior_state is None
+                        or prior_state["organization_type_code"]
+                        != model.organization_type_code
+                    ):
+                        errors[index].append(
+                            self._error(
+                                "ORGANIZATION_TYPE_NOT_ACTIVE",
+                                "organization_type_code",
+                                "停用的组织类型不能用于新的组织版本",
+                            )
+                        )
+                if model.parent_code is None:
+                    continue
+                if model.parent_code not in organization_by_code:
+                    errors[index].append(
+                        self._error(
+                            "ORGANIZATION_PARENT_NOT_FOUND",
+                            "parent_code",
+                            "上级组织稳定代码不存在",
+                        )
+                    )
+                    continue
+                parent_state = projected_state(
+                    model.parent_code,
+                    model.effective_from,
+                )
+                if parent_state is None or parent_state["status"] != "active":
+                    errors[index].append(
+                        self._error(
+                            "ORGANIZATION_PARENT_NOT_EFFECTIVE",
+                            "parent_code",
+                            "上级组织在当前版本生效日期未处于有效状态",
+                        )
+                    )
+
+        for rows in incoming.values():
+            for index, model in rows:
+                if errors[index]:
+                    continue
+                path: list[str] = []
+                current_code: str | None = model.organization_code
+                while current_code is not None:
+                    if current_code in path:
+                        cycle_codes = path[path.index(current_code) :]
+                        for cycle_code in cycle_codes:
+                            cycle_row = incoming_at(
+                                cycle_code,
+                                model.effective_from,
+                            )
+                            if cycle_row is not None and not any(
+                                error["code"] == "ORGANIZATION_PARENT_CYCLE"
+                                for error in errors[cycle_row[0]]
+                            ):
+                                errors[cycle_row[0]].append(
+                                    self._error(
+                                        "ORGANIZATION_PARENT_CYCLE",
+                                        "parent_code",
+                                        "组织版本会形成父级循环",
+                                    )
+                                )
+                        break
+                    path.append(current_code)
+                    state = projected_state(current_code, model.effective_from)
+                    current_code = state["parent_code"] if state else None
+
+    @staticmethod
+    def _order_organization_version_rows(
+        rows: list[ImportBatchRow],
+    ) -> list[ImportBatchRow]:
+        models = {
+            row.id: OrganizationVersionImport.model_validate(row.payload)
+            for row in rows
+        }
+        by_code: defaultdict[
+            str,
+            list[tuple[ImportBatchRow, OrganizationVersionImport]],
+        ] = defaultdict(list)
+        for row in rows:
+            model = models[row.id]
+            by_code[model.organization_code].append((row, model))
+        for items in by_code.values():
+            items.sort(key=lambda item: (item[1].effective_from, item[0].row_number))
+
+        dependencies: dict[UUID, set[UUID]] = {row.id: set() for row in rows}
+        for items in by_code.values():
+            for previous, current in zip(items, items[1:], strict=False):
+                dependencies[current[0].id].add(previous[0].id)
+        for row in rows:
+            model = models[row.id]
+            if model.parent_code is None:
+                continue
+            parent_candidates = [
+                item
+                for item in by_code.get(model.parent_code, [])
+                if item[1].effective_from <= model.effective_from
+            ]
+            if parent_candidates:
+                dependencies[row.id].add(parent_candidates[-1][0].id)
+
+        pending = {row.id: row for row in rows}
+        completed: set[UUID] = set()
+        ordered: list[ImportBatchRow] = []
+        while pending:
+            ready = [
+                row
+                for row_id, row in pending.items()
+                if dependencies[row_id] <= completed
+            ]
+            if not ready:
+                raise ApiError(
+                    status_code=409,
+                    code="IMPORT_ORGANIZATION_VERSION_DEPENDENCY_INVALID",
+                    message="组织版本依赖顺序无法解析，请重新校验批次",
+                )
+            ready.sort(
+                key=lambda row: (
+                    models[row.id].effective_from,
+                    models[row.id].organization_code,
+                    row.row_number,
+                )
+            )
+            for row in ready:
+                ordered.append(row)
+                completed.add(row.id)
+                del pending[row.id]
+        return ordered
+
     async def _organization_effective_at(
         self,
         organization_id: UUID,
@@ -1714,7 +2521,15 @@ class ImportService:
                 )
         return ordered
 
-    async def _create_target(self, batch: ImportBatch, row: ImportBatchRow) -> Any:
+    async def _create_target(
+        self,
+        batch: ImportBatch,
+        row: ImportBatchRow,
+        *,
+        organization_service: OrganizationService | None = None,
+        organization_version_organizations: dict[str, Organization] | None = None,
+        organization_version_types: dict[str, OrganizationType] | None = None,
+    ) -> Any:
         if batch.entity_type == "person_basic":
             payload = PersonBasicImport.model_validate(row.payload)
             target = await ExtendedWorkforceService(
@@ -2067,6 +2882,97 @@ class ImportService:
                     ),
                 ]
             )
+        elif batch.entity_type == "organization_version":
+            payload = OrganizationVersionImport.model_validate(row.payload)
+            organization = (organization_version_organizations or {}).get(
+                payload.organization_code
+            )
+            if organization is None:
+                raise ApiError(
+                    status_code=409,
+                    code="ORGANIZATION_NOT_FOUND",
+                    message="执行时组织稳定代码不存在",
+                )
+            organization_type = (organization_version_types or {}).get(
+                payload.organization_type_code
+            )
+            if organization_type is None:
+                raise ApiError(
+                    status_code=409,
+                    code="ORGANIZATION_TYPE_NOT_FOUND",
+                    message="执行时组织类型不存在",
+                )
+            parent: Organization | None = None
+            if payload.parent_code is not None:
+                parent = (organization_version_organizations or {}).get(
+                    payload.parent_code
+                )
+                if parent is None:
+                    raise ApiError(
+                        status_code=409,
+                        code="ORGANIZATION_PARENT_NOT_FOUND",
+                        message="执行时上级组织稳定代码不存在",
+                    )
+            organization_service = organization_service or OrganizationService(
+                self._session,
+                actor_id=self._actor_id,
+                trace_id=self._trace_id,
+            )
+            aggregate_version = await organization_service.aggregate_version(
+                organization.id
+            )
+            event_idempotency = uuid5(
+                NAMESPACE_URL,
+                (
+                    "corehr:organization-version-import:"
+                    f"{batch.source_system}:{batch.source_table}:"
+                    f"{row.source_record_id}"
+                ),
+            )
+            event_view = await organization_service.schedule_version(
+                organization.id,
+                OrganizationVersionCreate(
+                    name=payload.name,
+                    organization_type_id=organization_type.id,
+                    parent_organization_id=parent.id if parent else None,
+                    country_code=payload.country_code,
+                    status=payload.status,
+                    effective_date=payload.effective_from,
+                    command=VersionCommand(
+                        expected_version=aggregate_version,
+                        idempotency_key=event_idempotency,
+                        change_reason=payload.change_reason,
+                    ),
+                ),
+            )
+            expected_event_payload = {
+                "name": payload.name,
+                "organization_type_id": str(organization_type.id),
+                "parent_organization_id": str(parent.id) if parent else None,
+                "country_code": payload.country_code,
+                "status": payload.status,
+            }
+            if (
+                event_view.organization_id != organization.id
+                or event_view.event_type != "VERSION_CHANGE"
+                or event_view.effective_date != payload.effective_from
+                or event_view.payload != expected_event_payload
+                or event_view.expected_version != aggregate_version
+                or event_view.change_reason != payload.change_reason
+                or event_view.status not in {"planned", "applied"}
+            ):
+                raise ApiError(
+                    status_code=409,
+                    code="ORGANIZATION_VERSION_EVENT_MISMATCH",
+                    message="组织版本事件与当前导入行不一致",
+                )
+            target = await self._session.get(OrganizationEvent, event_view.id)
+            if target is None:
+                raise ApiError(
+                    status_code=500,
+                    code="ORGANIZATION_VERSION_EVENT_CREATE_FAILED",
+                    message="组织版本事件创建后未能读取",
+                )
         else:
             raise ApiError(
                 status_code=422,
@@ -2111,6 +3017,14 @@ class ImportService:
             return model.job_code
         if entity_type == "job_version" and isinstance(model, JobVersionImport):
             return f"{model.job_code}:{model.effective_from.isoformat()}"
+        if entity_type == "organization_version" and isinstance(
+            model,
+            OrganizationVersionImport,
+        ):
+            return (
+                f"{model.organization_code}:"
+                f"{model.effective_from.isoformat()}"
+            )
         return str(getattr(model, "code"))
 
     @staticmethod
@@ -2172,6 +3086,9 @@ class ImportService:
         elif batch.entity_type == "job_version":
             target_code = str(row.payload.get("job_code", ""))
             reason = "职务历史版本导入"
+        elif batch.entity_type == "organization_version":
+            target_code = str(row.payload.get("organization_code", ""))
+            reason = "组织历史版本导入"
         self._session.add(
             AuditLog(
                 occurred_at=datetime.now(UTC),
