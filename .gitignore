@@ -61,3 +61,6 @@ compose.override.yml
 # Generated secrets or local certificates
 deploy/local/certs/
 deploy/local/secrets/
+
+# local Obsidian workspace metadata
+.obsidian/
