@@ -377,6 +377,18 @@ async def test_apply_cancel_history_audit_and_outbox(
     assert cancelled.status_code == 200
     assert cancelled.json()["status"] == "cancelled"
 
+    # Requirement: ORG-PROT-002 — 组织详情的变更记录必须同时呈现创建、已生效和已取消事件。
+    change_history = await business_client.get(
+        f"/api/v1/organizations/{bu['id']}/events",
+        headers=_auth(restricted_token),
+    )
+    assert change_history.status_code == 200
+    assert change_history.json()["total"] == 3
+    history_by_id = {item["id"]: item for item in change_history.json()["items"]}
+    assert history_by_id[scheduled.json()["id"]]["status"] == "applied"
+    assert history_by_id[second.json()["id"]]["status"] == "cancelled"
+    assert any(item["event_type"] == "CREATE" for item in change_history.json()["items"])
+
     event = await db_session.scalar(
         select(OrganizationEvent).where(
             OrganizationEvent.id == UUID(scheduled.json()["id"])

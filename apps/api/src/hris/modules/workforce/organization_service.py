@@ -47,6 +47,7 @@ from hris.modules.workforce.organization_schemas import (
     CostCenterCreate,
     CostCenterView,
     OrganizationCreate,
+    OrganizationEventPage,
     OrganizationEventView,
     OrganizationLeaderSet,
     OrganizationLegalEntitySet,
@@ -619,6 +620,47 @@ class OrganizationService:
             planned_events=[
                 OrganizationEventView.model_validate(event) for event in planned_events
             ],
+        )
+
+    async def list_change_events(
+        self,
+        organization_id: UUID,
+        *,
+        limit: int,
+        offset: int,
+    ) -> OrganizationEventPage:
+        # Requirement: ORG-PROT-002 — 详情页变更记录只汇总组织创建与版本变更，
+        # 不混入法人、负责人、BP和财务维度事件。
+        await self._organization(organization_id)
+        filters = (
+            OrganizationEvent.organization_id == organization_id,
+            OrganizationEvent.event_type.in_(["CREATE", "VERSION_CHANGE"]),
+        )
+        total = int(
+            await self._session.scalar(
+                select(func.count()).select_from(OrganizationEvent).where(*filters)
+            )
+            or 0
+        )
+        events = list(
+            (
+                await self._session.scalars(
+                    select(OrganizationEvent)
+                    .where(*filters)
+                    .order_by(
+                        OrganizationEvent.effective_date.desc(),
+                        OrganizationEvent.created_at.desc(),
+                    )
+                    .limit(limit)
+                    .offset(offset)
+                )
+            ).all()
+        )
+        return OrganizationEventPage(
+            items=[OrganizationEventView.model_validate(event) for event in events],
+            total=total,
+            limit=limit,
+            offset=offset,
         )
 
     async def set_legal_entities(

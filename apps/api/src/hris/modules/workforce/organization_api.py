@@ -19,6 +19,7 @@ from hris.modules.workforce.organization_schemas import (
     CostCenterCreate,
     CostCenterView,
     OrganizationCreate,
+    OrganizationEventPage,
     OrganizationEventView,
     OrganizationLeaderSet,
     OrganizationLegalEntitySet,
@@ -153,6 +154,26 @@ async def get_organization(
     return await organization_service.get_as_of(
         organization_id,
         effective_at or organization_service.business_date(),
+    )
+
+
+@router.get(
+    "/api/v1/organizations/{organization_id}/events",
+    response_model=OrganizationEventPage,
+)
+async def list_organization_change_events(
+    organization_id: UUID,
+    request: Request,
+    db: DbSession,
+    user: OrganizationViewer,
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+) -> OrganizationEventPage:
+    # Requirement: ORG-PROT-002 — 新标签页中的变更记录沿用组织查看权限。
+    return await service(db, user, request).list_change_events(
+        organization_id,
+        limit=limit,
+        offset=offset,
     )
 
 

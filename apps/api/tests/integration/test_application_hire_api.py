@@ -151,15 +151,17 @@ async def test_hire_application_creates_pending_start_records_idempotently(
     assert direct_hired_stage.json()["code"] == "APPLICATION_HIRE_COMMAND_REQUIRED"
 
     idempotency_key = str(uuid4())
+    # Requirement: CHECKPOINT-001 — 待入职样例随测试日期推进，始终晚于职务生效日。
+    planned_start = date.today() + timedelta(days=30)
     payload = {
         "idempotency_key": idempotency_key,
-        "planned_start_date": "2026-09-01",
+        "planned_start_date": planned_start.isoformat(),
         "employee_type_code": "REGULAR",
         "contract_legal_entity_id": str(legal.id),
         "gender_code": "UNKNOWN",
         "nationality_code": "CHN",
         "country_code": "CHN",
-        "probation_end_date": "2026-11-30",
+        "probation_end_date": (planned_start + timedelta(days=90)).isoformat(),
         "primary_document_type_code": "SYNTHETIC_ID",
         "primary_document_number": "SYN-HIRE-0001",
         "primary_document_issuing_country_code": "CN",
@@ -174,7 +176,7 @@ async def test_hire_application_creates_pending_start_records_idempotently(
     assert first.status_code == 201, first.text
     result = first.json()
     assert result["application_id"] == application_id
-    assert result["planned_start_date"] == "2026-09-01"
+    assert result["planned_start_date"] == planned_start.isoformat()
 
     duplicate = await business_client.post(
         f"/api/v1/lifecycle/applications/{application_id}/hire",
@@ -281,7 +283,8 @@ async def test_hire_application_can_reuse_existing_person_and_employee_number(
         headers=_auth(admin_token),
         json={
             "idempotency_key": str(uuid4()),
-            "planned_start_date": "2026-10-01",
+            # Requirement: CHECKPOINT-001 — 复聘样例同样避免固定日期随时间失效。
+            "planned_start_date": (date.today() + timedelta(days=30)).isoformat(),
             "employee_type_code": "REGULAR",
             "contract_legal_entity_id": str(legal.id),
             "existing_person_id": str(existing_person.id),

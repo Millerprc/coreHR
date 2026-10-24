@@ -88,6 +88,13 @@ class OrganizationEventView(BaseModel):
     cancelled_at: datetime | None
 
 
+class OrganizationEventPage(BaseModel):
+    items: list[OrganizationEventView]
+    total: int
+    limit: int
+    offset: int
+
+
 class OrganizationView(BaseModel):
     id: UUID
     code: str
