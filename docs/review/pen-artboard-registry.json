@@ -1,0 +1,943 @@
+{
+  "$comment": "coreHR Pencil 画板登记表。规范 docs/design/antd-page-interaction-standard.md §10.2 要求功能需求文档登记画板 ID 与 Review 状态；本文件是该登记的机器可读副本。",
+  "schemaVersion": "1.2",
+  "generatedAt": "2026-10-24",
+  "source": {
+    "pencilFile": "C:\\Users\\83289\\Documents\\HRMS\\coreHR.pen",
+    "note": "Pencil 源文件在仓库之外，不进版本控制；预览图与本表在仓库内。",
+    "fontVariable": {
+      "name": "$corehr-font",
+      "value": "Noto Sans SC",
+      "note": "仅 Noto Sans SC 与 Inter 被 Pencil 判定合法；改用 Microsoft YaHei / Source Han Sans SC / PingFang SC 会退化渲染。"
+    },
+    "integrity": {
+      "sizeBytes": 1115690,
+      "sha256Prefix": "4eb6b07d67e6379cefc633bccc63608a",
+      "topLevelNodes": 26,
+      "totalNodes": 2158,
+      "uniqueNodeIds": 2158,
+      "duplicateNodeIds": 0,
+      "utf8ReplacementChars": 0,
+      "bom": false,
+      "trailingNewline": false,
+      "serialization": "json.dumps(indent=2, ensure_ascii=False)，无 BOM、无尾随换行"
+    },
+    "knownDefectsFixed": [
+      {
+        "date": "2026-10-24",
+        "issue": "磁盘 .pen 曾有 159 个重复节点 ID（上轮拼装画板时把子树复制进另一画板未重编号），Pencil 载入时被迫重编号，导致画布 ID 与文件 ID 不一致。",
+        "fix": "Python 补丁重编号所有重复节点（首个出现保留原 ID），并校验无任何 ref/descendants 指向被重编号的 ID；现磁盘重复 ID 数为 0。"
+      }
+    ]
+  },
+  "reviewStatus": {
+    "current": "PROTOTYPE_APPROVED",
+    "target": "PROTOTYPE_APPROVED",
+    "rule": "只有用户签字后才能改为 PROTOTYPE_APPROVED；改动状态必须同时更新本表与对应功能需求文档的 §10.4。",
+    "pendingUserConfirmations": [],
+    "signedAt": "2026-10-24",
+    "signedBy": "产品决策人"
+  },
+  "artboards": [
+    {
+      "id": "op8Nx",
+      "name": "职位管理 · 组织管理 v1.0",
+      "version": "v1.0",
+      "size": {
+        "width": 1440,
+        "height": 960
+      },
+      "preview": "docs/review/pen-prototypes/01-职位管理.png",
+      "reviewStatus": "PROTOTYPE_APPROVED",
+      "carrier": "HOST_PAGE",
+      "breadcrumb": [
+        "组织管理",
+        "职位管理"
+      ],
+      "primaryComponents": [
+        "iNqAY",
+        "udwQu",
+        "QJPxe",
+        "L07Kg3",
+        "DoTiH"
+      ],
+      "spec": {
+        "title": "职位管理",
+        "metricStrip": [
+          "有效职位",
+          "职级",
+          "职等",
+          "职类",
+          "序列"
+        ],
+        "tabs": [
+          "职位列表",
+          "职务维度"
+        ],
+        "filters": [
+          "生效日期",
+          "搜索职位名称或编码",
+          "重置"
+        ],
+        "columns": [
+          "职位编码",
+          "职位名称",
+          "职级",
+          "职等",
+          "职类",
+          "序列",
+          "生效日期",
+          "版本",
+          "状态",
+          "操作"
+        ],
+        "statusTag": {
+          "启用": "success"
+        },
+        "effectiveDateRender": "2026-01-01 至 长期",
+        "pagination": {
+          "showSizeChanger": false
+        }
+      },
+      "implementationDeltas": [
+        "重置不清空生效日期",
+        "职务维度 Tab 的分页是静态的（只显示首 20 条）",
+        "职位载荷 source_job_id / attributes 在表单中无控件"
+      ]
+    },
+    {
+      "id": "b5PHy",
+      "name": "汇报关系 · 组织管理 v1.0",
+      "version": "v1.0",
+      "size": {
+        "width": 1440,
+        "height": 960
+      },
+      "preview": "docs/review/pen-prototypes/02-汇报关系.png",
+      "reviewStatus": "PROTOTYPE_APPROVED",
+      "carrier": "HOST_PAGE",
+      "breadcrumb": [
+        "组织管理",
+        "汇报关系"
+      ],
+      "primaryComponents": [
+        "iNqAY",
+        "F0g7Th",
+        "xvJei",
+        "QJPxe",
+        "DoTiH"
+      ],
+      "spec": {
+        "title": "汇报关系",
+        "actions": [
+          "新增关系"
+        ],
+        "tabs": [
+          "关系管理",
+          "关系图"
+        ],
+        "filters": [
+          "生效日期",
+          "上级",
+          "下级",
+          "重置"
+        ],
+        "columns": [
+          "上级",
+          "下级",
+          "关系类型",
+          "生效日期",
+          "失效日期",
+          "操作"
+        ],
+        "relationTypeTags": {
+          "直属": {
+            "bg": "#E6F4FF",
+            "fg": "#0958D9"
+          },
+          "虚线": {
+            "bg": "#F9F0FF",
+            "fg": "#531DAB"
+          }
+        },
+        "expiredDateRender": "长期有效",
+        "rowAction": {
+          "结束": "danger-link"
+        }
+      },
+      "implementationDeltas": [
+        "「结束」保留 Popconfirm 二次确认（画板未画该状态）",
+        "上级/下级为远程搜索 PersonSelect，画板用下拉形态示意"
+      ],
+      "revisions": [
+        {
+          "date": "2026-10-24",
+          "fixes": [
+            "关系类型 Tag 的文字原先被画在圆角框外（框内为空），已移入标签内部",
+            "筛选区原先只有 2 个字段，已补上「下级」，并把「上级」的占位文案由「全部下级」纠正为「全部上级」",
+            "总数原为「共 4 条汇报关系」但只有 2 行演示数据，已改为「共 2 条汇报关系」（工具条与分页器两处一致）"
+          ],
+          "note": "缺陷由 2× PNG 实拍复核发现，非工具告警。.pen 源文件与预览图已同步更新。"
+        }
+      ]
+    },
+    {
+      "id": "laZ5d",
+      "name": "操作日志 · 数据治理 v1.0",
+      "version": "v1.0",
+      "size": {
+        "width": 1440,
+        "height": 960
+      },
+      "preview": "docs/review/pen-prototypes/03-操作日志.png",
+      "reviewStatus": "PROTOTYPE_APPROVED",
+      "carrier": "HOST_PAGE",
+      "breadcrumb": [
+        "数据治理",
+        "操作日志"
+      ],
+      "primaryComponents": [
+        "iNqAY",
+        "J1Vgus",
+        "xvJei",
+        "QJPxe",
+        "DoTiH"
+      ],
+      "spec": {
+        "title": "操作日志",
+        "actions": [
+          "导出CSV"
+        ],
+        "tabs": [],
+        "filters": [
+          "时间范围",
+          "操作类型",
+          "对象类型",
+          "追踪 ID",
+          "操作人",
+          "查询",
+          "重置"
+        ],
+        "filterMode": "draft",
+        "columns": [
+          "时间",
+          "操作人",
+          "操作",
+          "对象类型",
+          "对象 ID",
+          "追踪 ID",
+          "来源",
+          "原因"
+        ],
+        "rawValueFields": [
+          "action",
+          "object_type",
+          "source"
+        ],
+        "rawValueNote": "后端原始代码，前端不做中文映射",
+        "pagination": {
+          "showSizeChanger": true,
+          "pageSizeOptions": [
+            20,
+            50,
+            100
+          ],
+          "sampleTotal": 128
+        }
+      },
+      "implementationDeltas": [
+        "「重置」清空全部筛选（与职位页语义不同）",
+        "action / object_type / source 保留英文原值"
+      ]
+    },
+    {
+      "id": "JN45s",
+      "name": "人员中心 · 员工档案 v1.0",
+      "version": "v1.0",
+      "size": {
+        "width": 1440,
+        "height": 960
+      },
+      "preview": "docs/review/pen-prototypes/04-人员中心.png",
+      "reviewStatus": "PROTOTYPE_APPROVED",
+      "carrier": "HOST_PAGE",
+      "breadcrumb": [
+        "人员中心"
+      ],
+      "primaryComponents": [
+        "iNqAY",
+        "J1Vgus",
+        "QJPxe",
+        "DoTiH"
+      ],
+      "spec": {
+        "title": "人员中心",
+        "subtitle": "自然人、雇佣经历、主组织职务和协议关系分层保存。",
+        "filters": [
+          "姓名或工号",
+          "在职状态",
+          "主组织",
+          "查询",
+          "重置"
+        ],
+        "columns": [
+          "姓名",
+          "工号",
+          "主组织",
+          "职位",
+          "在职状态",
+          "入职日期",
+          "操作"
+        ],
+        "rowAction": "查看档案"
+      },
+      "implementationDeltas": [
+        "员工标签不是独立页面，入口是「查看档案」打开的 Drawer"
+      ]
+    },
+    {
+      "id": "BUE0c",
+      "name": "员工档案 Drawer · 员工标签 Tab v1.0",
+      "version": "v1.0",
+      "size": {
+        "width": 1440,
+        "height": 960
+      },
+      "preview": "docs/review/pen-prototypes/05-员工档案Drawer-员工标签Tab.png",
+      "reviewStatus": "PROTOTYPE_APPROVED",
+      "carrier": "DRAWER",
+      "carrierSize": "large",
+      "overlayOpacity": 0.45,
+      "spec": {
+        "drawerTitle": "张伟 · E-10001",
+        "drawerSubtitle": "员工档案 · 人员中心",
+        "drawerActions": [
+          "编辑",
+          "修正"
+        ],
+        "drawerActionStyle": {
+          "编辑": "primary",
+          "修正": "default"
+        },
+        "tabs": [
+          "基础信息",
+          "敏感与经历档案",
+          "员工标签",
+          "劳动关系 2",
+          "四类主体版本 3",
+          "组织职务 1",
+          "协议关系 2"
+        ],
+        "activeTab": "员工标签",
+        "toolbar": {
+          "summary": "共 4 个标签",
+          "action": "新增标签"
+        },
+        "labelGroups": [
+          "技能",
+          "关键岗位",
+          "培养对象"
+        ],
+        "labelRowStructure": [
+          "上行 Tag（人工=蓝 / AI=紫带 🤖）",
+          "下行 来源 + 有效性 + 结束"
+        ]
+      },
+      "implementationDeltas": [
+        "员工标签 Tab 仅在管理员可见时挂载",
+        "已结束的标签不显示「结束」按钮"
+      ],
+      "revisions": [
+        {
+          "date": "2026-10-24",
+          "fixes": [
+            "抽屉头原为单一文本链接「更正基础信息」，按 D-105/D-106 拆为【编辑】(COMP 主按钮 F0g7Th) 与【修正】(COMP 次按钮 J1Vgus)，编辑在左、修正在右，关闭图标保留",
+            "同一改动同步应用到 FmBa4 画板内的那份 Drawer 副本"
+          ],
+          "note": "两个按钮均用 COMP 组件实例（descendants 覆盖文案与图标启用态），保证 D-091 组件复用优先。"
+        }
+      ]
+    },
+    {
+      "id": "FmBa4",
+      "name": "批量新增标签 Modal · D-068 v1.0",
+      "version": "v1.0",
+      "size": {
+        "width": 1440,
+        "height": 960
+      },
+      "preview": "docs/review/pen-prototypes/06-批量新增标签Modal.png",
+      "reviewStatus": "PROTOTYPE_APPROVED",
+      "carrier": "MODAL",
+      "carrierWidth": 520,
+      "nestedIn": "BUE0c",
+      "spec": {
+        "title": "批量新增标签",
+        "footer": [
+          "取消",
+          "保存"
+        ],
+        "formGroups": [
+          {
+            "name": "从标签库选择",
+            "fields": [
+              "标签类型（下拉，全部标签类型）",
+              "标签（多选）"
+            ]
+          },
+          {
+            "name": "生效与来源",
+            "fields": [
+              "生效日期（默认今天）",
+              "来源（人工标记 / AI 生成）"
+            ]
+          }
+        ]
+      },
+      "implementationDeltas": [
+        "标签只能从标签库选，没有自由文本「标签名称」输入框"
+      ]
+    },
+    {
+      "id": "B3gBx",
+      "name": "员工档案 Drawer · 编辑态 v1.0",
+      "version": "v1.0",
+      "size": {
+        "width": 1440,
+        "height": 960
+      },
+      "preview": "docs/review/pen-prototypes/07-员工档案Drawer-编辑态.png",
+      "reviewStatus": "PROTOTYPE_APPROVED",
+      "carrier": "DRAWER_INNER_STATE",
+      "carrierSize": "large",
+      "overlayOpacity": 0.45,
+      "hostPage": "JN45s",
+      "decisionRefs": [
+        "D-105",
+        "D-106",
+        "D-087"
+      ],
+      "spec": {
+        "drawerTitle": "张伟 · E-10001",
+        "drawerSubtitle": "编辑基础信息 · 员工档案",
+        "drawerActions": [
+          "编辑",
+          "修正"
+        ],
+        "tabsVisible": false,
+        "notice": "编辑直接保存并覆盖登记值；如需保留历史并指定生效日期，请使用【修正】。",
+        "groupTitle": "基础信息",
+        "fields": [
+          "法定姓名（必填）",
+          "性别代码",
+          "显示姓名",
+          "出生日期",
+          "曾用名",
+          "国籍代码",
+          "国家/地区代码",
+          "民族代码",
+          "婚姻状况代码",
+          "政治面貌代码"
+        ],
+        "reasonField": "变更原因（必填，多行）",
+        "auditNote": "保存后将在操作日志中记录每个字段的变更前值与变更后值。",
+        "footer": [
+          "取消",
+          "保存"
+        ]
+      },
+      "implementationDeltas": [
+        "字段集合与 PeopleWorkspace.tsx:418-427 的 person 表单逐项一致（10 个基础字段 + 变更原因）",
+        "编辑态不显示 Drawer Tabs（规范 §4.3 禁止在 Drawer 上叠加第二层业务容器，故改为 Drawer 内联态）"
+      ]
+    },
+    {
+      "id": "C2KxYf",
+      "name": "员工档案 Drawer · 修正态 v1.0",
+      "version": "v1.0",
+      "size": {
+        "width": 1440,
+        "height": 960
+      },
+      "preview": "docs/review/pen-prototypes/08-员工档案Drawer-修正态.png",
+      "reviewStatus": "PROTOTYPE_APPROVED",
+      "carrier": "DRAWER_INNER_STATE",
+      "carrierSize": "large",
+      "overlayOpacity": 0.45,
+      "hostPage": "JN45s",
+      "decisionRefs": [
+        "D-102",
+        "D-105",
+        "D-106",
+        "D-087"
+      ],
+      "spec": {
+        "drawerTitle": "张伟 · E-10001",
+        "drawerSubtitle": "修正基础信息 · 员工档案",
+        "drawerActions": [
+          "编辑",
+          "修正"
+        ],
+        "tabsVisible": false,
+        "notice": "修正不覆盖登记值：主档始终是登记值，当前结果 = 主档 + 生效日期不晚于查询日期的最后一条修正。",
+        "comparePanels": [
+          "登记值（主档）",
+          "当前生效值"
+        ],
+        "compareRows": [
+          "法定姓名",
+          "性别代码",
+          "国籍代码"
+        ],
+        "groupTitle": "修正内容",
+        "fields": [
+          "待修正字段（必填，下拉）",
+          "修正后值（必填）",
+          "生效日期（必填）",
+          "变更原因（必填，多行）"
+        ],
+        "auditNote": "提交后写入修正版本记录，保留登记值与历次修正，可按任意时点回看当时的字段值。",
+        "footer": [
+          "取消",
+          "提交修正"
+        ]
+      },
+      "implementationDeltas": [
+        "画板演示员工「张伟」暂无修正记录，故登记值与当前生效值两栏内容相同",
+        "修正态不显示 Drawer Tabs（同 B3gBx，规范 §4.3）"
+      ]
+    },
+    {
+      "id": "Gxgyj",
+      "name": "历史花名册 · 人员中心 v1.0",
+      "version": "v1.0",
+      "size": {
+        "width": 1440,
+        "height": 960
+      },
+      "preview": "docs/review/pen-prototypes/09-历史花名册.png",
+      "reviewStatus": "PROTOTYPE_APPROVED",
+      "carrier": "HOST_PAGE",
+      "breadcrumb": [
+        "人员中心",
+        "历史花名册"
+      ],
+      "primaryComponents": [
+        "iNqAY",
+        "J1Vgus",
+        "QJPxe",
+        "DoTiH"
+      ],
+      "decisionRefs": [
+        "D-102",
+        "D-087"
+      ],
+      "spec": {
+        "title": "历史花名册",
+        "subtitle": "按生效日期回看任意时点的员工名册与当时信息。",
+        "notice": "时点的人员字段值 = 登记值 + 生效日期不晚于该时点的最后一条修正；未被修正过的字段等于当前值。",
+        "filters": [
+          "查看日期",
+          "主组织",
+          "在职状态",
+          "搜索姓名或工号",
+          "重置",
+          "查询"
+        ],
+        "filterMode": "draft",
+        "columns": [
+          "工号",
+          "姓名（时点）",
+          "主组织（时点）",
+          "职位（时点）",
+          "在职状态（时点）",
+          "入职日期（时点）",
+          "操作"
+        ],
+        "rowAction": "查看档案",
+        "totalRender": "共 248 人（截至 2024-01-01）"
+      },
+      "implementationDeltas": [
+        "画板演示的是历史时点 2024-01-01（数据行的主组织/职位与当前值不同，用于体现时点切片）；实现的默认时点是今天",
+        "「（时点）」后缀是本页专属写法，用于提醒这一列取的是历史值而非当前值",
+        "该页对应 Moka 的「员工花名册」历史查询能力；本轮仅按 D-102 落时点查询，尚未实现 Moka 花名册的「导出/对比/批量」等其余动作"
+      ]
+    },
+    {
+      "id": "eEgSX",
+      "name": "新建兼岗 Modal · D-104 v1.0",
+      "version": "v1.0",
+      "size": {
+        "width": 1440,
+        "height": 960
+      },
+      "preview": "docs/review/pen-prototypes/10-新建兼岗Modal.png",
+      "reviewStatus": "PROTOTYPE_APPROVED",
+      "carrier": "MODAL",
+      "carrierWidth": 520,
+      "carrierHeight": 648,
+      "hostPage": "JN45s",
+      "decisionRefs": [
+        "D-026",
+        "D-104",
+        "D-087"
+      ],
+      "spec": {
+        "title": "新建兼岗",
+        "footer": [
+          "取消",
+          "保存"
+        ],
+        "fields": [
+          "人员（必填，下拉，远程搜索）",
+          "组织（必填，下拉，远程搜索）",
+          "职务（下拉）",
+          "生效日期（必填，默认今天）",
+          "失效日期（选填，留空=长期有效）",
+          "变更原因（必填，多行）"
+        ],
+        "note": "兼岗以人员级组织关系保存，同一人可同时有多个兼岗；同一时刻只能有一个主组织。"
+      },
+      "implementationDeltas": [
+        "Modal 覆盖宿主页（人员中心列表页），**不叠在员工档案 Drawer 上**——规范 §4.3 禁止嵌套两层业务 Modal/Drawer；员工档案 Drawer 的「组织职务」Tab 只做只读展示",
+        "画板未画「结束兼岗」的二次确认（Popconfirm）状态",
+        "画板未画列表页的兼岗列表（该列表挂在宿主页上，尚未单独出画板）"
+      ]
+    },
+    {
+      "id": "vg2Mm",
+      "name": "组织架构 · 查看日期 D-103 v1.0",
+      "version": "v1.0",
+      "size": {
+        "width": 1440,
+        "height": 960
+      },
+      "preview": "docs/review/pen-prototypes/11-组织架构-查看日期.png",
+      "reviewStatus": "PROTOTYPE_APPROVED",
+      "carrier": "HOST_PAGE",
+      "breadcrumb": [
+        "组织管理",
+        "部门管理"
+      ],
+      "primaryComponents": [
+        "DoTiH",
+        "iNqAY"
+      ],
+      "decisionRefs": [
+        "D-103",
+        "D-087"
+      ],
+      "spec": {
+        "title": "部门管理",
+        "subtitle": "维护公司与部门；查看日期决定组织树、列表与详情的读取时点，只支持查看当前与历史时点。",
+        "tabs": [
+          "列表",
+          "组织架构树"
+        ],
+        "activeTab": "组织架构树",
+        "treeTitle": "截至 2024-06-30 的组织树",
+        "treeCount": "6 个组织",
+        "viewDateLabel": "查看日期",
+        "viewDateValue": "2024-06-30",
+        "stateTag": {
+          "text": "截至 2024-06-30",
+          "color": "processing"
+        },
+        "backToCurrent": "回到当前",
+        "detailFields": [
+          "生效起始",
+          "生效结束",
+          "直接上级编码",
+          "国家或地区",
+          "当前版本",
+          "查看时点"
+        ],
+        "relationTabs": [
+          "法人主体",
+          "负责人",
+          "BP服务",
+          "成本分摊",
+          "收入目标"
+        ],
+        "listFilterTag": "截至 2024-06-30 · 列表同样按该时点切片",
+        "hasQueryButton": false
+      },
+      "implementationDeltas": [
+        "树面板标题与无障碍 label 同步为历史时点文案（pen.dev 无 aria-label 属性，用 metadata.ariaLabel 同文案承载）",
+        "未画未来时点 422 的错误条（错误态不在本板范围）",
+        "基座页头原有的「按日期查看：今天」在真实代码中不存在，画板换为代码里的「添加变更」；列表筛选区按代码删掉「状态筛选」与「查询」"
+      ]
+    },
+    {
+      "id": "vTfjZ",
+      "name": "考勤 · 发假明细与排班管理 D-107 v1.0",
+      "version": "v1.0",
+      "size": {
+        "width": 1440,
+        "height": 960
+      },
+      "preview": "docs/review/pen-prototypes/12-考勤-发假明细与排班管理.png",
+      "reviewStatus": "PROTOTYPE_APPROVED",
+      "carrier": "HOST_PAGE",
+      "breadcrumb": [
+        "考勤管理"
+      ],
+      "primaryComponents": [
+        "DoTiH",
+        "iNqAY",
+        "bCSVO",
+        "L07Kg3",
+        "F0g7Th",
+        "J1Vgus"
+      ],
+      "decisionRefs": [
+        "D-107",
+        "D-087"
+      ],
+      "spec": {
+        "title": "考勤管理",
+        "tabs": [
+          "日报与月报",
+          "排班与打卡",
+          "排班管理",
+          "请假与销假",
+          "假期余额",
+          "发假明细",
+          "期间冻结",
+          "规则与班次"
+        ],
+        "activeTab": "发假明细",
+        "notice": "发假额度规则待企业输入",
+        "noticeDetail": "计提频率、工龄折算、封顶、清零、结转上限、有效期与离职处理由企业规则确认后配置；未配置的规则不会参与自动计提，计提任务会跳过并记录原因。",
+        "grantBatchTable": [
+          "批次号",
+          "期间",
+          "发放日",
+          "来源",
+          "状态",
+          "发放时间",
+          "操作"
+        ],
+        "grantBatchRow": "LG-2024-06 | 2024-06 | 2024-06-30 | 手工发放 | 草稿 | — | 明细·发放·作废",
+        "grantRuleTable": [
+          "代码",
+          "名称",
+          "额度天数",
+          "计提频率",
+          "工龄下限",
+          "工龄上限",
+          "折算方式",
+          "封顶",
+          "结转上限",
+          "有效期",
+          "清零策略",
+          "离职处理"
+        ],
+        "grantRuleRow": "R-ANNUAL | 年假标准规则 | 规则待配置 ×10",
+        "scheduleSections": [
+          "排班类型",
+          "轮班周期",
+          "弹性窗口",
+          "发布批次",
+          "换班记录"
+        ],
+        "scheduleTypeRow": "FIXED | 固定班 | 不需要 | 不需要 | 不允许 | 是 | 有效",
+        "swapRow": "SW-2024-0001 | 张伟 | 李娜 | 2024-06-18 | 早班 | 晚班 | 待处理 | 批准·驳回"
+      },
+      "implementationDeltas": [
+        "所有企业规则字段一律显示「规则待配置」——取值待企业输入，本轮不擅自填值",
+        "本板只画主页面，各新建/编辑弹层未画（新建排班/发放批次为 Modal，编辑为 Drawer，均单层）",
+        "额度规则表画 12 列（真实实现 16 列），受单板纵向容量限制",
+        "未画 workspace 级 Alert「时区进入规则和打卡证据」",
+        "无指标条：真实 AttendanceWorkspace 未使用 MetricStrip",
+        "表头行/数据行未复用 d1vHc/e614R（pen.dev 对「注入子节点的 ref 实例」会让 Get 遍历崩溃），改用 bCSVO 单元格 + L07Kg3 标签等 COMP ref；单板内 8 张表，表头/行压到 24px（其他画板 44/56）"
+      ]
+    },
+    {
+      "id": "e284o",
+      "name": "消息中心 · 铃铛与消息 Drawer D-100 v1.0",
+      "version": "v1.0",
+      "size": {
+        "width": 1440,
+        "height": 960
+      },
+      "preview": "docs/review/pen-prototypes/13-消息中心-铃铛与消息Drawer.png",
+      "reviewStatus": "PROTOTYPE_APPROVED",
+      "carrier": "DRAWER",
+      "carrierSize": "medium",
+      "overlayOpacity": 0.45,
+      "hostPage": "JN45s",
+      "primaryComponents": [
+        "DoTiH",
+        "iNqAY",
+        "L07Kg3"
+      ],
+      "decisionRefs": [
+        "D-100",
+        "D-087"
+      ],
+      "spec": {
+        "drawerTitle": "消息中心",
+        "topbarBell": {
+          "badge": "5",
+          "note": "铃铛按钮带未读徽标数字"
+        },
+        "categoryRow": [
+          "审批待办",
+          "系统通知",
+          "考勤提醒",
+          "薪资发放"
+        ],
+        "activeCategory": "审批待办",
+        "messageList": [
+          "审批待办 | 10-24 09:12 | 张伟的调岗审批已通过 | 生效日期 2024-06-30，请知悉。| 标记已读",
+          "考勤提醒 | 10-23 18:40 | 10 月排班已发布 | 共 24 人，请核对班次。| 标记已读",
+          "系统通知 | 10-22 09:05 | 考勤模块已上线 | 新增发假明细与排班管理，可按期间查看。"
+        ],
+        "emptyState": "暂无消息",
+        "sseNote": "实时刷新走 SSE（fetch + ReadableStream），连接默认 120 秒到时断开、客户端指数退避自动重连；无对应 UI 表现"
+      },
+      "implementationDeltas": [
+        "真实 MessageBell.tsx 的 Drawer 标题是「消息」，画板按规格写「消息中心」",
+        "真实代码没有抽屉级分类筛选行（分类只解析消息条目标签），画板按规格补了标签行",
+        "真实代码没有独立「标记已读」按钮（点整条即已读），画板按规格画了链接",
+        "真实 AppShell 顶栏顺序为 MessageBell → 用户摘要 → 退出 → LicenseBadge，铃铛并非最右（D-108 把授权徽标钉在最右）；画板顶栏只画「帮助 + 铃铛」，且为不被抽屉遮挡，铃铛置于抽屉左缘"
+      ]
+    }
+  ],
+  "components": [
+    {
+      "id": "DoTiH",
+      "name": "COMP 应用侧边导航",
+      "role": "侧栏导航壳（品牌区 + 11 项导航 + 弹性空白 + 当前用户）",
+      "usedBy": [
+        "op8Nx",
+        "b5PHy",
+        "laZ5d",
+        "JN45s",
+        "BUE0c",
+        "FmBa4",
+        "B3gBx",
+        "C2KxYf"
+      ]
+    },
+    {
+      "id": "iNqAY",
+      "name": "COMP 页头",
+      "role": "标题 + 副标题 + 右侧操作区",
+      "usedBy": [
+        "op8Nx",
+        "b5PHy",
+        "laZ5d",
+        "JN45s",
+        "BUE0c",
+        "FmBa4",
+        "B3gBx",
+        "C2KxYf"
+      ]
+    },
+    {
+      "id": "F0g7Th",
+      "name": "COMP 主按钮",
+      "role": "主操作按钮（primary）",
+      "usedBy": [
+        "b5PHy",
+        "JN45s",
+        "FmBa4",
+        "BUE0c",
+        "B3gBx",
+        "C2KxYf"
+      ]
+    },
+    {
+      "id": "J1Vgus",
+      "name": "COMP 次按钮",
+      "role": "次操作按钮（default + border）",
+      "usedBy": [
+        "laZ5d",
+        "JN45s",
+        "FmBa4",
+        "BUE0c",
+        "B3gBx",
+        "C2KxYf"
+      ]
+    },
+    {
+      "id": "QJPxe",
+      "name": "COMP 输入框",
+      "role": "搜索输入框（icon + 占位）",
+      "usedBy": [
+        "op8Nx",
+        "b5PHy",
+        "laZ5d",
+        "JN45s"
+      ]
+    },
+    {
+      "id": "xvJei",
+      "name": "COMP 下拉框",
+      "role": "下拉选择框（占位 + chevron）",
+      "usedBy": [
+        "b5PHy",
+        "laZ5d",
+        "JN45s"
+      ]
+    },
+    {
+      "id": "udwQu",
+      "name": "COMP 指标块",
+      "role": "指标条单项（数值 + 标签）",
+      "usedBy": [
+        "op8Nx"
+      ]
+    },
+    {
+      "id": "Oq8Mb",
+      "name": "COMP 筛选栏",
+      "role": "筛选栏壳",
+      "usedBy": []
+    },
+    {
+      "id": "d1vHc",
+      "name": "COMP 表头行",
+      "role": "表头行壳",
+      "usedBy": []
+    },
+    {
+      "id": "e614R",
+      "name": "COMP 表格数据行",
+      "role": "数据行壳",
+      "usedBy": []
+    },
+    {
+      "id": "bCSVO",
+      "name": "COMP 表格单元格",
+      "role": "单列容器",
+      "usedBy": []
+    },
+    {
+      "id": "L07Kg3",
+      "name": "COMP 状态标签",
+      "role": "状态 Tag（success 绿）",
+      "usedBy": [
+        "op8Nx"
+      ]
+    }
+  ],
+  "codeComponentLayer": {
+    "note": "画板组件层与前端公共组件层一一对应（D-091）。根级组件不得使用 fill_container，宽度必须固定。",
+    "path": "apps/web/src/business/components/",
+    "files": [
+      "WorkspaceShell.tsx",
+      "FilterBar.tsx",
+      "DataTable.tsx",
+      "EmptyState.tsx",
+      "EffectiveDatePicker.tsx",
+      "MetricStrip.tsx",
+      "FilterField.tsx"
+    ]
+  },
+  "designSpec": "docs/review/pen-prototype-spec-2026-10-24.md",
+  "featureDecisions": "docs/review/moka-5-feature-decisions-2026-10-24.md",
+  "pendingConfirmations": "docs/review/pending-confirmations-2026-10-24.md"
+}

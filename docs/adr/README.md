@@ -7,6 +7,13 @@ ADR用于记录影响工程结构、技术选型、安全或运行方式的重�
 | [ADR-0001](ADR-0001-toolchain.md) | 第零阶段工具链与版本冻结 | Proposed | 2026-07-31 |
 | [ADR-0002](ADR-0002-ehr-source-migration-boundary.md) | EHR 源库镜像与 coreHR 归一化迁移边界 | Accepted | 2026-08-08 |
 | [ADR-0004](ADR-0004-personnel-sensitive-field-protection.md) | 人员敏感字段应用层保护 | Accepted | 2026-08-12 |
+| [ADR-0005](ADR-0005-pencil-prototype-gate.md) | Pencil 原型先行门禁与画板登记 | Accepted | 2026-10-24 |
+| [ADR-0006](ADR-0006-message-engine-platform-service.md) | 消息引擎定位为平台内核基础服务 | Accepted | 2026-10-24 |
+| [ADR-0007](ADR-0007-bpms-engine-selection.md) | 流程引擎（BPMS）选型与自研边界 | Proposed | 2026-10-24 |
+| [ADR-0008](ADR-0008-open-core-and-commercial-licensing.md) | Open Core 形态与离线签名模块级授权 | Accepted | 2026-10-24 |
+
+> `ADR-0003` 编号已跳过，按「编号一经使用不得复用」的规则**保留空缺**，后续新 ADR 从 `ADR-0009` 起编。
+> 状态为 `Proposed` 的 ADR 正在等待用户拍板，**不得作为实现依据**；相关待拍板议题见 `docs/review/pending-confirmations-2026-10-24.md`。
 
 ## 命名
 
