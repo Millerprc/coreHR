@@ -1,4 +1,10 @@
+// Copyright (c) 2026 coreHR 项目贡献者
+// 许可证：coreHR Sustainable Use License v1.0（见仓库根目录 LICENSE）。本文件不是 OSI 开源。
+
 import type {
+  LicenseActivationResult,
+  LicenseDeactivationResult,
+  LicenseState,
   LoginResponse,
   ModuleRegistry,
   PageResult,
@@ -136,4 +142,27 @@ export function getPageCount(path: string, token: string): Promise<number> {
 
 export async function logout(token: string): Promise<void> {
   await apiRequest<void>("/api/v1/auth/logout", token, { method: "POST" })
+}
+
+
+// Requirement: D-108 — 授权状态接口：登录即可读取当前授权与授权范围。
+export function getLicense(token: string): Promise<LicenseState> {
+  return apiRequest<LicenseState>("/api/v1/license", token)
+}
+
+
+// Requirement: D-108 — 激活授权：提交 License Token（明文只在这一次请求里出现）。
+export function activateLicense(token: string, licenseToken: string): Promise<LicenseActivationResult> {
+  return apiRequest<LicenseActivationResult>("/api/v1/license/activate", token, {
+    method: "POST",
+    body: { token: licenseToken },
+  })
+}
+
+
+// Requirement: D-108 — 停用授权：回落到只读演示模式。
+export function deactivateLicense(token: string): Promise<LicenseDeactivationResult> {
+  return apiRequest<LicenseDeactivationResult>("/api/v1/license/deactivate", token, {
+    method: "POST",
+  })
 }

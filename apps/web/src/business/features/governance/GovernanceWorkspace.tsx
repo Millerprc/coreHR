@@ -1,3 +1,6 @@
+// Copyright (c) 2026 coreHR 项目贡献者
+// 许可证：coreHR Sustainable Use License v1.0（见仓库根目录 LICENSE）。本文件不是 OSI 开源。
+
 import {
   Alert,
   Button,
@@ -287,7 +290,7 @@ export function GovernanceWorkspace({ token, canAdmin }: GovernanceWorkspaceProp
         title="人员初始化已按敏感等级分层"
         description="人员基础层只接收工号与姓名；证件、生日、联系方式、地址、薪酬等敏感字段不会进入通用导入批次。"
       />
-      {error && <Alert closable onClose={() => setError(null)} type="error" showIcon title={error} />}
+      {error && <Alert closable={{ onClose: () => setError(null) }} type="error" showIcon title={error} />}
       {loading ? <Skeleton active paragraph={{ rows: 8 }} /> : (
         <Table<ImportBatchSummary>
           rowKey="id"

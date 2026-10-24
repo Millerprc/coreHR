@@ -1,3 +1,6 @@
+// Copyright (c) 2026 coreHR 项目贡献者
+// 许可证：coreHR Sustainable Use License v1.0（见仓库根目录 LICENSE）。本文件不是 OSI 开源。
+
 import { apiRequest } from "../../client"
 import type {
   HeadcountFreeze,
@@ -13,6 +16,7 @@ import type {
   PersonAddress,
   PersonContact,
   PersonDocument,
+  PersonFieldVersion,
   EmergencyContact,
   EducationRecord,
   FamilyMember,
@@ -40,8 +44,22 @@ export const workforceApi = {
       `/api/v1/workforce/persons?limit=200&offset=0${search ? `&search=${encodeURIComponent(search)}` : ""}`,
       token,
     ),
-  personArchive: (token: string, personId: string) =>
-    apiRequest<PersonArchive>(`/api/v1/workforce/persons/${personId}`, token),
+  personArchive: (token: string, personId: string, effectiveAt?: string) =>
+    apiRequest<PersonArchive>(
+      `/api/v1/workforce/persons/${personId}${effectiveAt ? `?effective_at=${encodeURIComponent(effectiveAt)}` : ""}`,
+      token,
+    ),
+  personCorrections: (token: string, personId: string, effectiveAt?: string) =>
+    apiRequest<readonly PersonFieldVersion[]>(
+      `/api/v1/workforce/persons/${personId}/corrections${effectiveAt ? `?effective_at=${encodeURIComponent(effectiveAt)}` : ""}`,
+      token,
+    ),
+  createPersonCorrection: (token: string, personId: string, body: unknown) =>
+    apiRequest<PersonFieldVersion>(
+      `/api/v1/workforce/persons/${personId}/corrections`,
+      token,
+      { method: "POST", body },
+    ),
   createPerson: (token: string, body: unknown) =>
     apiRequest<Person>("/api/v1/workforce/persons", token, { method: "POST", body }),
   updatePerson: (token: string, personId: string, body: unknown) =>

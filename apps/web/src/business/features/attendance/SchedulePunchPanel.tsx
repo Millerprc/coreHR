@@ -1,8 +1,13 @@
+// Copyright (c) 2026 coreHR 项目贡献者
+// 许可证：coreHR Sustainable Use License v1.0（见仓库根目录 LICENSE）。本文件不是 OSI 开源。
+
 import { Alert, Button, Empty, Form, Input, Modal, Select, Space, Table, Tag, Typography } from "antd"
 import { useCallback, useEffect, useMemo, useState } from "react"
 
 import { attendanceApi } from "./api"
 import type { AttendanceEmploymentOption, AttendancePunch, ScheduleAssignment, Shift } from "./types"
+import { ActionErrorAlert, describeActionError } from "../../components/ActionErrorAlert"
+import type { ActionErrorInfo } from "../../components/ActionErrorAlert"
 
 
 interface SchedulePunchPanelProps {
@@ -24,6 +29,9 @@ export function SchedulePunchPanel({ token, canAdmin }: SchedulePunchPanelProps)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // Requirement: D-113 —— 补录被拒（冻结期 / 校验失败）的提示必须渲染在弹窗内部：
+  // 弹窗带遮罩，弹窗外的 Alert 用户根本看不到，会以为系统没反应。
+  const [punchError, setPunchError] = useState<ActionErrorInfo | null>(null)
   const [scheduleForm] = Form.useForm()
   const [punchForm] = Form.useForm()
 
@@ -79,7 +87,7 @@ export function SchedulePunchPanel({ token, canAdmin }: SchedulePunchPanelProps)
 
   async function createPunch(values: Record<string, string>): Promise<void> {
     setSaving(true)
-    setError(null)
+    setPunchError(null)
     try {
       const punchedAt = `${values.punched_at}:00${values.utc_offset}`
       await attendanceApi.createPunch(token, {
@@ -94,7 +102,9 @@ export function SchedulePunchPanel({ token, canAdmin }: SchedulePunchPanelProps)
       setPunchOpen(false)
       await load()
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "打卡记录创建失败")
+      // Requirement: D-113 —— 冻结账期内的补录会被后端拒绝（409 ATTENDANCE_PERIOD_FROZEN），
+      // 这里把它渲染成弹窗内的警示，并给出「先解冻再补录」的下一步。
+      setPunchError(describeActionError(caught, "打卡记录创建失败"))
     } finally {
       setSaving(false)
     }
@@ -105,7 +115,7 @@ export function SchedulePunchPanel({ token, canAdmin }: SchedulePunchPanelProps)
   const employmentName = (id: string) => employments.find((item) => item.id === id)?.display_name ?? id
 
   return <div className="lifecycle-panel-stack">
-    {error && <Alert closable onClose={() => setError(null)} type="error" showIcon message={error} />}
+    {error && <Alert closable={{ onClose: () => setError(null) }} type="error" showIcon title={error} />}
     <div className="panel-heading"><div><Typography.Title level={4}>排班</Typography.Title><Typography.Text type="secondary">每个劳动关系每天最多一个有效班次。</Typography.Text></div>{canAdmin && <Button type="primary" onClick={() => setScheduleOpen(true)}>新增排班</Button>}</div>
     <Table size="small" loading={loading} rowKey="id" dataSource={[...schedules]} locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无排班" /> }} columns={[
       { title: "员工", dataIndex: "employment_id", render: (value) => employmentName(value) },
@@ -116,7 +126,7 @@ export function SchedulePunchPanel({ token, canAdmin }: SchedulePunchPanelProps)
       { title: "操作", width: 100, render: (_value, row) => canAdmin && row.status === "active" ? <Button type="link" danger loading={saving} onClick={() => void cancelSchedule(row)}>取消</Button> : null },
     ]} />
 
-    <div className="panel-heading"><div><Typography.Title level={4}>打卡记录</Typography.Title><Typography.Text type="secondary">来源记录号保证幂等；手工补录必须携带明确 UTC 偏移。</Typography.Text></div>{canAdmin && <Button onClick={() => setPunchOpen(true)}>手工补录</Button>}</div>
+    <div className="panel-heading"><div><Typography.Title level={4}>打卡记录</Typography.Title><Typography.Text type="secondary">来源记录号保证幂等；手工补录必须携带明确 UTC 偏移；冻结账期不允许补录。</Typography.Text></div>{canAdmin && <Button onClick={() => { setPunchError(null); setPunchOpen(true) }}>手工补录</Button>}</div>
     <Table size="small" loading={loading} rowKey="id" dataSource={[...punches]} columns={[
       { title: "员工", dataIndex: "employment_id", render: (value) => employmentName(value) },
       { title: "打卡时间", dataIndex: "punched_at", width: 210, render: (value) => new Date(value).toLocaleString() },
@@ -132,7 +142,8 @@ export function SchedulePunchPanel({ token, canAdmin }: SchedulePunchPanelProps)
         <Form.Item label="班次" name="shift_id" rules={[{ required: true }]}><Select options={shiftOptions} /></Form.Item>
       </Form>
     </Modal>
-    <Modal title="手工补录打卡" open={punchOpen} okText="保存" confirmLoading={saving} onOk={() => punchForm.submit()} onCancel={() => setPunchOpen(false)}>
+    <Modal title="手工补录打卡" open={punchOpen} okText="保存" confirmLoading={saving} onOk={() => punchForm.submit()} onCancel={() => { setPunchOpen(false); setPunchError(null) }}>
+      <ActionErrorAlert info={punchError} onClose={() => setPunchError(null)} />
       <Form form={punchForm} layout="vertical" requiredMark={false} onFinish={(values) => void createPunch(values)}>
         <Form.Item label="员工劳动关系" name="employment_id" rules={[{ required: true }]}><Select showSearch optionFilterProp="label" options={employmentOptions} /></Form.Item>
         <Form.Item label="本地时间" name="punched_at" rules={[{ required: true }]}><Input type="datetime-local" /></Form.Item>

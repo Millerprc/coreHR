@@ -1,3 +1,6 @@
+// Copyright (c) 2026 coreHR 项目贡献者
+// 许可证：coreHR Sustainable Use License v1.0（见仓库根目录 LICENSE）。本文件不是 OSI 开源。
+
 import { Alert, Button, Empty, Form, Input, InputNumber, Modal, Select, Space, Table, Tag, Typography } from "antd"
 import { useCallback, useEffect, useMemo, useState } from "react"
 
@@ -139,7 +142,7 @@ export function LeavePanel({ token, canAdmin }: LeavePanelProps) {
   const employmentName = (id: string) => employments.find((item) => item.id === id)?.display_name ?? id
 
   return <div className="lifecycle-panel-stack">
-    {error && <Alert closable onClose={() => setError(null)} type="error" showIcon message={error} />}
+    {error && <Alert closable={{ onClose: () => setError(null) }} type="error" showIcon title={error} />}
     <div className="panel-heading"><div><Typography.Title level={4}>假期规则</Typography.Title><Typography.Text type="secondary">每类假期可选择不跟踪余额、允许负余额或余额不足时阻止批准。</Typography.Text></div>{canAdmin && <Button onClick={() => setTypeOpen(true)}>新建假期类型</Button>}</div>
     <Table size="small" loading={loading} rowKey="id" dataSource={[...leaveTypes]} locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无假期类型" /> }} columns={[
       { title: "代码", dataIndex: "code", width: 160 },

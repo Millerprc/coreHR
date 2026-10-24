@@ -1,8 +1,13 @@
+// Copyright (c) 2026 coreHR 项目贡献者
+// 许可证：coreHR Sustainable Use License v1.0（见仓库根目录 LICENSE）。本文件不是 OSI 开源。
+
 import { Alert, Button, Form, Input, Modal, Select, Space, Table, Tag, Typography } from "antd"
 import { useCallback, useEffect, useState } from "react"
 
 import { attendanceApi } from "./api"
 import type { AttendancePeriodFreeze } from "./types"
+import { ActionErrorAlert, describeActionError } from "../../components/ActionErrorAlert"
+import type { ActionErrorInfo } from "../../components/ActionErrorAlert"
 
 
 interface PeriodFreezePanelProps {
@@ -34,6 +39,9 @@ export function PeriodFreezePanel({ token, canAdmin }: PeriodFreezePanelProps) {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // Requirement: D-113 —— 弹窗内操作失败必须渲染在弹窗内部（弹窗带遮罩，外部 Alert 看不见）。
+  const [createError, setCreateError] = useState<ActionErrorInfo | null>(null)
+  const [releaseError, setReleaseError] = useState<ActionErrorInfo | null>(null)
   const [createOpen, setCreateOpen] = useState(false)
   const [releaseTarget, setReleaseTarget] = useState<AttendancePeriodFreeze | null>(null)
   const [freezeType, setFreezeType] = useState<"monthly" | "special">("monthly")
@@ -62,12 +70,13 @@ export function PeriodFreezePanel({ token, canAdmin }: PeriodFreezePanelProps) {
       reason: "月结确认后冻结考勤结果",
     })
     setFreezeType("monthly")
+    setCreateError(null)
     setCreateOpen(true)
   }
 
   async function create(values: FreezeFormValues): Promise<void> {
     setSaving(true)
-    setError(null)
+    setCreateError(null)
     try {
       const dates = values.freeze_type === "monthly"
         ? {
@@ -83,7 +92,7 @@ export function PeriodFreezePanel({ token, canAdmin }: PeriodFreezePanelProps) {
       setCreateOpen(false)
       await load()
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "考勤期间冻结失败")
+      setCreateError(describeActionError(caught, "考勤期间冻结失败"))
     } finally {
       setSaving(false)
     }
@@ -92,14 +101,14 @@ export function PeriodFreezePanel({ token, canAdmin }: PeriodFreezePanelProps) {
   async function release(values: { reason: string }): Promise<void> {
     if (!releaseTarget) return
     setSaving(true)
-    setError(null)
+    setReleaseError(null)
     try {
       await attendanceApi.releasePeriodFreeze(token, releaseTarget.id, values)
       setReleaseTarget(null)
       releaseForm.resetFields()
       await load()
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "考勤期间解冻失败")
+      setReleaseError(describeActionError(caught, "考勤期间解冻失败"))
     } finally {
       setSaving(false)
     }
@@ -110,9 +119,9 @@ export function PeriodFreezePanel({ token, canAdmin }: PeriodFreezePanelProps) {
       type="info"
       showIcon
       title="冻结锁定日报和月报结果"
-      description="存在任一有效冻结时，对应日期范围不能重算。原始打卡仍作为不可变证据接收；需要更正时先填写原因解冻，完成重算后可再次冻结。"
+      description="存在任一有效冻结时，对应日期范围不能重算，也不能补录打卡 —— 已月结的账期不再接受新的考勤事实。需要更正时先填写原因解冻，补录并完成重算后可再次冻结。"
     />
-    {error && <Alert closable onClose={() => setError(null)} type="error" showIcon title={error} />}
+    {error && <Alert closable={{ onClose: () => setError(null) }} type="error" showIcon title={error} />}
     <div className="panel-heading">
       <div>
         <Typography.Title level={4}>考勤期间冻结</Typography.Title>
@@ -137,7 +146,7 @@ export function PeriodFreezePanel({ token, canAdmin }: PeriodFreezePanelProps) {
           title: "操作",
           width: 100,
           render: (_value, item) => canAdmin && item.status === "active"
-            ? <Button type="link" onClick={() => { releaseForm.resetFields(); setReleaseTarget(item) }}>解冻</Button>
+            ? <Button type="link" onClick={() => { releaseForm.resetFields(); setReleaseError(null); setReleaseTarget(item) }}>解冻</Button>
             : "—",
         },
       ]}
@@ -151,6 +160,7 @@ export function PeriodFreezePanel({ token, canAdmin }: PeriodFreezePanelProps) {
       onOk={() => form.submit()}
       onCancel={() => setCreateOpen(false)}
     >
+      <ActionErrorAlert info={createError} onClose={() => setCreateError(null)} />
       <Form form={form} layout="vertical" requiredMark={false} onFinish={(values) => void create(values)}>
         <Form.Item label="冻结类型" name="freeze_type" rules={[{ required: true }]}>
           <Select
@@ -179,6 +189,7 @@ export function PeriodFreezePanel({ token, canAdmin }: PeriodFreezePanelProps) {
       onCancel={() => setReleaseTarget(null)}
     >
       <Alert type="warning" showIcon title="解冻后允许重新生成对应日期的日报和月报" />
+      <ActionErrorAlert info={releaseError} onClose={() => setReleaseError(null)} />
       <Form form={releaseForm} layout="vertical" requiredMark={false} onFinish={(values) => void release(values)}>
         <Form.Item label="解冻原因" name="reason" rules={[{ required: true }]}><Input.TextArea rows={3} maxLength={500} showCount /></Form.Item>
       </Form>

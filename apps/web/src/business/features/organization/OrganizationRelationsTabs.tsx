@@ -1,3 +1,6 @@
+// Copyright (c) 2026 coreHR 项目贡献者
+// 许可证：coreHR Sustainable Use License v1.0（见仓库根目录 LICENSE）。本文件不是 OSI 开源。
+
 import {
   Alert,
   Button,
@@ -507,7 +510,7 @@ export function OrganizationRelationsTabs({
 
   return (
     <div aria-busy={loading}>
-      {error && <Alert closable onClose={() => setError(null)} type="error" showIcon message={error} />}
+      {error && <Alert closable={{ onClose: () => setError(null) }} type="error" showIcon title={error} />}
       <Tabs items={tabItems} />
       <Modal
         title="新建成本中心"

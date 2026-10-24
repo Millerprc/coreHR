@@ -1,3 +1,6 @@
+// Copyright (c) 2026 coreHR 项目贡献者
+// 许可证：coreHR Sustainable Use License v1.0（见仓库根目录 LICENSE）。本文件不是 OSI 开源。
+
 import {
   Alert,
   Button,
@@ -144,7 +147,7 @@ export function RecruitmentWorkspace({ token, canAdmin }: RecruitmentWorkspacePr
         </div>
         {canAdmin && <Button type="primary" onClick={() => setCreateOpen(true)}>新建招聘需求</Button>}
       </div>
-      {error && <Alert closable onClose={() => setError(null)} type="error" showIcon title={error} />}
+      {error && <Alert closable={{ onClose: () => setError(null) }} type="error" showIcon title={error} />}
       <Table
         loading={loading}
         rowKey="id"

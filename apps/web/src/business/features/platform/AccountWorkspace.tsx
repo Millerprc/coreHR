@@ -1,3 +1,6 @@
+// Copyright (c) 2026 coreHR 项目贡献者
+// 许可证：coreHR Sustainable Use License v1.0（见仓库根目录 LICENSE）。本文件不是 OSI 开源。
+
 import { Alert, Button, Drawer, Form, Input, Modal, Select, Space, Table, Tag, Typography } from "antd"
 import { useCallback, useEffect, useMemo, useState } from "react"
 
@@ -160,7 +163,7 @@ export function AccountWorkspace({ token, currentUserId }: AccountWorkspaceProps
         </div>
         <Button type="primary" onClick={openCreate}>新建账号</Button>
       </div>
-      {error && <Alert closable onClose={() => setError(null)} type="error" showIcon title={error} />}
+      {error && <Alert closable={{ onClose: () => setError(null) }} type="error" showIcon title={error} />}
       <Table
         size="small"
         loading={loading}

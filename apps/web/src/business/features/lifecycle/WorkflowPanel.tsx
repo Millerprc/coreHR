@@ -1,3 +1,6 @@
+// Copyright (c) 2026 coreHR 项目贡献者
+// 许可证：coreHR Sustainable Use License v1.0（见仓库根目录 LICENSE）。本文件不是 OSI 开源。
+
 import { Alert, Button, Empty, Form, Input, Modal, Radio, Select, Space, Table, Tag, Typography } from "antd"
 import { useCallback, useEffect, useState } from "react"
 
@@ -94,7 +97,7 @@ export function WorkflowPanel({ token, canAdmin }: WorkflowPanelProps) {
   }
 
   return <div className="lifecycle-panel-stack">
-    {error && <Alert closable onClose={() => setError(null)} type="error" showIcon message={error} />}
+    {error && <Alert closable={{ onClose: () => setError(null) }} type="error" showIcon title={error} />}
     <div className="panel-heading">
       <div>
         <Typography.Title level={4}>流程模板</Typography.Title>

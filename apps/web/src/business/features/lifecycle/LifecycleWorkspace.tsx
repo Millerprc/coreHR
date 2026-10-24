@@ -1,3 +1,6 @@
+// Copyright (c) 2026 coreHR 项目贡献者
+// 许可证：coreHR Sustainable Use License v1.0（见仓库根目录 LICENSE）。本文件不是 OSI 开源。
+
 import { Alert, Tabs, Typography } from "antd"
 
 import { ApplicationPanel } from "./ApplicationPanel"
@@ -23,7 +26,7 @@ export function LifecycleWorkspace({ token, canAdmin }: LifecycleWorkspaceProps)
     <Alert
       type="info"
       showIcon
-      message="当前开放给主管理员"
+      title="当前开放给主管理员"
       description="审批关系和数据权限已保留扩展点；第二阶段先确保管理员可以完整配置、执行、回退和追溯。"
     />
     <Tabs

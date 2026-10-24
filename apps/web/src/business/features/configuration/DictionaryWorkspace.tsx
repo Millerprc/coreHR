@@ -1,3 +1,6 @@
+// Copyright (c) 2026 coreHR 项目贡献者
+// 许可证：coreHR Sustainable Use License v1.0（见仓库根目录 LICENSE）。本文件不是 OSI 开源。
+
 import {
   Alert,
   Button,
@@ -6,7 +9,6 @@ import {
   Form,
   Input,
   InputNumber,
-  List,
   Modal,
   Select,
   Skeleton,
@@ -289,7 +291,7 @@ export function DictionaryWorkspace({ token, canAdmin }: DictionaryWorkspaceProp
     return (
       <section aria-labelledby="configuration-title">
         <Typography.Title id="configuration-title" level={2}>基础资料</Typography.Title>
-        <Alert type="error" showIcon message="无权查看基础资料" description="请联系主管理员分配基础资料查看权限。" />
+        <Alert type="error" showIcon title="无权查看基础资料" description="请联系主管理员分配基础资料查看权限。" />
       </section>
     )
   }
@@ -306,7 +308,7 @@ export function DictionaryWorkspace({ token, canAdmin }: DictionaryWorkspaceProp
         </div>
         {canAdmin && <Button type="primary" onClick={openDictionaryEditor}>新建字典</Button>}
       </div>
-      {error && <Alert closable onClose={() => setError(null)} type="error" showIcon message={error} />}
+      {error && <Alert closable={{ onClose: () => setError(null) }} type="error" showIcon title={error} />}
       <Input.Search
         aria-label="搜索字典和字典项"
         allowClear
@@ -320,21 +322,30 @@ export function DictionaryWorkspace({ token, canAdmin }: DictionaryWorkspaceProp
       ) : (
         <div className="dictionary-layout">
           <aside className="dictionary-list" aria-label="字典列表">
-            <List
-              dataSource={[...filteredDictionaries]}
-              locale={{ emptyText: <Empty description="没有匹配的字典" image={Empty.PRESENTED_IMAGE_SIMPLE} /> }}
-              renderItem={(dictionary) => (
-                <List.Item
-                  className={dictionary.id === selectedDictionaryId ? "selected-row" : undefined}
-                  onClick={() => setSelectedDictionaryId(dictionary.id)}
-                >
-                  <button type="button" className="plain-row-button">
-                    <span>{dictionary.name}</span>
-                    <Typography.Text code>{dictionary.code}</Typography.Text>
-                  </button>
-                </List.Item>
-              )}
-            />
+            {filteredDictionaries.length === 0 ? (
+              <Empty description="没有匹配的字典" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+            ) : (
+              // Requirement: D-090 — antd 的 List 在 6.5.2 已整体废弃、下个大版本移除，
+              // 改用语义化列表承载字典行，保留「点击行切换选中 + selected-row 高亮」的行为。
+              <ul className="dictionary-list-items">
+                {filteredDictionaries.map((dictionary) => (
+                  <li
+                    key={dictionary.id}
+                    className={
+                      dictionary.id === selectedDictionaryId
+                        ? "dictionary-list-item selected-row"
+                        : "dictionary-list-item"
+                    }
+                    onClick={() => setSelectedDictionaryId(dictionary.id)}
+                  >
+                    <button type="button" className="plain-row-button">
+                      <span>{dictionary.name}</span>
+                      <Typography.Text code>{dictionary.code}</Typography.Text>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
           </aside>
           <div className="dictionary-detail">
             {!selectedDictionary ? (

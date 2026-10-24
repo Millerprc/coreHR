@@ -1,3 +1,6 @@
+// Copyright (c) 2026 coreHR 项目贡献者
+// 许可证：coreHR Sustainable Use License v1.0（见仓库根目录 LICENSE）。本文件不是 OSI 开源。
+
 import { Alert, Button, Empty, Form, Input, InputNumber, Modal, Select, Space, Table, Tag, Typography } from "antd"
 import { useCallback, useEffect, useMemo, useState } from "react"
 
@@ -159,7 +162,7 @@ export function RuleShiftPanel({ token, canAdmin }: RuleShiftPanelProps) {
   </>
 
   return <div className="lifecycle-panel-stack">
-    {error && <Alert closable onClose={() => setError(null)} type="error" showIcon message={error} />}
+    {error && <Alert closable={{ onClose: () => setError(null) }} type="error" showIcon title={error} />}
     <div className="panel-heading">
       <div><Typography.Title level={4}>考勤规则</Typography.Title><Typography.Text type="secondary">规则按版本和生效日期管理，班次引用明确版本。</Typography.Text></div>
       {canAdmin && <Button type="primary" onClick={() => setRuleOpen(true)}>新建规则</Button>}

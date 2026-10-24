@@ -1,3 +1,6 @@
+// Copyright (c) 2026 coreHR 项目贡献者
+// 许可证：coreHR Sustainable Use License v1.0（见仓库根目录 LICENSE）。本文件不是 OSI 开源。
+
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
@@ -52,6 +55,7 @@ describe("OrganizationWorkspace", () => {
 
   function organizationFetchMock(
     detailResponder?: (path: string) => Response | Promise<Response>,
+    treeResponder?: (path: string) => Response | undefined | Promise<Response | undefined>,
   ) {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const path = String(input)
@@ -61,7 +65,11 @@ describe("OrganizationWorkspace", () => {
           { id: "31000000-0000-0000-0000-000000000002", code: "DEPARTMENT", name: "部门", sort_order: 2, is_active: true },
         ])
       }
-      if (path.endsWith("/organizations/tree")) {
+      if (path.includes("/organizations/tree")) {
+        if (treeResponder) {
+          const response = await treeResponder(path)
+          if (response) return response
+        }
         return Response.json([
           {
             id: organizationId,
@@ -165,8 +173,22 @@ describe("OrganizationWorkspace", () => {
     expect(screen.getByRole("button", { name: "添加变更" })).toBeEnabled()
   })
 
-  it("keeps the current tree stable while the effective date changes detail queries", async () => {
-    const fetchMock = organizationFetchMock()
+  it("redraws the organization tree for a historical viewing date", async () => {
+    // Requirement: D-103 — 查看日期切换到历史时点后，组织树按该时点重新取数并重绘。
+    const fetchMock = organizationFetchMock(undefined, (path) => (
+      path.includes("as_of=2027-01-01")
+        ? Response.json([
+          {
+            id: organizationId,
+            code: "730001",
+            name: "历史合成集团",
+            organization_type_code: "GROUP",
+            status: "active",
+            children: [],
+          },
+        ])
+        : undefined
+    ))
 
     render(<OrganizationWorkspace token="synthetic-token" canAdmin />)
 
@@ -185,8 +207,70 @@ describe("OrganizationWorkspace", () => {
         expect.any(Object),
       )
     })
-    const treeCalls = fetchMock.mock.calls.filter(([input]) => String(input).endsWith("/organizations/tree"))
-    expect(treeCalls).toHaveLength(1)
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/v1/organizations/tree?as_of=2027-01-01",
+        expect.any(Object),
+      )
+    })
+    expect(await screen.findByText("历史合成集团")).toBeInTheDocument()
+    expect(screen.getByText("截至 2027-01-01 的组织树")).toBeInTheDocument()
+    expect(screen.getAllByText("截至 2027-01-01").length).toBeGreaterThan(0)
+  })
+
+  it("marks the current timepoint and returns to it on demand", async () => {
+    const fetchMock = organizationFetchMock()
+
+    render(<OrganizationWorkspace token="synthetic-token" canAdmin />)
+
+    fireEvent.click(await screen.findByRole("tab", { name: "组织架构树" }))
+    expect(await screen.findByRole("heading", { name: "合成集团", level: 3 })).toBeInTheDocument()
+    expect(screen.getByText("当前有效组织树")).toBeInTheDocument()
+    expect(screen.getAllByText("当前").length).toBeGreaterThan(0)
+
+    fireEvent.change(screen.getByLabelText("查看日期"), {
+      target: { value: "2027-01-01" },
+    })
+    expect(await screen.findByText("截至 2027-01-01 的组织树")).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole("button", { name: "回到当前" }))
+
+    expect(await screen.findByText("当前有效组织树")).toBeInTheDocument()
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/v1/organizations/tree",
+        expect.any(Object),
+      )
+    })
+  })
+
+  it("reports the server rejection when the viewing date is in the future", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input)
+      if (path.endsWith("/organization-types")) return Response.json([])
+      if (path.includes("/organizations/tree")) {
+        if (path.includes("as_of=")) {
+          return Response.json(
+            {
+              code: "CURRENT_OR_HISTORY_TREE_ONLY",
+              message: "只支持查看当前与历史时点的组织架构",
+            },
+            { status: 422 },
+          )
+        }
+        return Response.json([])
+      }
+      return Response.json({}, { status: 404 })
+    }))
+
+    render(<OrganizationWorkspace token="synthetic-token" canAdmin />)
+
+    fireEvent.click(await screen.findByRole("tab", { name: "组织架构树" }))
+    fireEvent.change(screen.getByLabelText("查看日期"), {
+      target: { value: "2099-01-01" },
+    })
+
+    expect(await screen.findByText("只支持查看当前与历史时点的组织架构")).toBeInTheDocument()
   })
 
   it("ignores a stale detail response after a newer date has loaded", async () => {

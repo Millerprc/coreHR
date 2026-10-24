@@ -1,6 +1,10 @@
+// Copyright (c) 2026 coreHR 项目贡献者
+// 许可证：coreHR Sustainable Use License v1.0（见仓库根目录 LICENSE）。本文件不是 OSI 开源。
+
 import { Alert, Button, Drawer, Form, Input, InputNumber, Modal, Select, Space, Table, Tag, Typography } from "antd"
 import { useCallback, useEffect, useMemo, useState } from "react"
 
+import { EffectiveDatePicker } from "../../components/EffectiveDatePicker"
 import { attendanceApi } from "./api"
 import type { AttendanceEmploymentOption, LeaveBalanceAccount, LeaveBalanceTransaction, LeaveType } from "./types"
 
@@ -43,6 +47,8 @@ export function LeaveBalancePanel({ token, canAdmin }: LeaveBalancePanelProps) {
   const [transactions, setTransactions] = useState<readonly LeaveBalanceTransaction[]>([])
   const [ledgerTarget, setLedgerTarget] = useState<LeaveBalanceAccount | null>(null)
   const [adjustmentOpen, setAdjustmentOpen] = useState(false)
+  // 时点查询：为空表示看当前余额；填写后看该时点的余额。
+  const [asOf, setAsOf] = useState("")
   const [loading, setLoading] = useState(true)
   const [ledgerLoading, setLedgerLoading] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -56,7 +62,7 @@ export function LeaveBalancePanel({ token, canAdmin }: LeaveBalancePanelProps) {
       const [employmentPage, typePage, accountPage] = await Promise.all([
         attendanceApi.employmentOptions(token),
         attendanceApi.leaveTypes(token),
-        attendanceApi.leaveBalances(token),
+        attendanceApi.leaveBalances(token, asOf),
       ])
       setEmployments(employmentPage.items)
       setLeaveTypes(typePage.items)
@@ -66,7 +72,7 @@ export function LeaveBalancePanel({ token, canAdmin }: LeaveBalancePanelProps) {
     } finally {
       setLoading(false)
     }
-  }, [token])
+  }, [token, asOf])
 
   useEffect(() => { void load() }, [load])
 
@@ -130,14 +136,25 @@ export function LeaveBalancePanel({ token, canAdmin }: LeaveBalancePanelProps) {
       title="余额由不可变流水汇总"
       description="批准请假自动扣减，批准销假或直接取消自动冲回。人工发放、调整、结转和计提都必须填写原因；自动计提与跨年结转规则待企业规则确认后再配置。"
     />
-    {error && <Alert closable onClose={() => setError(null)} type="error" showIcon title={error} />}
+    {error && <Alert closable={{ onClose: () => setError(null) }} type="error" showIcon title={error} />}
     <div className="panel-heading">
       <div>
         <Typography.Title level={4}>假期余额账户</Typography.Title>
         <Typography.Text type="secondary">账户按员工劳动关系、假期类型和自然年度分别保存。</Typography.Text>
       </div>
-      {canAdmin && <Button type="primary" onClick={openAdjustment}>调整额度</Button>}
+      <Space size="middle" align="end">
+        <EffectiveDatePicker value={asOf} onChange={setAsOf} label="时点查询日期" />
+        {canAdmin && <Button type="primary" onClick={openAdjustment}>调整额度</Button>}
+      </Space>
     </div>
+    {asOf ? (
+      <Alert
+        type="info"
+        showIcon
+        title={`时点余额：截至 ${asOf} 的余额（当前余额同时保留）`}
+        description="时点余额按流水的生效日期累计：账户初始余额 + 截止该日期的流水净额。清空日期回到当前余额。"
+      />
+    ) : null}
     <Table<LeaveBalanceAccount>
       size="small"
       loading={loading}
@@ -149,6 +166,18 @@ export function LeaveBalancePanel({ token, canAdmin }: LeaveBalancePanelProps) {
         { title: "假期类型", dataIndex: "leave_type_id", render: (value) => leaveTypeName(value) },
         { title: "年度", dataIndex: "period_year", width: 90 },
         { title: "当前余额", dataIndex: "current_balance", width: 120, render: (value, item) => `${value} ${item.unit === "day" ? "天" : "小时"}` },
+        ...(asOf
+          ? [{
+            title: `时点余额（${asOf}）`,
+            dataIndex: "balance_as_of",
+            width: 150,
+            render: (value: string | null, item: LeaveBalanceAccount) => (
+              <Tag color={value === item.current_balance ? "success" : "processing"}>
+                {value ?? "无流水"} {item.unit === "day" ? "天" : "小时"}
+              </Tag>
+            ),
+          }]
+          : []),
         { title: "版本", dataIndex: "version", width: 80, render: (value) => `v${value}` },
         { title: "状态", dataIndex: "status", width: 90, render: (value) => <Tag color={value === "active" ? "success" : "default"}>{value === "active" ? "有效" : "已关闭"}</Tag> },
         { title: "操作", width: 100, render: (_value, item) => <Button type="link" onClick={() => void openLedger(item)}>查看流水</Button> },

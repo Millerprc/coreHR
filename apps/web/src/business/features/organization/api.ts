@@ -1,3 +1,6 @@
+// Copyright (c) 2026 coreHR 项目贡献者
+// 许可证：coreHR Sustainable Use License v1.0（见仓库根目录 LICENSE）。本文件不是 OSI 开源。
+
 import { ApiClientError, apiRequest } from "../../client"
 import type {
   BpMembership,
@@ -31,8 +34,15 @@ export const organizationApi = {
     apiRequest<OrganizationType>("/api/v1/organization-types", token, { method: "POST", body }),
   updateType: (token: string, id: string, body: unknown) =>
     apiRequest<OrganizationType>(`/api/v1/organization-types/${id}`, token, { method: "PATCH", body }),
-  tree: (token: string) =>
-    apiRequest<readonly OrganizationTreeNode[]>("/api/v1/organizations/tree", token),
+  // Requirement: D-103 — 组织树支持按生效日期读取历史时点；
+  // 不传 as_of 时后端返回当前树，响应结构与既有调用方一致。
+  tree: (token: string, asOf?: string) =>
+    apiRequest<readonly OrganizationTreeNode[]>(
+      asOf
+        ? `/api/v1/organizations/tree?as_of=${encodeURIComponent(asOf)}`
+        : "/api/v1/organizations/tree",
+      token,
+    ),
   organization: (token: string, id: string, effectiveAt: string) =>
     apiRequest<Organization>(
       `/api/v1/organizations/${id}?effective_at=${encodeURIComponent(effectiveAt)}`,

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 coreHR 项目贡献者
+// 许可证：coreHR Sustainable Use License v1.0（见仓库根目录 LICENSE）。本文件不是 OSI 开源。
+
 import { Alert, Button, Card, Form, Input, Skeleton, Typography } from "antd"
 import { useCallback, useEffect, useState } from "react"
 
@@ -37,7 +40,7 @@ function LoginPanel({ onLoggedIn }: { readonly onLoggedIn: (token: string) => vo
         <div className="login-brand">C</div>
         <Typography.Title level={2}>coreHR 管理员工作台</Typography.Title>
         <Typography.Paragraph type="secondary">第一批仅向 HR 系统主管理员开放</Typography.Paragraph>
-        {error && <Alert type="error" showIcon message={error} />}
+        {error && <Alert type="error" showIcon title={error} />}
         <Form layout="vertical" onFinish={(values) => void submit(values)} requiredMark={false}>
           <Form.Item label="账号" name="username" rules={[{ required: true, message: "请输入账号" }]}>
             <Input autoComplete="username" size="large" />
@@ -79,7 +82,7 @@ function AuthenticatedApp({
   if (error) {
     return (
       <main className="session-error-page">
-        <Alert type="error" showIcon message="无法进入管理员工作台" description={error} />
+        <Alert type="error" showIcon title="无法进入管理员工作台" description={error} />
         <Button onClick={() => void load()}>重试</Button>
         <Button onClick={onSignedOut}>重新登录</Button>
       </main>

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 coreHR 项目贡献者
+// 许可证：coreHR Sustainable Use License v1.0（见仓库根目录 LICENSE）。本文件不是 OSI 开源。
+
 import {
   Alert,
   Button,
@@ -22,6 +25,7 @@ import { command, organizationApi } from "./api"
 import { OrganizationRelationsTabs } from "./OrganizationRelationsTabs"
 import { OrganizationTree } from "./OrganizationTree"
 import { OrganizationVersionDrawer } from "./OrganizationVersionDrawer"
+import { localDate, treeAsOf, viewDateText } from "./view-date"
 import type {
   Organization,
   OrganizationTreeNode,
@@ -42,13 +46,6 @@ interface OrganizationOption {
   readonly organizationTypeCode: string
   readonly parentName: string | null
   readonly status: string
-}
-
-
-function localDate(): string {
-  const now = new Date()
-  const offset = now.getTimezoneOffset() * 60_000
-  return new Date(now.getTime() - offset).toISOString().slice(0, 10)
 }
 
 
@@ -128,7 +125,8 @@ export function OrganizationWorkspace({ token, canAdmin }: OrganizationWorkspace
     setError(null)
     try {
       const [nextTree, nextTypes] = await Promise.all([
-        organizationApi.tree(token),
+        // Requirement: D-103 — 组织树按查看时点读取：当天即当前树，历史日期即历史时点。
+        organizationApi.tree(token, treeAsOf(effectiveAt)),
         organizationApi.types(token),
       ])
       setTree(nextTree)
@@ -144,7 +142,7 @@ export function OrganizationWorkspace({ token, canAdmin }: OrganizationWorkspace
     } finally {
       setLoading(false)
     }
-  }, [token])
+  }, [effectiveAt, token])
 
   const loadDetail = useCallback(async () => {
     // Requirement: ORG-PROT-001 — 快速切换组织或日期时，只允许最新详情请求更新当前操作对象。
@@ -182,6 +180,13 @@ export function OrganizationWorkspace({ token, canAdmin }: OrganizationWorkspace
     setDetail(null)
     setEffectiveAt(value)
   }, [])
+
+  // Requirement: D-103 — 当天即当前时点，历史日期即历史时点；界面必须能看出当前查看的是哪个时点。
+  const viewingCurrent = effectiveAt === localDate()
+
+  const resetToCurrent = useCallback(() => {
+    changeEffectiveAt(localDate())
+  }, [changeEffectiveAt])
 
   useEffect(() => {
     void loadBase()
@@ -236,7 +241,7 @@ export function OrganizationWorkspace({ token, canAdmin }: OrganizationWorkspace
     return (
       <section aria-labelledby="organization-title">
         <Typography.Title id="organization-title" level={2}>部门管理</Typography.Title>
-        <Alert type="error" showIcon message="无权查看部门管理" description="请联系主管理员分配组织查看权限。" />
+        <Alert type="error" showIcon title="无权查看部门管理" description="请联系主管理员分配组织查看权限。" />
       </section>
     )
   }
@@ -247,7 +252,7 @@ export function OrganizationWorkspace({ token, canAdmin }: OrganizationWorkspace
         <div>
           <Typography.Title id="organization-title" level={2}>部门管理</Typography.Title>
           <Typography.Paragraph type="secondary">
-            维护公司与部门；列表展示当前有效组织，组织树中的查看日期只影响详情、关系和财务维度。
+            维护公司与部门；查看日期决定组织树、列表与详情的读取时点，只支持查看当前与历史时点。
           </Typography.Paragraph>
         </div>
         {canAdmin && (
@@ -260,7 +265,7 @@ export function OrganizationWorkspace({ token, canAdmin }: OrganizationWorkspace
           </Space>
         )}
       </div>
-      {error && <Alert closable onClose={() => setError(null)} type="error" showIcon message={error} />}
+      {error && <Alert closable={{ onClose: () => setError(null) }} type="error" showIcon title={error} />}
       {loading ? (
         <Skeleton active paragraph={{ rows: 10 }} />
       ) : (
@@ -290,6 +295,11 @@ export function OrganizationWorkspace({ token, canAdmin }: OrganizationWorkspace
                       value={typeFilter}
                       onChange={setTypeFilter}
                     />
+                    {/* Requirement: D-103 — 列表随组织树一起按查看时点切片，
+                        筛选区必须显示当前查看的是哪个时点。 */}
+                    <Tag color={viewingCurrent ? "default" : "processing"}>
+                      {viewDateText(effectiveAt)}
+                    </Tag>
                     <Button onClick={() => {
                       setSearchText("")
                       setTypeFilter(undefined)
@@ -355,15 +365,31 @@ export function OrganizationWorkspace({ token, canAdmin }: OrganizationWorkspace
                 <div className="organization-layout">
                   <aside className="organization-tree-panel">
                     <div className="panel-heading">
-                      <Typography.Title level={5}>当前有效组织树</Typography.Title>
+                      <Typography.Title level={5}>
+                        {viewingCurrent ? "当前有效组织树" : `截至 ${effectiveAt} 的组织树`}
+                      </Typography.Title>
                       <Tag>{organizationOptions.length} 个组织</Tag>
                     </div>
-                    <OrganizationTree nodes={tree} selectedId={selectedId} onSelect={selectOrganization} />
+                    <OrganizationTree
+                      nodes={tree}
+                      selectedId={selectedId}
+                      onSelect={selectOrganization}
+                      label={viewingCurrent ? "当前有效组织树" : `截至 ${effectiveAt} 的组织树`}
+                    />
                   </aside>
                   <div className="organization-detail-panel">
                     <div className="detail-toolbar">
                       <EffectiveDatePicker value={effectiveAt} onChange={changeEffectiveAt} />
-                      <Typography.Text type="secondary">树结构不随查看日期重绘</Typography.Text>
+                      {/* Requirement: D-103 — 切换查看日期立即重新取数，
+                          并用状态标签说明当前查看的是当前时点还是历史时点。 */}
+                      <Space size={4} align="center">
+                        <Tag color={viewingCurrent ? "default" : "processing"}>
+                          {viewDateText(effectiveAt)}
+                        </Tag>
+                        {!viewingCurrent && (
+                          <Button type="link" onClick={resetToCurrent}>回到当前</Button>
+                        )}
+                      </Space>
                     </div>
                     {detailLoading ? (
                       <Skeleton active paragraph={{ rows: 8 }} />

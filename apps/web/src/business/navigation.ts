@@ -1,21 +1,39 @@
+// Copyright (c) 2026 coreHR 项目贡献者
+// 许可证：coreHR Sustainable Use License v1.0（见仓库根目录 LICENSE）。本文件不是 OSI 开源。
+
+import type { LicenseModuleKey } from "./types"
+
+
 export type WorkspaceKey =
   | "dashboard"
   | "configuration"
   | "organization"
   | "positions"
+  | "reporting"
   | "people"
+  | "historical-roster"
   | "headcount"
   | "recruitment"
   | "lifecycle"
   | "attendance"
   | "governance"
   | "accounts"
+  | "audit"
+  | "license"
 
 
 export interface WorkspaceDefinition {
   readonly key: WorkspaceKey
   readonly label: string
+  /** 平台权限码（单值语义）：控制菜单入口是否可见。 */
   readonly permission?: string
+  /**
+   * Requirement: D-108 — 受模块级授权管理的入口。
+   * 该字段只声明「这个入口归属哪些授权模块」，不参与 permission 过滤：
+   * 被锁模块依然可见可进入，只是入口带锁标、进入后显示授权说明面板。
+   * 一个入口可能归属多个模块（员工生命周期同时承载审批与流程引擎）。
+   */
+  readonly licensedModules?: readonly LicenseModuleKey[]
   readonly available: boolean
 }
 
@@ -44,20 +62,55 @@ export const workspaces: readonly WorkspaceDefinition[] = [
     key: "positions",
     label: "职位管理",
     permission: "WORKFORCE_ADMIN",
-    available: false,
+    available: true,
+  },
+  {
+    key: "reporting",
+    label: "汇报关系",
+    permission: "WORKFORCE_ADMIN",
+    available: true,
   },
   { key: "people", label: "人员中心", permission: "WORKFORCE_ADMIN", available: true },
+  // Requirement: D-102 — 历史花名册入口挂在人员中心之后，读权限与接口一致（PERSON_VIEW）。
+  {
+    key: "historical-roster",
+    label: "历史花名册",
+    permission: "PERSON_VIEW",
+    available: true,
+  },
   { key: "headcount", label: "编制管理", permission: "WORKFORCE_ADMIN", available: true },
   { key: "recruitment", label: "招聘需求", permission: "LIFECYCLE_ADMIN", available: true },
-  { key: "lifecycle", label: "员工生命周期", permission: "LIFECYCLE_ADMIN", available: true },
-  { key: "attendance", label: "考勤管理", permission: "ATTENDANCE_ADMIN", available: true },
+  // Requirement: D-108 — 员工生命周期同时承载审批与流程引擎，因此归属两个授权模块。
+  {
+    key: "lifecycle",
+    label: "员工生命周期",
+    permission: "LIFECYCLE_ADMIN",
+    licensedModules: ["lifecycle", "workflow"],
+    available: true,
+  },
+  {
+    key: "attendance",
+    label: "考勤管理",
+    permission: "ATTENDANCE_ADMIN",
+    licensedModules: ["attendance"],
+    available: true,
+  },
   {
     key: "governance",
     label: "数据治理",
     permission: "DATA_GOVERNANCE_VIEW",
+    licensedModules: ["governance"],
     available: true,
   },
   { key: "accounts", label: "账号与权限", permission: "*", available: true },
+  {
+    key: "audit",
+    label: "操作日志",
+    permission: "DATA_GOVERNANCE_ADMIN",
+    available: true,
+  },
+  // Requirement: D-108 — 授权管理入口只对主管理员开放（激活与停用都要求 * 权限）。
+  { key: "license", label: "授权管理", permission: "*", available: true },
 ]
 
 
@@ -65,6 +118,7 @@ export const workspaces: readonly WorkspaceDefinition[] = [
 export const organizationWorkspaceKeys: readonly WorkspaceKey[] = [
   "organization",
   "positions",
+  "reporting",
   "headcount",
   "configuration",
 ]

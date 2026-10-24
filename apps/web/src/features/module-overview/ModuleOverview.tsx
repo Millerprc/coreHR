@@ -1,8 +1,12 @@
-import { Alert, Card, Col, List, Row, Skeleton, Space, Tag, Typography } from "antd"
+// Copyright (c) 2026 coreHR 项目贡献者
+// 许可证：coreHR Sustainable Use License v1.0（见仓库根目录 LICENSE）。本文件不是 OSI 开源。
+
+import { Alert, Card, Col, Row, Skeleton, Space, Tag, Typography } from "antd"
 import { useEffect, useState } from "react"
 
 import { getModuleRegistry } from "../../api/client"
 import type { ModuleStatus } from "../../api/types"
+import { EmptyState } from "../../business/components/EmptyState"
 
 const { Paragraph, Text, Title } = Typography
 
@@ -11,6 +15,36 @@ const statusLabels: Record<ModuleStatus["status"], string> = {
   slice_available: "首批切片可用",
   uat_ready: "工程 MVP 可验收",
   planned: "待建设",
+}
+
+// Requirement: D-090 — antd 的 List 在 6.5.2 已整体废弃、下个大版本移除，
+// 改用语义化列表承载，保留原来的「小号条目 + 细分隔线 + 空态文案」结构。
+function CapabilityList({
+  items,
+  emptyText,
+}: {
+  readonly items: readonly string[]
+  readonly emptyText: string
+}): React.JSX.Element {
+  if (items.length === 0) {
+    return <EmptyState description={emptyText} />
+  }
+  return (
+    <ul style={{ listStyle: "none", margin: 0, padding: 0 }}>
+      {items.map((item, index) => (
+        <li
+          key={`${index}-${item}`}
+          style={{
+            padding: "12px 16px",
+            borderBottom:
+              index === items.length - 1 ? "none" : "1px solid rgba(5, 5, 5, 0.06)",
+          }}
+        >
+          {item}
+        </li>
+      ))}
+    </ul>
+  )
 }
 
 function PhaseCard({ module }: { readonly module: ModuleStatus }): React.JSX.Element {
@@ -27,19 +61,9 @@ function PhaseCard({ module }: { readonly module: ModuleStatus }): React.JSX.Ele
     >
       <Text type="secondary">{module.code}</Text>
       <Title level={5}>当前已实现</Title>
-      <List
-        size="small"
-        dataSource={[...module.available_capabilities]}
-        locale={{ emptyText: "尚无可验收能力" }}
-        renderItem={(capability) => <List.Item>{capability}</List.Item>}
-      />
+      <CapabilityList items={module.available_capabilities} emptyText="尚无可验收能力" />
       <Title level={5}>等待业务资料</Title>
-      <List
-        size="small"
-        dataSource={[...module.pending_inputs]}
-        locale={{ emptyText: "当前无阻塞资料" }}
-        renderItem={(item) => <List.Item>{item}</List.Item>}
-      />
+      <CapabilityList items={module.pending_inputs} emptyText="当前无阻塞资料" />
     </Card>
   )
 }
@@ -73,7 +97,7 @@ export function ModuleOverview(): React.JSX.Element {
         <Alert
           type="error"
           showIcon
-          message="API尚未连接"
+          title="API尚未连接"
           description={errorMessage}
           className="status-alert"
         />

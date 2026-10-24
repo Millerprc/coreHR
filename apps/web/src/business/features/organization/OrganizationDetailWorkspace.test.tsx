@@ -1,4 +1,7 @@
-import { fireEvent, render, screen } from "@testing-library/react"
+// Copyright (c) 2026 coreHR 项目贡献者
+// 许可证：coreHR Sustainable Use License v1.0（见仓库根目录 LICENSE）。本文件不是 OSI 开源。
+
+import { fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
 import { OrganizationDetailWorkspace } from "./OrganizationDetailWorkspace"
@@ -58,7 +61,7 @@ describe("OrganizationDetailWorkspace", () => {
           planned_events: [],
         })
       }
-      if (path.endsWith("/organizations/tree")) {
+      if (path.includes("/organizations/tree")) {
         return Response.json([
           {
             id: "30000000-0000-0000-0000-000000000001",
@@ -115,5 +118,34 @@ describe("OrganizationDetailWorkspace", () => {
     fireEvent.click(screen.getByTitle("2"))
     expect(await screen.findByText("第二页历史记录")).toBeInTheDocument()
     expect(vi.mocked(fetch).mock.calls.some(([input]) => String(input).endsWith("/events?limit=50&offset=50"))).toBe(true)
+  })
+
+  it("reads the organization tree at the viewing timepoint", async () => {
+    // Requirement: D-103 — 组织详情页按查看时点读取组织树与详情，并显示当前时点状态。
+    render(
+      <OrganizationDetailWorkspace
+        token="synthetic-token"
+        canAdmin
+        organizationId={organizationId}
+        initialEffectiveAt="2026-08-20"
+      />,
+    )
+
+    expect(await screen.findByRole("heading", { name: "能效BG" })).toBeInTheDocument()
+    expect(vi.mocked(fetch).mock.calls.some(([input]) => (
+      String(input).endsWith("/organizations/tree?as_of=2026-08-20")
+    ))).toBe(true)
+    expect(screen.getAllByText("截至 2026-08-20").length).toBeGreaterThan(0)
+
+    fireEvent.change(screen.getByLabelText("查看日期"), {
+      target: { value: "2026-09-20" },
+    })
+
+    await waitFor(() => {
+      expect(vi.mocked(fetch).mock.calls.some(([input]) => (
+        String(input).endsWith("/organizations/tree?as_of=2026-09-20")
+      ))).toBe(true)
+    })
+    expect(screen.getAllByText("截至 2026-09-20").length).toBeGreaterThan(0)
   })
 })

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 coreHR 项目贡献者
+// 许可证：coreHR Sustainable Use License v1.0（见仓库根目录 LICENSE）。本文件不是 OSI 开源。
+
 export interface Page<T> {
   readonly items: readonly T[]
   readonly total: number
@@ -77,12 +80,70 @@ export interface AgreementRelationship {
 }
 
 
+export interface PersonFieldVersion {
+  readonly id: string
+  readonly person_id: string
+  readonly field_code: string
+  readonly effective_from: string
+  readonly effective_to: string | null
+  readonly version: number
+  readonly new_value: string | null
+  readonly change_reason: string | null
+  readonly created_by: string
+  readonly created_by_name: string | null
+  readonly created_at: string
+  readonly updated_at: string
+}
+
+
 export interface PersonArchive {
+  /** 当前生效结果：主档登记值 + 生效日期 ≤ effective_at 的最后一条修正。 */
   readonly person: Person
+  /** 主档登记值，用于区分「登记值」与「当前生效值」。 */
+  readonly registered_person: Person
   readonly employments: readonly Employment[]
   readonly legal_entity_relations: readonly EmploymentLegalEntityRelation[]
   readonly assignments: readonly EmploymentAssignment[]
   readonly agreements: readonly AgreementRelationship[]
+  readonly corrections: readonly PersonFieldVersion[]
+  readonly effective_at: string
+}
+
+
+/**
+ * Requirement: D-095 — 可修正的基础信息字段与后端 PERSON_CORRECTABLE_FIELD_CODES 对齐，
+ * 修正入口只允许选择这些字段。
+ */
+export const PERSON_CORRECTABLE_FIELDS = [
+  "legal_name",
+  "display_name",
+  "former_name",
+  "gender_code",
+  "birth_date",
+  "ethnicity_code",
+  "nationality_code",
+  "country_code",
+  "marital_status_code",
+  "political_status_code",
+] as const
+
+
+export const PERSON_FIELD_LABELS: Readonly<Record<string, string>> = {
+  legal_name: "法定姓名",
+  display_name: "显示姓名",
+  former_name: "曾用名",
+  gender_code: "性别代码",
+  birth_date: "出生日期",
+  ethnicity_code: "民族代码",
+  nationality_code: "国籍代码",
+  country_code: "国家/地区代码",
+  marital_status_code: "婚姻状况代码",
+  political_status_code: "政治面貌代码",
+}
+
+
+export function personFieldLabel(fieldCode: string): string {
+  return PERSON_FIELD_LABELS[fieldCode] ?? fieldCode
 }
 
 

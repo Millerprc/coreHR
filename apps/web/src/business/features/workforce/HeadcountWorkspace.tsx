@@ -1,3 +1,6 @@
+// Copyright (c) 2026 coreHR 项目贡献者
+// 许可证：coreHR Sustainable Use License v1.0（见仓库根目录 LICENSE）。本文件不是 OSI 开源。
+
 import {
   Alert,
   Button,
@@ -187,7 +190,7 @@ export function HeadcountWorkspace({ token, canAdmin }: HeadcountWorkspaceProps)
         </div>
         {canAdmin && <Button type="primary" onClick={() => openAction("plan")}>维护编制</Button>}
       </div>
-      {error && <Alert closable onClose={() => setError(null)} type="error" showIcon title={error} />}
+      {error && <Alert closable={{ onClose: () => setError(null) }} type="error" showIcon title={error} />}
       <div className="filter-grid">
         <label><span className="field-label">年月</span><Input aria-label="编制年月" type="month" value={month} onChange={(event) => setMonth(event.target.value)} /></label>
         <label><span className="field-label">统计日期</span><Input aria-label="统计日期" type="date" value={asOf} onChange={(event) => setAsOf(event.target.value)} /></label>

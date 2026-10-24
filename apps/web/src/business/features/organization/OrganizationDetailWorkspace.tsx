@@ -1,3 +1,6 @@
+// Copyright (c) 2026 coreHR 项目贡献者
+// 许可证：coreHR Sustainable Use License v1.0（见仓库根目录 LICENSE）。本文件不是 OSI 开源。
+
 import {
   Alert,
   Button,
@@ -17,6 +20,7 @@ import { ApiClientError } from "../../client"
 import { EffectiveDatePicker } from "../../components/EffectiveDatePicker"
 import { command, organizationApi } from "./api"
 import { OrganizationVersionDrawer } from "./OrganizationVersionDrawer"
+import { localDate, treeAsOf, viewDateText } from "./view-date"
 import type {
   DirectoryOption,
   Organization,
@@ -79,13 +83,6 @@ function directoryName(item: DirectoryOption): string {
 }
 
 
-function localDate(): string {
-  const now = new Date()
-  const offset = now.getTimezoneOffset() * 60_000
-  return new Date(now.getTime() - offset).toISOString().slice(0, 10)
-}
-
-
 const eventTypeLabels: Readonly<Record<string, string>> = {
   CREATE: "创建组织",
   VERSION_CHANGE: "组织变更",
@@ -126,7 +123,8 @@ export function OrganizationDetailWorkspace({
         organizationApi.relations(token, organizationId, effectiveAt),
         organizationApi.events(token, organizationId, 50, (eventPage - 1) * 50),
         organizationApi.types(token),
-        organizationApi.tree(token),
+        // Requirement: D-103 — 详情页的部门路径同样按查看时点读取组织树。
+        organizationApi.tree(token, treeAsOf(effectiveAt)),
         organizationApi.legalEntities(token),
       ])
       if (currentRequest !== requestSequence.current) return
@@ -166,6 +164,13 @@ export function OrganizationDetailWorkspace({
     requestSequence.current += 1
     setData(null)
     setEffectiveAt(value)
+  }
+
+  // Requirement: D-103 — 当天即当前时点，历史日期即历史时点；界面必须能看出当前查看的是哪个时点。
+  const viewingCurrent = effectiveAt === localDate()
+
+  function resetToCurrent(): void {
+    changeEffectiveAt(localDate())
   }
 
   async function saveVersion(body: Record<string, unknown>): Promise<void> {
@@ -252,7 +257,7 @@ export function OrganizationDetailWorkspace({
         )}
       </div>
 
-      {error && <Alert closable onClose={() => setError(null)} type="error" showIcon title={error} />}
+      {error && <Alert closable={{ onClose: () => setError(null) }} type="error" showIcon title={error} />}
 
       <Tabs
         items={[
@@ -263,6 +268,16 @@ export function OrganizationDetailWorkspace({
               <>
                 <div className="organization-detail-datebar">
                   <EffectiveDatePicker value={effectiveAt} onChange={changeEffectiveAt} />
+                  {/* Requirement: D-103 — 切换查看日期立即重新取数，
+                      并用状态标签说明当前查看的是当前时点还是历史时点。 */}
+                  <Space size={4} align="center">
+                    <Tag color={viewingCurrent ? "default" : "processing"}>
+                      {viewDateText(effectiveAt)}
+                    </Tag>
+                    {!viewingCurrent && (
+                      <Button type="link" onClick={resetToCurrent}>回到当前</Button>
+                    )}
+                  </Space>
                 </div>
                 <div className="organization-detail-card">
                   <Typography.Title level={4}>基础信息</Typography.Title>
