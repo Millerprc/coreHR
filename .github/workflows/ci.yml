@@ -110,6 +110,13 @@ jobs:
       - name: 安装依赖
         run: npm ci
 
+      # AntD 守卫放在这个 job 里，而不是 guards job：
+      # 它要读 `node_modules/antd/es` 的**源码**来解析 @deprecated 属性与整体废弃组件
+      # （antd 对整体废弃组件故意不标 @deprecated，标了 tsc 就直接编译不过），
+      # 所以必须先有 node_modules。本 job 已经有 npm ci，不额外装第二遍。
+      - name: Ant Design 规范守卫
+        run: node scripts/check-antd-usage.mjs
+
       - name: 类型检查
         run: npx tsc -b
 
@@ -120,7 +127,7 @@ jobs:
         run: npx vite build --config vite.business.config.ts
 
   guards:
-    name: 仓库守卫（版权头 / AntD / 私有实现隔离）
+    name: 仓库守卫（版权头 / 私有实现隔离）
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -131,10 +138,6 @@ jobs:
 
       - name: 版权与许可证声明守卫
         run: node scripts/check-license-header.mjs
-
-      - name: Ant Design 规范守卫
-        working-directory: apps/web
-        run: node scripts/check-antd-usage.mjs
 
       - name: 私有实现防误发守卫
         run: node scripts/check-private-package-isolation.mjs
