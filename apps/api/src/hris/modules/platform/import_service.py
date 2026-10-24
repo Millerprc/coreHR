@@ -1,3 +1,6 @@
+# Copyright (c) 2026 coreHR 项目贡献者
+# 许可证：coreHR Sustainable Use License v1.0（见仓库根目录 LICENSE）。本文件不是 OSI 开源。
+
 import hashlib
 import json
 from collections import defaultdict
@@ -34,6 +37,7 @@ from hris.modules.platform.models import (
     DataDictionaryItem,
     ExternalRecordLink,
 )
+from hris.modules.platform.numbering import advance_number_sequence
 from hris.modules.workforce.extended_schemas import (
     JobDimensionVersionCreate,
     JobVersionCreate,
@@ -287,6 +291,7 @@ class ImportService:
             idempotency_key=payload.idempotency_key,
             request_checksum=request_checksum,
             status="validating",
+            mode=payload.mode,
             total_rows=len(payload.rows),
             valid_rows=0,
             rejected_rows=0,
@@ -477,6 +482,18 @@ class ImportService:
                 message="导入批次尚未完成校验或当前状态不可执行",
             )
 
+        # Requirement: D-109 — 初始化导入整批不入库：任一阻断错误存在时整批拒绝执行，
+        # 避免落库出层级残缺的主数据。判断必须发生在任何写入与状态流转之前。
+        if batch.mode == "initialize" and batch.rejected_rows > 0:
+            raise ApiError(
+                status_code=409,
+                code="IMPORT_BATCH_HAS_REJECTED_ROWS",
+                message=(
+                    f"初始化导入存在 {batch.rejected_rows} 行校验错误，"
+                    "整批未入库，请先修正后重新校验"
+                ),
+            )
+
         batch.status = "executing"
         valid_rows = [row for row in rows if row.status == "valid"]
         if batch.entity_type == "dictionary_item":
@@ -637,6 +654,9 @@ class ImportService:
             row.target_type = _TARGET_TYPES[batch.entity_type]
             row.target_id = target.id
             await self._audit_target(batch, row, target)
+
+        if batch.entity_type == "organization":
+            await self._advance_organization_number_sequence(rows)
 
         await self._session.flush()
         self._refresh_counts(batch, rows)
@@ -2495,6 +2515,34 @@ class ImportService:
                 )
             )
         ) is not None
+
+    async def _advance_organization_number_sequence(
+        self,
+        rows: list[ImportBatchRow],
+    ) -> None:
+        """把 ORG_NUMBER 序列推进到本批次已占用编码之上。
+
+        Requirement: D-109 — 初始化导入保留历史组织编码后，自动编号必须避让，
+        否则后续新建组织会取到同样的编码并撞 organizations.code 唯一约束。
+        推进动作与导入处于同一事务，不单独提交。
+        """
+        highest = 0
+        for row in rows:
+            if row.status not in {"imported", "skipped"}:
+                continue
+            code = row.payload.get("code")
+            if not isinstance(code, str) or not code.isascii() or not code.isdigit():
+                continue
+            highest = max(highest, int(code))
+        if highest <= 0:
+            return
+        await advance_number_sequence(
+            self._session,
+            sequence_code="ORG_NUMBER",
+            width=6,
+            max_value=999_999,
+            minimum_value=highest,
+        )
 
     async def _order_organization_rows(
         self,

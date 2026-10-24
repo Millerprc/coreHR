@@ -1,3 +1,6 @@
+# Copyright (c) 2026 coreHR 项目贡献者
+# 许可证：coreHR Sustainable Use License v1.0（见仓库根目录 LICENSE）。本文件不是 OSI 开源。
+
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
@@ -10,6 +13,7 @@ from sqlalchemy import (
     Date,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     LargeBinary,
     Numeric,
@@ -346,6 +350,59 @@ class Person(UuidPrimaryKeyMixin, TimestampMixin, Base):
     marital_status_code: Mapped[str | None] = mapped_column(String(50))
     political_status_code: Mapped[str | None] = mapped_column(String(50))
     status: Mapped[str] = mapped_column(String(30), nullable=False, default="active")
+
+
+class PersonFieldVersion(UuidPrimaryKeyMixin, TimestampMixin, Base):
+    """人员基础信息的字段级生效日期版本（更正记录）。
+
+    Requirement: D-095 — 基础信息的「编辑」与「修正」是两个语义不同的写操作：
+    「编辑」直接覆盖主档、立即生效；「修正」不覆盖主档，而是把
+    「从某一天起正确的值」登记成一条带生效日期的版本记录。
+
+    语义来源：docs/01-foundation/08-人事数据与事件规范.md §2 的分层模型
+    「业务事件 / 更正记录 → 当前有效结果 + 有效期历史」。生效日期切片按
+    「人 + 字段」维度维护，形态对齐 EmploymentLegalEntityRelation：
+    同一字段的相邻版本首尾相接（上一条的 effective_to 等于下一条
+    effective_from 的前一天），因此当前结果 = 主档登记值 + 生效日期 ≤
+    查询日期的最后一条修正。
+    """
+
+    __tablename__ = "person_field_versions"
+    __table_args__ = (
+        UniqueConstraint(
+            "person_id",
+            "field_code",
+            "version",
+            name="uq_person_field_versions_person_field_version",
+        ),
+        # 同一字段的同一生效日期只允许一条修正，否则两条记录会在同一天互相矛盾。
+        UniqueConstraint(
+            "person_id",
+            "field_code",
+            "effective_from",
+            name="uq_person_field_versions_person_field_effective_from",
+        ),
+        CheckConstraint("version > 0", name="version_positive"),
+        CheckConstraint(
+            "effective_to IS NULL OR effective_to >= effective_from",
+            name="effective_period_order",
+        ),
+    )
+
+    person_id: Mapped[UUID] = mapped_column(
+        Uuid,
+        ForeignKey("persons.id"),
+        nullable=False,
+        index=True,
+    )
+    field_code: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+    effective_from: Mapped[date] = mapped_column(Date, nullable=False)
+    effective_to: Mapped[date | None] = mapped_column(Date)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    # 修正后的登记值；NULL 表示把该字段清空。日期型字段存 ISO 日期字符串。
+    new_value: Mapped[str | None] = mapped_column(String(200))
+    change_reason: Mapped[str | None] = mapped_column(String(500))
+    created_by: Mapped[UUID] = mapped_column(Uuid, nullable=False, index=True)
 
 
 class PersonLabel(UuidPrimaryKeyMixin, TimestampMixin, Base):
@@ -991,6 +1048,14 @@ class HrEvent(UuidPrimaryKeyMixin, TimestampMixin, Base):
 
 class AuditLog(UuidPrimaryKeyMixin, Base):
     __tablename__ = "audit_logs"
+    # Requirement: D-115 —— 审计查询支持按「动作」「对象类型」过滤
+    # （`platform/audit_service.py` 的 filters），这两个列原先没有索引，
+    # 审计列表在数据量上来后是全表扫。`actor_id` / `object_id` / `trace_id` / `occurred_at`
+    # 本来就有单列索引，这里补齐剩下的两个过滤维度。
+    __table_args__ = (
+        Index("ix_audit_logs_action", "action"),
+        Index("ix_audit_logs_object_type", "object_type"),
+    )
 
     occurred_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

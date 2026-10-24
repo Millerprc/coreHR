@@ -1,3 +1,6 @@
+# Copyright (c) 2026 coreHR 项目贡献者
+# 许可证：coreHR Sustainable Use License v1.0（见仓库根目录 LICENSE）。本文件不是 OSI 开源。
+
 from datetime import UTC, datetime
 from typing import Annotated, Callable
 
@@ -96,3 +99,27 @@ def require_permissions(*required_codes: str) -> Callable[..., UserAccount]:
 
 def require_permission(permission_code: str) -> Callable[..., UserAccount]:
     return require_permissions(permission_code)
+
+
+def require_any_permission(*permission_codes: str) -> Callable[..., UserAccount]:
+    """按「任一权限码命中即放行」判定，用于读端点放宽。
+
+    Requirement: P-13 / P-14 — 读端点放宽必须用并集语义（只放宽、不收窄）：
+    持有原写权限码的角色不会因为读权限放宽而失去读取能力，
+    只读角色则获得原本被写权限挡住的读取能力。
+
+    取舍说明：权限码覆盖守卫（apps/api/tests/integration/test_permission_code_coverage.py）
+    只识别 require_permission / require_permissions / ensure_permissions 三个函数名，
+    本函数的实参不在守卫扫描范围内，因此这里只允许传入已经落库的权限码。
+    """
+    if not permission_codes:
+        raise ValueError("at least one permission code is required")
+
+    async def dependency(current: CurrentSession, db: DbSession) -> UserAccount:
+        user, _ = current
+        granted_codes = await granted_permission_codes(user, db)
+        if "*" not in granted_codes and not granted_codes.intersection(permission_codes):
+            raise ApiError(status_code=403, code="PERMISSION_DENIED", message="没有执行此操作的权限")
+        return user
+
+    return dependency

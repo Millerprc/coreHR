@@ -1,3 +1,6 @@
+# Copyright (c) 2026 coreHR 项目贡献者
+# 许可证：coreHR Sustainable Use License v1.0（见仓库根目录 LICENSE）。本文件不是 OSI 开源。
+
 from datetime import date
 from typing import Annotated
 from uuid import UUID
@@ -5,6 +8,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Query, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from hris.contracts.workflow import workflow_action_label
 from hris.core.database import get_db
 from hris.modules.platform.dependencies import (
     CurrentSession,
@@ -12,6 +16,7 @@ from hris.modules.platform.dependencies import (
     require_permission,
 )
 from hris.modules.platform.models import UserAccount
+from hris.modules.workflow.catalog import action_catalog, status_catalog
 from hris.modules.workflow.extended_schemas import (
     ApplicationHireConversionResponse,
     ApplicationHireCreate,
@@ -42,14 +47,23 @@ from hris.modules.workflow.extended_schemas import (
     RecruitmentRequestPage,
     RecruitmentRequestResponse,
     RecruitmentRequestUpdate,
+    WorkflowActionCatalogItem,
+    WorkflowActionCatalogResponse,
     WorkflowInstanceCreate,
     WorkflowInstanceDetailResponse,
     WorkflowInstancePage,
     WorkflowInstanceResponse,
+    WorkflowNodeDwellItem,
+    WorkflowNodeDwellResponse,
     WorkflowPublishResponse,
+    WorkflowStatusCatalogItem,
+    WorkflowTaskActionRequest,
+    WorkflowTaskAssigneeRequest,
     WorkflowTaskDecision,
     WorkflowTaskPage,
     WorkflowTaskResponse,
+    WorkflowTransitionPage,
+    WorkflowTransitionResponse,
 )
 from hris.modules.workflow.extended_service import LifecycleService
 
@@ -61,6 +75,13 @@ ONBOARDING_INITIATE_PERMISSION = "ONBOARDING_INITIATE"
 
 
 def service(db: AsyncSession, user: UserAccount, request: Request) -> LifecycleService:
+    """本模块的服务入口。
+
+    Requirement: D-108 — 流程的读与写都经 `LifecycleService.engine`
+    （由 `resolve_engine()` 解析）：装上私有包走商业引擎，
+    没装走公开壳（读直通数据库、写统一返回 LICENSE_REQUIRED）。
+    """
+
     return LifecycleService(db, actor_id=user.id, trace_id=str(request.state.trace_id))
 
 
@@ -450,8 +471,227 @@ async def decide_workflow_task(
     db: DbSession,
     user: AdminUser,
 ) -> WorkflowTaskResponse:
+    """兼容入口：同意 / 驳回。
+
+    Requirement: D-095 — 撤销与退回不共用本入口，各自有独立接口。
+    """
+
     return WorkflowTaskResponse.model_validate(
         await service(db, user, request).decide_workflow_task(task_id, payload)
+    )
+
+
+@router.get("/workflow-actions", response_model=WorkflowActionCatalogResponse)
+async def list_workflow_actions(
+    request: Request,
+    db: DbSession,
+    user: AdminUser,
+) -> WorkflowActionCatalogResponse:
+    """审批动作目录：动作取值、中文标签与语义（前端直接消费，不在前端另写一套）。"""
+
+    del request, db, user
+    return WorkflowActionCatalogResponse(
+        actions=[
+            WorkflowActionCatalogItem(
+                action=item.action,
+                label=item.label,
+                semantics=item.semantics,
+                terminal=item.terminal,
+                system=item.system,
+                node_movement=item.node_movement,
+                task_status=item.task_status,
+                instance_status=item.instance_status,
+            )
+            for item in action_catalog()
+        ],
+        statuses=[
+            WorkflowStatusCatalogItem(status=item.status, label=item.label)
+            for item in status_catalog()
+        ],
+    )
+
+
+@router.post("/workflow-tasks/{task_id}/approve", response_model=WorkflowTaskResponse)
+async def approve_workflow_task(
+    task_id: UUID,
+    payload: WorkflowTaskActionRequest,
+    request: Request,
+    db: DbSession,
+    user: AdminUser,
+) -> WorkflowTaskResponse:
+    return WorkflowTaskResponse.model_validate(
+        await service(db, user, request).approve_workflow_task(task_id, payload.comment)
+    )
+
+
+@router.post("/workflow-tasks/{task_id}/reject", response_model=WorkflowTaskResponse)
+async def reject_workflow_task(
+    task_id: UUID,
+    payload: WorkflowTaskActionRequest,
+    request: Request,
+    db: DbSession,
+    user: AdminUser,
+) -> WorkflowTaskResponse:
+    """驳回：终止流程，实例落到「已驳回」。"""
+
+    return WorkflowTaskResponse.model_validate(
+        await service(db, user, request).reject_workflow_task(task_id, payload.comment)
+    )
+
+
+@router.post("/workflow-tasks/{task_id}/rollback", response_model=WorkflowTaskResponse)
+async def rollback_workflow_task(
+    task_id: UUID,
+    payload: WorkflowTaskActionRequest,
+    request: Request,
+    db: DbSession,
+    user: AdminUser,
+) -> WorkflowTaskResponse:
+    """撤销：终止流程，实例落到「已撤销」，与驳回不是同一个终态。"""
+
+    return WorkflowTaskResponse.model_validate(
+        await service(db, user, request).rollback_workflow_task(task_id, payload.comment)
+    )
+
+
+@router.post("/workflow-tasks/{task_id}/cancel", response_model=WorkflowTaskResponse)
+async def cancel_workflow_task(
+    task_id: UUID,
+    payload: WorkflowTaskActionRequest,
+    request: Request,
+    db: DbSession,
+    user: AdminUser,
+) -> WorkflowTaskResponse:
+    """取消：终止流程，实例落到「已取消」。"""
+
+    return WorkflowTaskResponse.model_validate(
+        await service(db, user, request).cancel_workflow_task(task_id, payload.comment)
+    )
+
+
+@router.post("/workflow-tasks/{task_id}/transfer", response_model=WorkflowTaskResponse)
+async def transfer_workflow_task(
+    task_id: UUID,
+    payload: WorkflowTaskAssigneeRequest,
+    request: Request,
+    db: DbSession,
+    user: AdminUser,
+) -> WorkflowTaskResponse:
+    """转办：把当前任务改派给其他办理人，节点不变。"""
+
+    return WorkflowTaskResponse.model_validate(
+        await service(db, user, request).transfer_workflow_task(
+            task_id,
+            assignee_type=payload.assignee_type,
+            assignee_ref=payload.assignee_ref,
+            comment=payload.comment,
+        )
+    )
+
+
+@router.post("/workflow-tasks/{task_id}/add-sign", response_model=WorkflowTaskResponse)
+async def add_sign_workflow_task(
+    task_id: UUID,
+    payload: WorkflowTaskAssigneeRequest,
+    request: Request,
+    db: DbSession,
+    user: AdminUser,
+) -> WorkflowTaskResponse:
+    """加签：在当前节点追加审批人，节点不变。"""
+
+    return WorkflowTaskResponse.model_validate(
+        await service(db, user, request).add_sign_workflow_task(
+            task_id,
+            assignee_type=payload.assignee_type,
+            assignee_ref=payload.assignee_ref,
+            comment=payload.comment,
+        )
+    )
+
+
+@router.post("/workflow-tasks/{task_id}/return", response_model=WorkflowTaskResponse)
+async def return_workflow_task(
+    task_id: UUID,
+    payload: WorkflowTaskActionRequest,
+    request: Request,
+    db: DbSession,
+    user: AdminUser,
+) -> WorkflowTaskResponse:
+    """退回：回到上一个审批节点，实例落到「已退回」。"""
+
+    return WorkflowTaskResponse.model_validate(
+        await service(db, user, request).return_workflow_task(task_id, payload.comment)
+    )
+
+
+@router.get(
+    "/workflow-instances/{instance_id}/transitions",
+    response_model=WorkflowTransitionPage,
+)
+async def list_workflow_transitions(
+    instance_id: UUID,
+    request: Request,
+    db: DbSession,
+    user: AdminUser,
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+) -> WorkflowTransitionPage:
+    items, total = await service(db, user, request).list_workflow_transitions(
+        instance_id,
+        limit=limit,
+        offset=offset,
+    )
+    return WorkflowTransitionPage(
+        items=[
+            WorkflowTransitionResponse(
+                id=item.id,
+                instance_id=item.instance_id,
+                from_node_code=item.from_node_code,
+                to_node_code=item.to_node_code,
+                action=item.action,
+                action_label=workflow_action_label(item.action),
+                from_status=item.from_status,
+                to_status=item.to_status,
+                actor_id=item.actor_id,
+                comment=item.comment,
+                created_at=item.created_at,
+            )
+            for item in items
+        ],
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.get(
+    "/workflow-instances/{instance_id}/node-dwell",
+    response_model=WorkflowNodeDwellResponse,
+)
+async def get_workflow_node_dwell(
+    instance_id: UUID,
+    request: Request,
+    db: DbSession,
+    user: AdminUser,
+    node_code: str | None = Query(default=None, max_length=80),
+) -> WorkflowNodeDwellResponse:
+    instance, stats = await service(db, user, request).workflow_node_dwell(
+        instance_id,
+        node_code=node_code,
+    )
+    return WorkflowNodeDwellResponse(
+        instance_id=instance.id,
+        items=[
+            WorkflowNodeDwellItem(
+                node_code=item.node_code,
+                visit_count=item.visit_count,
+                total_duration_seconds=item.total_duration_seconds,
+                average_duration_seconds=item.average_duration_seconds,
+                max_duration_seconds=item.max_duration_seconds,
+                current=item.current,
+            )
+            for item in stats
+        ],
     )
 
 

@@ -1,3 +1,6 @@
+# Copyright (c) 2026 coreHR 项目贡献者
+# 许可证：coreHR Sustainable Use License v1.0（见仓库根目录 LICENSE）。本文件不是 OSI 开源。
+
 from uuid import UUID, uuid4
 
 from httpx import AsyncClient
@@ -44,8 +47,11 @@ async def test_dictionary_create_and_list(
     )
 
     assert response.status_code == 200
-    assert response.json()["total"] == 1
-    assert response.json()["items"][0]["id"] == created["id"]
+    items = response.json()["items"]
+    # 断言不依赖"库里没有预置字典"这个前提：迁移种子（员工标签库）与用例新建的字典共存。
+    assert response.json()["total"] == len(items)
+    assert any(item["id"] == created["id"] for item in items)
+    assert any(item["code"] == created["code"] for item in items)
 
 
 async def test_dictionary_conflicts_parent_rules_and_safe_deactivation(

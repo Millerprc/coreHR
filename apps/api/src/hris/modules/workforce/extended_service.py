@@ -1,3 +1,6 @@
+# Copyright (c) 2026 coreHR 项目贡献者
+# 许可证：coreHR Sustainable Use License v1.0（见仓库根目录 LICENSE）。本文件不是 OSI 开源。
+
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
@@ -8,6 +11,8 @@ from sqlalchemy import func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from hris.core.errors import ApiError
+from hris.core.personnel_security import mask_text
+from hris.core.search import like_pattern
 from hris.modules.platform.models import NumberSequence
 from hris.modules.workforce.extended_schemas import (
     AgreementRelationshipCreate,
@@ -48,6 +53,15 @@ from hris.modules.workforce.models import (
     Person,
     PersonDocument,
     SnapshotBatch,
+)
+
+
+# Requirement: 07-人员档案领域规范 §9 — 每次修改记录修改前值、修改后值；
+# 同时 §10 要求敏感数据默认脱敏，审计与日志不落个人数据明文。
+# 取舍说明：姓名与出生日期按脱敏值入审计（姓名保留首尾、出生日期只保留年份），
+# 其余基础信息字段（性别、国籍、民族等代码）按原值入审计。
+PERSON_AUDIT_PII_FIELDS = frozenset(
+    {"legal_name", "display_name", "former_name", "birth_date"}
 )
 
 
@@ -740,19 +754,59 @@ class ExtendedWorkforceService:
         changes = payload.model_dump(exclude={"change_reason"}, exclude_unset=True)
         if not changes:
             raise ApiError(status_code=422, code="PERSON_CHANGE_EMPTY", message="没有可保存的档案变更")
+        # 主档上法定姓名与显示姓名是 NOT NULL，编辑不能把它们改成空值，
+        # 否则会直接撞数据库约束（接口应给出可读的业务错误而不是 500）。
+        for required_field in ("legal_name", "display_name"):
+            if required_field in changes and changes[required_field] is None:
+                raise ApiError(
+                    status_code=422,
+                    code="PERSON_FIELD_REQUIRED",
+                    message="法定姓名与显示姓名不能为空",
+                )
+        before_values = {field: getattr(person, field) for field in changes}
         for field, value in changes.items():
             setattr(person, field, value)
         await self._session.flush()
         await self._session.refresh(person)
+        after_values = {field: getattr(person, field) for field in changes}
+        # Requirement: 07-人员档案领域规范 §9 — 每次修改记录修改前值、修改后值；
+        # 姓名属于 PII，审计里只留脱敏值，避免日志出现姓名明文。
         self._audit(
             action="update",
             object_type="person",
             object_id=person.id,
             reason=payload.change_reason,
-            before={"changed_fields": sorted(changes)},
-            after={"changed_fields": sorted(changes)},
+            before={
+                "changed_fields": sorted(changes),
+                "values": {
+                    field: self._audit_value(field, before_values[field])
+                    for field in sorted(changes)
+                },
+            },
+            after={
+                "changed_fields": sorted(changes),
+                "values": {
+                    field: self._audit_value(field, after_values[field])
+                    for field in sorted(changes)
+                },
+            },
         )
         return person
+
+    @staticmethod
+    def _audit_value(field: str, value: Any) -> Any:
+        """审计里的字段取值：个人数据脱敏，日期转 ISO 字符串，其余原样。"""
+        if value is None:
+            return None
+        if field in PERSON_AUDIT_PII_FIELDS:
+            if field == "birth_date":
+                # 出生日期只保留年份，不落完整日期明文。
+                year = value.year if isinstance(value, (date, datetime)) else str(value)[:4]
+                return f"{year}-**-**"
+            return mask_text(str(value))
+        if isinstance(value, (date, datetime)):
+            return value.isoformat()
+        return value
 
     @staticmethod
     def _json_values(values: dict[str, Any]) -> dict[str, Any]:
@@ -1113,9 +1167,13 @@ class ExtendedWorkforceService:
     ) -> tuple[list[Person], int]:
         filters = []
         if search:
-            pattern = f"%{search.strip()}%"
+            # Requirement: D-112 — 搜索词按字面量匹配，转义 LIKE 通配符。
+            pattern = like_pattern(search)
             filters.append(
-                or_(Person.display_name.ilike(pattern), Person.employee_number.ilike(pattern))
+                or_(
+                    Person.display_name.ilike(pattern, escape="\\"),
+                    Person.employee_number.ilike(pattern, escape="\\"),
+                )
             )
         if status:
             filters.append(Person.status == status)

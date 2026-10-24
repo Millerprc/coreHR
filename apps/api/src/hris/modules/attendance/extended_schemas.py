@@ -1,5 +1,9 @@
+# Copyright (c) 2026 coreHR 项目贡献者
+# 许可证：coreHR Sustainable Use License v1.0（见仓库根目录 LICENSE）。本文件不是 OSI 开源。
+
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
+from enum import StrEnum
 from typing import Any, Literal
 from uuid import UUID
 
@@ -58,6 +62,8 @@ class ShiftResponse(BaseModel):
     end_time: time
     crosses_midnight: bool
     rule_set_id: UUID
+    rule_set_version: int | None = None
+    rule_snapshot: dict[str, Any] = Field(default_factory=dict)
     status: str
 
 
@@ -99,6 +105,10 @@ class ScheduleAssignmentResponse(BaseModel):
     shift_id: UUID
     source: str
     status: str
+    publish_status: str = "published"
+    sequence_no: int = 1
+    batch_id: UUID | None = None
+    schedule_type_id: UUID | None = None
 
 
 class ScheduleAssignmentUpdate(BaseModel):
@@ -266,6 +276,9 @@ class LeaveBalanceAccountResponse(BaseModel):
     status: str
     created_at: datetime
     updated_at: datetime
+    # 时点查询：不传 as_of 时两者为 None，现有行为不变。
+    as_of: date | None = None
+    balance_as_of: Decimal | None = None
 
 
 class LeaveBalanceAccountPage(BaseModel):
@@ -362,6 +375,94 @@ class AttendanceMonthlyCalculate(BaseModel):
         if self.period_month.day != 1:
             raise ValueError("period_month must be the first day of a month")
         return self
+
+
+class AttendanceCalculationScope(StrEnum):
+    """批量考勤计算覆盖的人员范围。
+
+    Requirement: D-116 — 规模可用的计算范围。
+
+    取舍说明：为什么是三态而不是「全员 / 指定」两态：
+    200 人规模下最常见的操作是「全员都算，但把当天请假的几个人排掉」，
+    只给两态的话，管理员要么逐个取消勾选 199 个人，要么退回去逐人点计算。
+    """
+
+    ALL = "all"
+    """全员：所有有效劳动关系（含已离职的，补算历史月份时必须算到）。"""
+
+    SELECTED = "selected"
+    """指定人员：只算选中的那几个人。"""
+
+    EXCLUDED = "excluded"
+    """排除人员：全员都算，但排除选中的那几个人。"""
+
+
+class AttendanceCalculationKind(StrEnum):
+    """批量计算的类型。"""
+
+    DAILY = "daily"
+    MONTHLY = "monthly"
+
+
+class AttendanceCalculationRequest(BaseModel):
+    """批量计算日报 / 月报的请求体。
+
+    Requirement: D-116 — 单次提交覆盖一整个人员范围，
+    不再要求管理员逐人提交（200 人企业逐人提交不可用）。
+    """
+
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
+    kind: AttendanceCalculationKind
+    scope: AttendanceCalculationScope = AttendanceCalculationScope.ALL
+    #: scope=selected 时是「要算的人」；scope=excluded 时是「要排除的人」；
+    #: scope=all 时必须为空。
+    employment_ids: list[UUID] = Field(default_factory=list)
+    #: kind=daily 必填。
+    work_date: date | None = None
+    #: kind=monthly 必填，且必须是该月的第一天。
+    period_month: date | None = None
+    reason: str = Field(min_length=1, max_length=500)
+
+    @model_validator(mode="after")
+    def validate_shape(self) -> "AttendanceCalculationRequest":
+        if self.kind is AttendanceCalculationKind.DAILY:
+            if self.work_date is None:
+                raise ValueError("日报计算必须提供 work_date")
+            if self.period_month is not None:
+                raise ValueError("日报计算不应提供 period_month")
+        else:
+            if self.period_month is None:
+                raise ValueError("月报计算必须提供 period_month")
+            if self.period_month.day != 1:
+                raise ValueError("period_month 必须是该月的第一天")
+            if self.work_date is not None:
+                raise ValueError("月报计算不应提供 work_date")
+
+        # 去重但保持顺序：重复提交同一个人不应让范围口径变得含糊。
+        deduped: list[UUID] = []
+        for employment_id in self.employment_ids:
+            if employment_id not in deduped:
+                deduped.append(employment_id)
+        object.__setattr__(self, "employment_ids", deduped)
+
+        if self.scope is AttendanceCalculationScope.ALL:
+            if self.employment_ids:
+                raise ValueError("全员范围不应携带 employment_ids")
+        elif not self.employment_ids:
+            raise ValueError("指定人员与排除人员范围都必须至少选择一个人")
+        return self
+
+
+class AttendanceCalculationTarget(BaseModel):
+    """范围解析的结果：算出到底要处理哪些人。"""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    scope: AttendanceCalculationScope
+    target_count: int
+    #: 实际要算的劳动关系 id（已按范围解析）。
+    employment_ids: list[UUID]
 
 
 class AttendanceMonthlyResultResponse(BaseModel):

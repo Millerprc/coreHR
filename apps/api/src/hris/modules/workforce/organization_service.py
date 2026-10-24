@@ -1,3 +1,6 @@
+# Copyright (c) 2026 coreHR 项目贡献者
+# 许可证：coreHR Sustainable Use License v1.0（见仓库根目录 LICENSE）。本文件不是 OSI 开源。
+
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
@@ -301,7 +304,7 @@ class OrganizationService:
             return OrganizationEventView.model_validate(existing_event)
 
         await self._lock_organization(organization_id)
-        organization = await self._organization(organization_id)
+        await self._organization(organization_id)
         aggregate_version = await self._aggregate_version(organization_id)
         if payload.command.expected_version != aggregate_version:
             self._raise_version_conflict(
@@ -334,35 +337,15 @@ class OrganizationService:
             )
 
         current_state = await self._state_as_of(organization_id, payload.effective_date)
-        organization_type = await self._organization_type(
+        # Requirement: D-109 — 排期与生效共用同一套目标校验
+        # （组织类型启用 / 上级有效 / 上下级无环路）。
+        await self._validate_version_target(
+            organization_id,
+            payload.parent_organization_id,
             payload.organization_type_id,
-            active_required=False,
+            payload.effective_date,
+            current_organization_type_id=current_state["organization_type_id"],
         )
-        if (
-            not organization_type.is_active
-            and payload.organization_type_id != current_state["organization_type_id"]
-        ):
-            raise ApiError(
-                status_code=422,
-                code="ORGANIZATION_TYPE_NOT_ACTIVE",
-                message="组织类型未启用",
-            )
-        if payload.parent_organization_id is not None:
-            await self._require_active_parent(
-                payload.parent_organization_id,
-                payload.effective_date,
-            )
-
-        parents = await self._parent_map_as_of(payload.effective_date)
-        parents[organization.id] = payload.parent_organization_id
-        try:
-            assert_no_cycle(
-                organization.id,
-                payload.parent_organization_id,
-                parents,
-            )
-        except DomainViolation as exc:
-            self._raise_domain(exc)
 
         event = OrganizationEvent(
             organization_id=organization_id,
@@ -495,8 +478,14 @@ class OrganizationService:
             await self._apply_event(event)
         return len(events)
 
-    async def get_current_tree(self) -> list[OrganizationTreeNode]:
-        effective_at = self.business_date()
+    async def get_current_tree(
+        self,
+        effective_at: date | None = None,
+    ) -> list[OrganizationTreeNode]:
+        # Requirement: D-103 — 组织树按生效日期渲染时点结构：
+        # 不传 effective_at 时沿用当前业务日，响应结构与既有调用方完全一致；
+        # Requirement: D-013 — 只允许查看当前与历史时点，未来时点由接口层拒绝。
+        as_of = effective_at or self.business_date()
         rows = (
             await self._session.execute(
                 select(Organization, OrganizationVersion, OrganizationType)
@@ -509,10 +498,10 @@ class OrganizationService:
                     OrganizationType.id == OrganizationVersion.organization_type_id,
                 )
                 .where(
-                    OrganizationVersion.effective_from <= effective_at,
+                    OrganizationVersion.effective_from <= as_of,
                     or_(
                         OrganizationVersion.effective_to.is_(None),
-                        OrganizationVersion.effective_to >= effective_at,
+                        OrganizationVersion.effective_to >= as_of,
                     ),
                     OrganizationVersion.status == "active",
                 )
@@ -520,18 +509,42 @@ class OrganizationService:
             )
         ).all()
 
+        # Requirement: D-103 — 生效事件口径：生效日期 ≤ as_of 的组织版本变更事件，
+        # 在该时点即视为已生效，叠加在版本区间结果之上；
+        # 与 _state_as_of / _parent_map_as_of 的时点口径保持一致。
+        overlay = await self._tree_version_overlay(as_of)
+        overlay_types = await self._organization_types_by_id(
+            {state["organization_type_id"] for state in overlay.values()}
+        )
+
         nodes: dict[UUID, OrganizationTreeNode] = {}
         parents: dict[UUID, UUID | None] = {}
         order: dict[UUID, tuple[int, str]] = {}
         for organization, version, organization_type in rows:
+            state = overlay.get(organization.id)
+            if state is None:
+                name = version.name
+                status = version.status
+                parent_organization_id = version.parent_organization_id
+            else:
+                name = state["name"]
+                status = state["status"]
+                parent_organization_id = state["parent_organization_id"]
+                organization_type = overlay_types.get(
+                    state["organization_type_id"],
+                    organization_type,
+                )
+            if status != "active":
+                # 该时点已停用的组织不进入组织树，与版本区间的有效状态口径一致。
+                continue
             nodes[organization.id] = OrganizationTreeNode(
                 id=organization.id,
                 code=organization.code,
-                name=version.name,
+                name=name,
                 organization_type_code=organization_type.code,
-                status=version.status,
+                status=status,
             )
-            parents[organization.id] = version.parent_organization_id
+            parents[organization.id] = parent_organization_id
             order[organization.id] = (organization_type.sort_order, organization.code)
 
         roots: list[OrganizationTreeNode] = []
@@ -574,6 +587,57 @@ class OrganizationService:
                 message="当前组织树存在循环或不可达节点",
             )
         return roots
+
+    async def _tree_version_overlay(
+        self,
+        as_of: date,
+    ) -> dict[UUID, dict[str, Any]]:
+        # Requirement: D-103 — 生效事件口径：生效日期 ≤ as_of 的版本变更事件在该时点已生效，
+        # 即使尚未落成组织版本行，也要叠加到时点组织树上。
+        events = (
+            await self._session.scalars(
+                select(OrganizationEvent)
+                .where(
+                    OrganizationEvent.event_type == "VERSION_CHANGE",
+                    OrganizationEvent.status == "planned",
+                    OrganizationEvent.effective_date <= as_of,
+                )
+                .order_by(
+                    OrganizationEvent.effective_date,
+                    OrganizationEvent.expected_version,
+                )
+            )
+        ).all()
+        overlay: dict[UUID, dict[str, Any]] = {}
+        for event in events:
+            payload = event.payload
+            organization_type_id = payload.get("organization_type_id")
+            name = payload.get("name")
+            if not organization_type_id or not name:
+                continue
+            parent_organization_id = payload.get("parent_organization_id")
+            overlay[event.organization_id] = {
+                "name": name,
+                "organization_type_id": UUID(organization_type_id),
+                "parent_organization_id": (
+                    UUID(parent_organization_id) if parent_organization_id else None
+                ),
+                "status": payload.get("status", "active"),
+            }
+        return overlay
+
+    async def _organization_types_by_id(
+        self,
+        type_ids: set[UUID],
+    ) -> dict[UUID, OrganizationType]:
+        if not type_ids:
+            return {}
+        rows = (
+            await self._session.scalars(
+                select(OrganizationType).where(OrganizationType.id.in_(type_ids))
+            )
+        ).all()
+        return {row.id: row for row in rows}
 
     async def get_as_of(
         self,
@@ -1821,6 +1885,57 @@ class OrganizationService:
                 message="上级组织在生效日期未启用",
             )
 
+    async def _validate_version_target(
+        self,
+        organization_id: UUID,
+        parent_organization_id: UUID | None,
+        organization_type_id: UUID,
+        effective_date: date,
+        *,
+        current_organization_type_id: UUID | None = None,
+    ) -> None:
+        """校验组织版本的落点是否合法。
+
+        Requirement: D-109 — 排期与生效必须共用同一套校验：组织类型启用、
+        上级组织在生效日期有效、上下级关系不成环。生效时复检是最后一道闸门，
+        排期到生效之间上级可能被停用或撤销。
+
+        current_organization_type_id 允许调用方直接给出"当前类型"，
+        避免生效校验把正在生效的事件自身当成当前状态。
+        """
+        if current_organization_type_id is None:
+            current_state = await self._state_as_of(organization_id, effective_date)
+            current_organization_type_id = current_state["organization_type_id"]
+        organization_type = await self._organization_type(
+            organization_type_id,
+            active_required=False,
+        )
+        if (
+            not organization_type.is_active
+            and organization_type_id != current_organization_type_id
+        ):
+            raise ApiError(
+                status_code=422,
+                code="ORGANIZATION_TYPE_NOT_ACTIVE",
+                message="组织类型未启用",
+            )
+        if parent_organization_id is not None:
+            await self._require_active_parent(
+                parent_organization_id,
+                effective_date,
+            )
+
+        parents = await self._parent_map_as_of(effective_date)
+        parents[organization_id] = parent_organization_id
+        try:
+            assert_no_cycle(
+                organization_id,
+                parent_organization_id,
+                parents,
+            )
+        except DomainViolation as exc:
+            self._raise_domain(exc)
+
     async def _aggregate_version(self, organization_id: UUID) -> int:
         cached = self._aggregate_versions.get(organization_id)
         if cached is not None:
@@ -1862,6 +1977,27 @@ class OrganizationService:
         latest = await self._latest_actual_version(event.organization_id)
         if latest.version != event.expected_version:
             self._raise_version_conflict(latest.version, event.expected_version)
+        # Requirement: D-109 — 生效时重新校验：排期到生效之间上级可能已被停用、
+        # 撤销或改级，事件不得再落库。校验必须早于任何版本写入，
+        # 失败时不得产生 effective_to 收口、新版本或 applied 状态。
+        if event.effective_date <= latest.effective_from:
+            raise ApiError(
+                status_code=422,
+                code="EFFECTIVE_DATE_INVALID",
+                message="新版本生效日期必须晚于当前版本起始日期",
+            )
+        parent_organization_id = (
+            UUID(event.payload["parent_organization_id"])
+            if event.payload["parent_organization_id"]
+            else None
+        )
+        await self._validate_version_target(
+            event.organization_id,
+            parent_organization_id,
+            UUID(event.payload["organization_type_id"]),
+            event.effective_date,
+            current_organization_type_id=latest.organization_type_id,
+        )
         before = self._version_payload(latest, None)
         latest.effective_to = event.effective_date - timedelta(days=1)
         latest.is_current = False

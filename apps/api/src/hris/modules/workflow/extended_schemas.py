@@ -1,3 +1,6 @@
+# Copyright (c) 2026 coreHR 项目贡献者
+# 许可证：coreHR Sustainable Use License v1.0（见仓库根目录 LICENSE）。本文件不是 OSI 开源。
+
 from datetime import date, datetime
 from typing import Any, Literal
 from uuid import UUID
@@ -489,3 +492,78 @@ class WorkflowInstancePage(BaseModel):
 class WorkflowTaskDecision(BaseModel):
     decision: Literal["approve", "reject"]
     comment: str | None = Field(default=None, max_length=2000)
+
+
+class WorkflowTaskActionRequest(BaseModel):
+    """审批动作的公共请求体：只带变更原因。
+
+    Requirement: D-095 — 撤销、驳回、退回各走独立接口，请求体不带动作字段，
+    调用方无法用同一个入口把三种语义混用。
+    """
+
+    comment: str | None = Field(default=None, max_length=2000)
+
+
+class WorkflowTaskAssigneeRequest(WorkflowTaskActionRequest):
+    """转办、加签的请求体：指定新的办理人。"""
+
+    assignee_type: str = Field(default="user", min_length=1, max_length=30)
+    assignee_ref: str = Field(min_length=1, max_length=100)
+
+
+class WorkflowTransitionResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    instance_id: UUID
+    from_node_code: str | None
+    to_node_code: str | None
+    action: str
+    action_label: str
+    from_status: str
+    to_status: str
+    actor_id: UUID | None
+    comment: str | None
+    created_at: datetime
+
+
+class WorkflowTransitionPage(BaseModel):
+    items: list[WorkflowTransitionResponse]
+    total: int
+    limit: int
+    offset: int
+
+
+class WorkflowNodeDwellItem(BaseModel):
+    node_code: str
+    visit_count: int
+    total_duration_seconds: float
+    average_duration_seconds: float
+    max_duration_seconds: float
+    current: bool
+
+
+class WorkflowNodeDwellResponse(BaseModel):
+    instance_id: UUID
+    items: list[WorkflowNodeDwellItem]
+
+
+class WorkflowActionCatalogItem(BaseModel):
+    action: str
+    label: str
+    semantics: str
+    terminal: bool
+    system: bool
+    node_movement: str
+    task_status: str | None
+    instance_status: str | None
+
+
+class WorkflowStatusCatalogItem(BaseModel):
+    status: str
+    label: str
+
+
+class WorkflowActionCatalogResponse(BaseModel):
+    actions: list[WorkflowActionCatalogItem]
+    statuses: list[WorkflowStatusCatalogItem]

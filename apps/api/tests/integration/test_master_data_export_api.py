@@ -1,3 +1,6 @@
+# Copyright (c) 2026 coreHR 项目贡献者
+# 许可证：coreHR Sustainable Use License v1.0（见仓库根目录 LICENSE）。本文件不是 OSI 开源。
+
 import csv
 from datetime import date, datetime, timedelta
 from io import StringIO
@@ -68,7 +71,10 @@ async def test_dictionary_export_is_safe_current_and_audited(
     assert "dictionary-current.csv" in response.headers["content-disposition"]
     assert response.content.startswith(b"\xef\xbb\xbf")
     rows = _csv_rows(response.content)
-    assert rows == [
+    # 导出的是"当前有效字典"全集，可能包含迁移预置的字典（如员工标签库），
+    # 因此按 code 过滤出本用例自建的记录，再断言其内容。
+    exported = [row for row in rows if row["code"] == "ACTIVE_DICTIONARY"]
+    assert exported == [
         {
             "source_record_id": "dictionary:ACTIVE_DICTIONARY",
             "code": "ACTIVE_DICTIONARY",
@@ -77,6 +83,7 @@ async def test_dictionary_export_is_safe_current_and_audited(
             "description": "",
         }
     ]
+    assert all(row["code"] != "INACTIVE_DICTIONARY" for row in rows)
 
     audit = await db_session.scalar(
         select(AuditLog).where(AuditLog.action == "governance.master_data.export")
@@ -86,7 +93,7 @@ async def test_dictionary_export_is_safe_current_and_audited(
     assert audit.after_payload == {
         "entity_type": "dictionary",
         "as_of": _business_date().isoformat(),
-        "row_count": 1,
+        "row_count": len(rows),
     }
 
 

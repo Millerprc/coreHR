@@ -1,3 +1,6 @@
+# Copyright (c) 2026 coreHR 项目贡献者
+# 许可证：coreHR Sustainable Use License v1.0（见仓库根目录 LICENSE）。本文件不是 OSI 开源。
+
 from typing import Annotated
 from uuid import UUID
 
@@ -20,6 +23,14 @@ from hris.modules.platform.models import UserAccount
 router = APIRouter(prefix="/attendance", tags=["phase-3-attendance"])
 DbSession = Annotated[AsyncSession, Depends(get_db)]
 AdminUser = Annotated[UserAccount, Depends(require_permission("ATTENDANCE_ADMIN"))]
+# Requirement: C5 — 考勤高风险动作拆独立权限码。
+# 依据：docs/review/D-考勤-待确认-决策-文档规范.md §8「权限与审计」（14.md:185 行，P0）。
+# 「规则发布」是 7 类高风险动作之一：规则集发布后立即生效并归档旧版，会改变后续日报/月报口径，
+# 因此改用独立权限码 ATTENDANCE_RULE_PUBLISH，不再与普通考勤操作共用 ATTENDANCE_ADMIN。
+# 其余规则集动作（建草稿 / 改草稿 / 建版本 / 查询）仍属普通考勤操作，保持 ATTENDANCE_ADMIN。
+RulePublishUser = Annotated[
+    UserAccount, Depends(require_permission("ATTENDANCE_RULE_PUBLISH"))
+]
 
 
 def service(db: AsyncSession, user: UserAccount, request: Request) -> AttendanceService:
@@ -104,7 +115,7 @@ async def publish_attendance_rule_set(
     rule_set_id: UUID,
     request: Request,
     db: DbSession,
-    user: AdminUser,
+    user: RulePublishUser,
 ) -> AttendanceRuleSetResponse:
     return AttendanceRuleSetResponse.model_validate(
         await service(db, user, request).publish_rule_set(rule_set_id)

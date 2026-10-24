@@ -1,3 +1,6 @@
+# Copyright (c) 2026 coreHR 项目贡献者
+# 许可证：coreHR Sustainable Use License v1.0（见仓库根目录 LICENSE）。本文件不是 OSI 开源。
+
 from datetime import date, datetime
 from typing import Any
 from uuid import UUID
@@ -8,11 +11,13 @@ from sqlalchemy import (
     Date,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
     UniqueConstraint,
     Uuid,
+    func,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -76,6 +81,19 @@ class WorkflowInstance(UuidPrimaryKeyMixin, TimestampMixin, Base):
 
 class WorkflowTask(UuidPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "workflow_tasks"
+    # Requirement: D-115 —— 待办查询（`workflow/queries.py::list_tasks`）的过滤是
+    # `assignee_ref` / `status`，排序是 `created_at DESC`，计数与列表用的是同一组条件。
+    # 这三列原先都没有索引，待办列表在数据量上来后是全表扫 + 排序。
+    # 复合索引把「过滤 + 排序 + 计数」一次做完：前导列 assignee_ref 命中「我的待办」，
+    # 第三列 created_at 让 ORDER BY 直接走索引（免排序）。
+    __table_args__ = (
+        Index(
+            "ix_workflow_tasks_assignee_status_created",
+            "assignee_ref",
+            "status",
+            "created_at",
+        ),
+    )
 
     workflow_instance_id: Mapped[UUID] = mapped_column(
         Uuid,
@@ -92,6 +110,60 @@ class WorkflowTask(UuidPrimaryKeyMixin, TimestampMixin, Base):
     comment: Mapped[str | None] = mapped_column(Text)
     decided_by: Mapped[UUID | None] = mapped_column(Uuid)
     decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # 超时提醒标记：调度器给超时任务发提醒后写入，避免重复提醒；不代表任何审批结论。
+    overdue_reminded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class WorkflowTransition(UuidPrimaryKeyMixin, Base):
+    """流转历史（只追加）。
+
+    每一次流程流转（同意 / 驳回 / 撤销 / 取消 / 转办 / 加签 / 退回 / 超时提醒）
+    都写一行，与状态变更在同一个事务里提交。表上由数据库触发器禁止 UPDATE / DELETE。
+    `actor_id` 为空表示系统动作（没有人工操作人）。
+    """
+
+    __tablename__ = "workflow_transitions"
+    __table_args__ = (
+        CheckConstraint(
+            "action IN ('approve', 'reject', 'rollback', 'cancel', 'transfer', "
+            "'add_sign', 'return', 'timeout_reminder')",
+            name="action_allowed",
+        ),
+        CheckConstraint(
+            "from_status IN ('running', 'returned', 'completed', 'rejected', "
+            "'withdrawn', 'cancelled')",
+            name="from_status_allowed",
+        ),
+        CheckConstraint(
+            "to_status IN ('running', 'returned', 'completed', 'rejected', "
+            "'withdrawn', 'cancelled')",
+            name="to_status_allowed",
+        ),
+        Index(
+            "ix_workflow_transitions_instance_created",
+            "instance_id",
+            "created_at",
+        ),
+    )
+
+    instance_id: Mapped[UUID] = mapped_column(
+        Uuid,
+        ForeignKey("workflow_instances.id"),
+        nullable=False,
+        index=True,
+    )
+    from_node_code: Mapped[str | None] = mapped_column(String(80))
+    to_node_code: Mapped[str | None] = mapped_column(String(80))
+    action: Mapped[str] = mapped_column(String(30), nullable=False)
+    from_status: Mapped[str] = mapped_column(String(30), nullable=False)
+    to_status: Mapped[str] = mapped_column(String(30), nullable=False)
+    actor_id: Mapped[UUID | None] = mapped_column(Uuid)
+    comment: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
 
 
 class Candidate(UuidPrimaryKeyMixin, TimestampMixin, Base):

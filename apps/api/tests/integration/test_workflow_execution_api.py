@@ -1,7 +1,12 @@
+# Copyright (c) 2026 coreHR 项目贡献者
+# 许可证：coreHR Sustainable Use License v1.0（见仓库根目录 LICENSE）。本文件不是 OSI 开源。
+
 from uuid import uuid4
 
 import pytest
 from httpx import AsyncClient
+
+from enterprise_support import requires_enterprise
 
 
 pytestmark = pytest.mark.asyncio
@@ -74,6 +79,7 @@ async def _create_and_start(
     return detail.json()
 
 
+@requires_enterprise
 async def test_any_and_all_sign_modes_advance_deterministically(
     business_client: AsyncClient,
     admin_token: str,
@@ -96,7 +102,8 @@ async def test_any_and_all_sign_modes_advance_deterministically(
         headers=_auth(admin_token),
     )
     assert any_after.json()["instance"]["status"] == "completed"
-    assert {task["status"] for task in any_after.json()["tasks"]} == {"completed", "cancelled"}
+    # 任务终态收敛到显式枚举：同意 = approved，同级待办 = cancelled。
+    assert {task["status"] for task in any_after.json()["tasks"]} == {"approved", "cancelled"}
 
     all_detail = await _create_and_start(
         business_client,
@@ -119,6 +126,7 @@ async def test_any_and_all_sign_modes_advance_deterministically(
         assert detail.json()["instance"]["status"] == expected
 
 
+@requires_enterprise
 async def test_context_conditions_select_one_route_or_default(
     business_client: AsyncClient,
     admin_token: str,
@@ -207,6 +215,7 @@ async def test_context_conditions_select_one_route_or_default(
     assert standard.json()["context"]["_workflow_route_history"][0]["strategy"] == "default"
 
 
+@requires_enterprise
 async def test_condition_routes_fail_closed_when_multiple_edges_match(
     business_client: AsyncClient,
     admin_token: str,

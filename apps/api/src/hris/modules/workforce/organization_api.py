@@ -1,3 +1,6 @@
+# Copyright (c) 2026 coreHR 项目贡献者
+# 许可证：coreHR Sustainable Use License v1.0（见仓库根目录 LICENSE）。本文件不是 OSI 开源。
+
 from datetime import date
 from typing import Annotated
 from uuid import UUID
@@ -129,14 +132,27 @@ async def current_organization_tree(
     request: Request,
     db: DbSession,
     user: OrganizationViewer,
+    as_of: date | None = Query(default=None),
 ) -> list[OrganizationTreeNode]:
     if "effective_at" in request.query_params:
+        # Requirement: D-103 — 组织树的时点查询统一使用 as_of；
+        # effective_at 仍是组织详情专用的时点参数，在组织树上继续拒绝。
         raise ApiError(
             status_code=422,
             code="CURRENT_TREE_ONLY",
-            message="组织树仅展示当前有效结构，请在组织详情查看历史和未来版本",
+            message="组织树的时点查询请使用 as_of 参数，effective_at 仅用于组织详情",
         )
-    return await service(db, user, request).get_current_tree()
+    organization_service = service(db, user, request)
+    # Requirement: D-103 — 不传 as_of 时返回当前树，响应结构与既有调用方一致；
+    # Requirement: D-013 — 组织树只允许查看当前与历史时点，未来时点一律拒绝；
+    # Requirement: D-059 — 时点组织树内嵌在既有组织架构页与组织详情，不新建待生效事件页面。
+    if as_of is not None and as_of > organization_service.business_date():
+        raise ApiError(
+            status_code=422,
+            code="CURRENT_OR_HISTORY_TREE_ONLY",
+            message="只支持查看当前与历史时点的组织架构",
+        )
+    return await organization_service.get_current_tree(as_of)
 
 
 @router.get(

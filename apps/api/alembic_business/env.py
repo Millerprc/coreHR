@@ -1,3 +1,6 @@
+# Copyright (c) 2026 coreHR 项目贡献者
+# 许可证：coreHR Sustainable Use License v1.0（见仓库根目录 LICENSE）。本文件不是 OSI 开源。
+
 from asyncio import run
 from logging.config import fileConfig
 
@@ -9,6 +12,7 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 from hris.core.config import get_settings
 from hris.shared.db.base import Base
 from hris.shared.db import business_models as registered_models
+from hris.modules.messaging import models as messaging_models
 
 
 config = context.config
@@ -18,6 +22,8 @@ if config.config_file_name is not None:
 config.set_main_option("sqlalchemy.url", get_settings().database_url)
 target_metadata = Base.metadata
 assert registered_models
+# Requirement: D-100 — 消息引擎表结构必须进入 Base.metadata，autogenerate 才能看见。
+assert messaging_models
 
 
 def run_migrations_offline() -> None:

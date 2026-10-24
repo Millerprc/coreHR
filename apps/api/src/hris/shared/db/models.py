@@ -1,3 +1,6 @@
+# Copyright (c) 2026 coreHR 项目贡献者
+# 许可证：coreHR Sustainable Use License v1.0（见仓库根目录 LICENSE）。本文件不是 OSI 开源。
+
 """Import all mapped classes so Alembic sees the complete metadata."""
 
 from hris.modules.attendance.models import (
@@ -13,6 +16,11 @@ from hris.modules.attendance.models import (
     ScheduleAssignment,
     Shift,
 )
+from hris.modules.performance.models import (
+    PerformanceCycle,
+    PerformanceKeyResult,
+    PerformanceObjective,
+)
 from hris.modules.workflow.models import (
     ApplicationHireConversion,
     Candidate,
@@ -23,6 +31,7 @@ from hris.modules.workflow.models import (
     WorkflowTask,
     WorkflowVersion,
 )
+from hris.modules.workforce.batch_change_models import HrEventBatch
 from hris.modules.workforce.models import (
     AgreementRelationship,
     AuditLog,
@@ -53,6 +62,7 @@ from hris.modules.workforce.models import (
     PersonAddress,
     PersonContact,
     PersonDocument,
+    PersonFieldVersion,
     PersonLabel,
     RecruitmentRequest,
     ReportingRelation,
@@ -83,6 +93,7 @@ __all__ = [
     "HeadcountPlan",
     "HeadcountSnapshot",
     "HrEvent",
+    "HrEventBatch",
     "JobApplication",
     "JobCatalog",
     "JobCatalogVersion",
@@ -100,10 +111,14 @@ __all__ = [
     "OrganizationPersonRelation",
     "OrganizationType",
     "OrganizationVersion",
+    "PerformanceCycle",
+    "PerformanceKeyResult",
+    "PerformanceObjective",
     "Person",
     "PersonAddress",
     "PersonContact",
     "PersonDocument",
+    "PersonFieldVersion",
     "PersonLabel",
     "RecruitmentRequest",
     "ReportingRelation",

@@ -1,3 +1,6 @@
+# Copyright (c) 2026 coreHR 项目贡献者
+# 许可证：coreHR Sustainable Use License v1.0（见仓库根目录 LICENSE）。本文件不是 OSI 开源。
+
 import hashlib
 import json
 from datetime import UTC, date, datetime, timedelta
@@ -8,6 +11,12 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from hris.contracts.workflow import (
+    NodeDwellStat,
+    WorkflowDecisionCommand,
+    WorkflowEngine,
+    WorkflowStartCommand,
+)
 from hris.core.config import get_settings
 from hris.core.errors import ApiError
 from hris.core.personnel_security import (
@@ -15,7 +24,10 @@ from hris.core.personnel_security import (
     normalize_document_number,
     protector_from_settings,
 )
+from hris.core.search import like_pattern
 from hris.modules.platform.numbering import next_number
+from hris.modules.workforce.batch_change_models import BATCH_CHANGE_BUSINESS_OBJECT_TYPE
+from hris.modules.workflow.engine import resolve_engine
 from hris.modules.workflow.extended_schemas import (
     ApplicationHireCreate,
     CandidateCreate,
@@ -40,12 +52,10 @@ from hris.modules.workflow.models import (
     WorkflowDefinition,
     WorkflowInstance,
     WorkflowTask,
+    WorkflowTransition,
     WorkflowVersion,
 )
-from hris.modules.workflow.conditions import (
-    WorkflowConditionError,
-    evaluate_workflow_condition,
-)
+from hris.modules.workforce.concurrent_positions_service import ConcurrentPositionService
 from hris.modules.workforce.extended_schemas import (
     EmploymentAssignmentCreate,
     EmploymentCreate,
@@ -63,16 +73,32 @@ from hris.modules.workforce.models import (
     JobCatalog,
     LegalEntity,
     Organization,
+    OrganizationPersonRelation,
     Person,
     RecruitmentRequest,
 )
 
 
 class LifecycleService:
-    def __init__(self, session: AsyncSession, *, actor_id: UUID, trace_id: str) -> None:
+    def __init__(
+        self,
+        session: AsyncSession,
+        *,
+        actor_id: UUID,
+        trace_id: str,
+    ) -> None:
         self._session = session
         self._actor_id = actor_id
         self._trace_id = trace_id
+        # Requirement: D-108 — 流程语义（状态机 / 选路 / 任务分派）在引擎里：
+        # 装上私有包用商业实现，没装用公开壳（读直通数据库，写统一拒绝）。
+        # 引擎通过 `on_workflow_finished` 回调把审批结论交回公开侧落地业务对象。
+        self.engine: WorkflowEngine = resolve_engine(
+            session,
+            actor_id=actor_id,
+            trace_id=trace_id,
+            business_object_handler=self,
+        )
 
     def _audit(
         self,
@@ -139,11 +165,12 @@ class LifecycleService:
         if status is not None:
             filters.append(Candidate.status == status)
         if search:
-            term = f"%{search.strip()}%"
+            # Requirement: D-112 — 搜索词按字面量匹配，转义 LIKE 通配符。
+            term = like_pattern(search)
             filters.append(
                 or_(
-                    Candidate.candidate_number.ilike(term),
-                    Candidate.display_name.ilike(term),
+                    Candidate.candidate_number.ilike(term, escape="\\"),
+                    Candidate.display_name.ilike(term, escape="\\"),
                 )
             )
         total = await self._session.scalar(
@@ -1046,57 +1073,20 @@ class LifecycleService:
         return version.version, definition.status
 
     async def start_workflow(self, payload: WorkflowInstanceCreate) -> WorkflowInstance:
-        definition = await self._session.get(WorkflowDefinition, payload.workflow_definition_id)
-        if definition is None or definition.status != "active" or definition.active_version is None:
-            raise ApiError(status_code=422, code="WORKFLOW_NOT_ACTIVE", message="流程定义尚未发布")
-        version = await self._session.scalar(
-            select(WorkflowVersion).where(
-                WorkflowVersion.workflow_definition_id == definition.id,
-                WorkflowVersion.version == definition.active_version,
-                WorkflowVersion.status == "active",
+        """发起流程实例。
+
+        Requirement: D-108 — 写路径经引擎：装上私有包时由商业引擎执行；
+        公开仓模式下 Demo 引擎统一拒绝（403 / `code=LICENSE_REQUIRED`）。
+        """
+
+        return await self.engine.start_workflow(
+            WorkflowStartCommand(
+                workflow_definition_id=payload.workflow_definition_id,
+                business_object_type=payload.business_object_type,
+                business_object_id=payload.business_object_id,
+                context=payload.context,
             )
         )
-        if version is None:
-            raise ApiError(status_code=422, code="WORKFLOW_VERSION_NOT_ACTIVE", message="生效流程版本不存在")
-        start_node = next(
-            (node for node in version.definition.get("nodes", []) if node.get("node_type") == "start"),
-            None,
-        )
-        number = await next_number(
-            self._session,
-            sequence_code="WORKFLOW_INSTANCE_NUMBER",
-            width=10,
-            max_value=9999999999,
-            prefix="W",
-        )
-        instance = WorkflowInstance(
-            instance_number=number,
-            workflow_version_id=version.id,
-            business_object_type=payload.business_object_type,
-            business_object_id=payload.business_object_id,
-            status="running",
-            current_node_code=start_node.get("code") if start_node else None,
-            started_by=self._actor_id,
-            started_at=datetime.now(UTC),
-            context=payload.context,
-        )
-        self._session.add(instance)
-        await self._session.flush()
-        if payload.business_object_type == "hr_event":
-            event = await self._session.get(HrEvent, payload.business_object_id, with_for_update=True)
-            if event is None:
-                raise ApiError(status_code=404, code="HR_EVENT_NOT_FOUND", message="人事事件不存在")
-            if event.status != "pending_approval":
-                raise ApiError(status_code=409, code="HR_EVENT_NOT_PENDING_APPROVAL", message="人事事件不在待审批状态")
-            event.workflow_instance_id = instance.id
-        await self._advance_workflow(instance, version, instance.current_node_code)
-        self._audit(
-            action="start",
-            object_type="workflow_instance",
-            object_id=instance.id,
-            after={"instance_number": instance.instance_number},
-        )
-        return instance
 
     async def list_workflow_instances(
         self,
@@ -1105,40 +1095,21 @@ class LifecycleService:
         limit: int,
         offset: int,
     ) -> tuple[list[WorkflowInstance], int]:
-        filters = [WorkflowInstance.status == status] if status else []
-        total = await self._session.scalar(
-            select(func.count()).select_from(WorkflowInstance).where(*filters)
+        """流程实例列表（读路径：与商业版共用同一份查询代码）。"""
+
+        return await self.engine.list_instances(
+            status=status,
+            limit=limit,
+            offset=offset,
         )
-        items = list(
-            (
-                await self._session.scalars(
-                    select(WorkflowInstance)
-                    .where(*filters)
-                    .order_by(WorkflowInstance.started_at.desc())
-                    .limit(limit)
-                    .offset(offset)
-                )
-            ).all()
-        )
-        return items, total or 0
 
     async def workflow_instance_detail(
         self,
         instance_id: UUID,
     ) -> tuple[WorkflowInstance, list[WorkflowTask]]:
-        instance = await self._session.get(WorkflowInstance, instance_id)
-        if instance is None:
-            raise ApiError(status_code=404, code="WORKFLOW_INSTANCE_NOT_FOUND", message="流程实例不存在")
-        tasks = list(
-            (
-                await self._session.scalars(
-                    select(WorkflowTask)
-                    .where(WorkflowTask.workflow_instance_id == instance_id)
-                    .order_by(WorkflowTask.created_at, WorkflowTask.id)
-                )
-            ).all()
-        )
-        return instance, tasks
+        """流程实例详情（读路径：与商业版共用同一份查询代码）。"""
+
+        return await self.engine.get_instance_detail(instance_id)
 
     async def list_workflow_tasks(
         self,
@@ -1148,204 +1119,147 @@ class LifecycleService:
         limit: int,
         offset: int,
     ) -> tuple[list[WorkflowTask], int]:
-        filters = []
-        if status is not None:
-            filters.append(WorkflowTask.status == status)
-        if assignee_ref is not None:
-            filters.append(WorkflowTask.assignee_ref == assignee_ref)
-        total = await self._session.scalar(
-            select(func.count()).select_from(WorkflowTask).where(*filters)
+        """审批任务列表（读路径：与商业版共用同一份查询代码）。"""
+
+        return await self.engine.list_tasks(
+            status=status,
+            assignee_ref=assignee_ref,
+            limit=limit,
+            offset=offset,
         )
-        items = list(
-            (
-                await self._session.scalars(
-                    select(WorkflowTask)
-                    .where(*filters)
-                    .order_by(WorkflowTask.created_at.desc())
-                    .limit(limit)
-                    .offset(offset)
-                )
-            ).all()
-        )
-        return items, total or 0
-
-    async def _advance_workflow(
-        self,
-        instance: WorkflowInstance,
-        version: WorkflowVersion,
-        from_node_code: str | None,
-    ) -> None:
-        nodes = {node["code"]: node for node in version.definition.get("nodes", [])}
-        edges = version.definition.get("edges", [])
-        current_code = from_node_code
-        while current_code is not None:
-            current = nodes.get(current_code)
-            if current is None:
-                raise ApiError(status_code=422, code="WORKFLOW_NODE_NOT_FOUND", message="流程实例引用了无效节点")
-            if current.get("node_type") == "end":
-                instance.status = "completed"
-                instance.current_node_code = current_code
-                instance.completed_at = datetime.now(UTC)
-                await self._finish_workflow_business_object(instance, approved=True)
-                return
-            outgoing = [edge for edge in edges if edge.get("source") == current_code]
-            if not outgoing:
-                raise ApiError(status_code=422, code="WORKFLOW_ROUTE_MISSING", message="当前节点没有后续连线")
-            next_code, route_strategy = self._select_workflow_route(
-                instance,
-                current_code,
-                outgoing,
-            )
-            self._record_workflow_route(instance, current_code, next_code, route_strategy)
-            next_node = nodes.get(next_code)
-            if next_node is None:
-                raise ApiError(status_code=422, code="WORKFLOW_NODE_NOT_FOUND", message="后续节点不存在")
-            instance.current_node_code = next_code
-            if next_node.get("node_type") == "approval":
-                configured = next_node.get("assignees") or (
-                    instance.context.get("assignees", {}).get(next_code, [])
-                )
-                assignees = configured or [
-                    {"assignee_type": "role", "assignee_ref": "SYSTEM_ADMIN"}
-                ]
-                self._session.add_all(
-                    [
-                        WorkflowTask(
-                            workflow_instance_id=instance.id,
-                            node_code=next_code,
-                            sign_mode=next_node.get("sign_mode") or "all",
-                            assignee_type=item["assignee_type"],
-                            assignee_ref=item["assignee_ref"],
-                            status="pending",
-                        )
-                        for item in assignees
-                    ]
-                )
-                await self._session.flush()
-                return
-            current_code = next_code
-
-    @staticmethod
-    def _record_workflow_route(
-        instance: WorkflowInstance,
-        source: str,
-        target: str,
-        strategy: str,
-    ) -> None:
-        history = list(instance.context.get("_workflow_route_history", []))
-        history.append({"source": source, "target": target, "strategy": strategy})
-        instance.context = {**instance.context, "_workflow_route_history": history}
-
-    @staticmethod
-    def _select_workflow_route(
-        instance: WorkflowInstance,
-        current_code: str,
-        outgoing: list[dict[str, Any]],
-    ) -> tuple[str, str]:
-        conditioned = [edge for edge in outgoing if edge.get("condition") is not None]
-        if conditioned:
-            try:
-                matched = [
-                    edge
-                    for edge in conditioned
-                    if evaluate_workflow_condition(edge["condition"], instance.context)
-                ]
-            except WorkflowConditionError as exc:
-                raise ApiError(
-                    status_code=422,
-                    code="WORKFLOW_CONDITION_INVALID",
-                    message="流程条件配置无效",
-                ) from exc
-            if len(matched) > 1:
-                raise ApiError(
-                    status_code=422,
-                    code="WORKFLOW_ROUTE_AMBIGUOUS",
-                    message="多个流程条件同时满足，无法唯一选择后续节点",
-                )
-            if matched:
-                target = matched[0].get("target")
-                if isinstance(target, str):
-                    return target, "condition"
-            defaults = [edge for edge in outgoing if edge.get("condition") is None]
-            if len(defaults) == 1 and isinstance(defaults[0].get("target"), str):
-                return defaults[0]["target"], "default"
-            raise ApiError(
-                status_code=422,
-                code="WORKFLOW_ROUTE_NOT_MATCHED",
-                message="没有流程条件满足且未配置默认连线",
-            )
-        if len(outgoing) == 1 and isinstance(outgoing[0].get("target"), str):
-            return outgoing[0]["target"], "single"
-        requested_routes = instance.context.get("route_targets", {})
-        next_code = requested_routes.get(current_code) if isinstance(requested_routes, dict) else None
-        if next_code not in {edge.get("target") for edge in outgoing}:
-            raise ApiError(
-                status_code=422,
-                code="WORKFLOW_ROUTE_REQUIRED",
-                message="无条件多分支节点必须在流程上下文中明确route_targets",
-            )
-        return next_code, "explicit"
 
     async def decide_workflow_task(
         self,
         task_id: UUID,
         payload: WorkflowTaskDecision,
     ) -> WorkflowTask:
-        task = await self._session.get(WorkflowTask, task_id, with_for_update=True)
-        if task is None:
-            raise ApiError(status_code=404, code="WORKFLOW_TASK_NOT_FOUND", message="审批任务不存在")
-        if task.status != "pending":
-            if task.decision == payload.decision:
-                return task
-            raise ApiError(status_code=409, code="WORKFLOW_TASK_ALREADY_DECIDED", message="审批任务已处理")
-        instance = await self._session.get(
-            WorkflowInstance,
-            task.workflow_instance_id,
-            with_for_update=True,
+        """兼容入口：只接受同意 / 驳回。
+
+        Requirement: D-095 — 撤销、退回各自有独立接口，不与驳回共用入口，
+        三种语义在接口层就是分开的。
+        """
+
+        return await self.engine.decide_task(
+            task_id,
+            WorkflowDecisionCommand(
+                decision=payload.decision,
+                comment=payload.comment,
+            ),
         )
-        if instance is None or instance.status != "running":
-            raise ApiError(status_code=409, code="WORKFLOW_INSTANCE_NOT_RUNNING", message="流程实例不在运行中")
-        task.status = "completed"
-        task.decision = payload.decision
-        task.comment = payload.comment
-        task.decided_by = self._actor_id
-        task.decided_at = datetime.now(UTC)
-        await self._session.flush()
-        sibling_tasks = list(
-            (
-                await self._session.scalars(
-                    select(WorkflowTask).where(
-                        WorkflowTask.workflow_instance_id == instance.id,
-                        WorkflowTask.node_code == task.node_code,
-                    )
-                )
-            ).all()
+
+    async def approve_workflow_task(
+        self,
+        task_id: UUID,
+        comment: str | None = None,
+    ) -> WorkflowTask:
+        return await self.engine.approve_task(task_id, comment=comment)
+
+    async def reject_workflow_task(
+        self,
+        task_id: UUID,
+        comment: str | None = None,
+    ) -> WorkflowTask:
+        return await self.engine.reject_task(task_id, comment=comment)
+
+    async def rollback_workflow_task(
+        self,
+        task_id: UUID,
+        comment: str | None = None,
+    ) -> WorkflowTask:
+        """撤销：终止流程，实例落到「已撤销」，与驳回的「已驳回」不是同一个终态。"""
+
+        return await self.engine.rollback_task(task_id, comment=comment)
+
+    async def cancel_workflow_task(
+        self,
+        task_id: UUID,
+        comment: str | None = None,
+    ) -> WorkflowTask:
+        """取消：终止流程，实例落到「已取消」。"""
+
+        return await self.engine.cancel_task(task_id, comment=comment)
+
+    async def transfer_workflow_task(
+        self,
+        task_id: UUID,
+        *,
+        assignee_type: str,
+        assignee_ref: str,
+        comment: str | None = None,
+    ) -> WorkflowTask:
+        """转办：把当前任务改派给其他办理人，节点不变。"""
+
+        return await self.engine.transfer_task(
+            task_id,
+            assignee_type=assignee_type,
+            assignee_ref=assignee_ref,
+            comment=comment,
         )
-        if payload.decision == "reject":
-            for sibling in sibling_tasks:
-                if sibling.status == "pending":
-                    sibling.status = "cancelled"
-            instance.status = "rejected"
-            instance.completed_at = datetime.now(UTC)
-            await self._finish_workflow_business_object(instance, approved=False)
-        else:
-            pending = [item for item in sibling_tasks if item.status == "pending"]
-            if task.sign_mode == "any":
-                for sibling in pending:
-                    sibling.status = "cancelled"
-                pending = []
-            if not pending:
-                version = await self._session.get(WorkflowVersion, instance.workflow_version_id)
-                if version is None:
-                    raise ApiError(status_code=422, code="WORKFLOW_VERSION_MISSING", message="流程版本不存在")
-                await self._advance_workflow(instance, version, task.node_code)
-        self._audit(
-            action="decide",
-            object_type="workflow_task",
-            object_id=task.id,
-            after={"decision": task.decision, "instance_status": instance.status},
+
+    async def add_sign_workflow_task(
+        self,
+        task_id: UUID,
+        *,
+        assignee_type: str,
+        assignee_ref: str,
+        comment: str | None = None,
+    ) -> WorkflowTask:
+        """加签：在当前节点追加审批人，节点不变。"""
+
+        return await self.engine.add_sign_task(
+            task_id,
+            assignee_type=assignee_type,
+            assignee_ref=assignee_ref,
+            comment=comment,
         )
-        return task
+
+    async def return_workflow_task(
+        self,
+        task_id: UUID,
+        comment: str | None = None,
+    ) -> WorkflowTask:
+        """退回：回到上一个审批节点，实例落到「已退回」。"""
+
+        return await self.engine.return_task(task_id, comment=comment)
+
+    async def list_workflow_transitions(
+        self,
+        instance_id: UUID,
+        *,
+        limit: int,
+        offset: int,
+    ) -> tuple[list[WorkflowTransition], int]:
+        """流转历史（读路径：与商业版共用同一份查询代码）。"""
+
+        return await self.engine.list_transitions(
+            instance_id,
+            limit=limit,
+            offset=offset,
+        )
+
+    async def workflow_node_dwell(
+        self,
+        instance_id: UUID,
+        *,
+        node_code: str | None = None,
+    ) -> tuple[WorkflowInstance, list[NodeDwellStat]]:
+        """节点停留统计（读路径：与商业版共用同一份查询代码）。"""
+
+        return await self.engine.get_node_dwell(instance_id, node_code=node_code)
+
+    async def on_workflow_finished(
+        self,
+        instance: WorkflowInstance,
+        *,
+        approved: bool,
+    ) -> None:
+        """引擎回调：流程实例终止时回写业务对象。
+
+        Requirement: D-108 — 流程语义在引擎（可能位于私有包）里，
+        业务对象的落地留在公开侧（人事事件 / 批量异动方案），两侧用这一个回调衔接。
+        """
+
+        await self._finish_workflow_business_object(instance, approved=approved)
 
     async def _finish_workflow_business_object(
         self,
@@ -1353,6 +1267,22 @@ class LifecycleService:
         *,
         approved: bool,
     ) -> None:
+        # Requirement: HR-BATCH-002 — 业务对象联动按类型分派，而不是为每类业务对象各写一段分支。
+        # 批量异动方案整批共用同一个流程实例，审批结论落到整批明细上。
+        if instance.business_object_type == BATCH_CHANGE_BUSINESS_OBJECT_TYPE:
+            # 局部导入：批量异动服务复用了本模块的 LifecycleService，模块级导入会形成环。
+            from hris.modules.workforce.batch_change_service import BatchChangeService
+
+            batch_service = BatchChangeService(
+                self._session,
+                actor_id=self._actor_id,
+                trace_id=self._trace_id,
+            )
+            if approved:
+                await batch_service.mark_approved(instance.business_object_id)
+            else:
+                await batch_service.mark_rejected(instance.business_object_id)
+            return
         if instance.business_object_type != "hr_event":
             return
         event = await self._session.get(HrEvent, instance.business_object_id, with_for_update=True)
@@ -1447,8 +1377,11 @@ class LifecycleService:
                     target_job_id,
                     payload.effective_date,
                 )
-            if payload.event_type == "END_ASSIGNMENT" and not payload.planned_payload.get(
-                "assignment_id"
+            # Requirement: D-104 — END_ASSIGNMENT 既可结束 employment 级任职，
+            # 也可结束 person 级兼岗；两者只能给其一。
+            if payload.event_type == "END_ASSIGNMENT" and not (
+                payload.planned_payload.get("assignment_id")
+                or payload.planned_payload.get("concurrent_position_id")
             ):
                 raise ApiError(
                     status_code=422,
@@ -1672,6 +1605,33 @@ class LifecycleService:
             "END_ASSIGNMENT",
         }:
             original = await self._session.get(HrEvent, event.related_event_id) if event.related_event_id else None
+            # Requirement: D-104 — 回退目标优先按 person 级兼岗处理：
+            # CONCURRENT_ASSIGNMENT 事件写入的是 organization_person_relations，
+            # 其 actual_payload 里是 concurrent_position_id，没有 assignment_id。
+            concurrent_position_id = (
+                original.actual_payload.get("concurrent_position_id") if original else None
+            )
+            if concurrent_position_id:
+                relation = await self._session.get(
+                    OrganizationPersonRelation,
+                    UUID(str(concurrent_position_id)),
+                    with_for_update=True,
+                )
+                if relation is None:
+                    raise ApiError(
+                        status_code=422,
+                        code="ASSIGNMENT_ROLLBACK_TARGET_MISSING",
+                        message="找不到要回退的兼岗关系",
+                    )
+                event.before_payload = {
+                    "effective_to": relation.effective_to.isoformat() if relation.effective_to else None,
+                }
+                relation.effective_to = event.effective_date
+                await self._session.flush()
+                return {
+                    "concurrent_position_id": str(relation.id),
+                    "effective_to": event.effective_date.isoformat(),
+                }
             assignment_id = original.actual_payload.get("assignment_id") if original else None
             assignment = await self._session.get(EmploymentAssignment, UUID(str(assignment_id))) if assignment_id else None
             if assignment is None:
@@ -1682,6 +1642,34 @@ class LifecycleService:
 
         payload = event.planned_payload
         if event_type == "END_ASSIGNMENT":
+            # Requirement: D-104 — 结束 person 级兼岗时，按 concurrent_position_id
+            # 关闭 organization_person_relations 的生效区间；employment 级任职
+            # 仍是「结束主职/借调」的对象，两条路径互斥。
+            concurrent_position_id = payload.get("concurrent_position_id")
+            if concurrent_position_id:
+                concurrent = ConcurrentPositionService(
+                    self._session,
+                    actor_id=self._actor_id,
+                    trace_id=self._trace_id,
+                )
+                record = await concurrent.end_concurrent_position(
+                    UUID(str(concurrent_position_id)),
+                    effective_to=event.effective_date,
+                    reason=event.reason or "人事事件：结束兼岗",
+                )
+                event.before_payload = {
+                    "effective_to": (
+                        record.effective_to.isoformat() if record.effective_to else None
+                    ),
+                }
+                return {
+                    "concurrent_position_id": str(record.id),
+                    "person_id": str(record.person_id),
+                    "organization_id": str(record.organization_id),
+                    "effective_to": (
+                        record.effective_to.isoformat() if record.effective_to else None
+                    ),
+                }
             assignment = await self._session.get(
                 EmploymentAssignment,
                 UUID(str(payload["assignment_id"])),
@@ -1693,9 +1681,53 @@ class LifecycleService:
             assignment.effective_to = event.effective_date
             return {"assignment_id": str(assignment.id), "effective_to": event.effective_date.isoformat()}
 
+        # Requirement: D-104 — 兼岗以 person 级组织关系为唯一权威载体：
+        # 审批通过的 CONCURRENT_ASSIGNMENT 事件写 organization_person_relations
+        # （relation_type='concurrent'），不再新增 employment 级 EmploymentAssignment 行；
+        # 既有 employment 级兼岗行保留为历史记录，读取端不再以其为兼岗来源。
+        if event_type == "CONCURRENT_ASSIGNMENT":
+            employment = await self._session.get(Employment, event.object_id)
+            if employment is None:
+                raise ApiError(
+                    status_code=422,
+                    code="EMPLOYMENT_NOT_FOUND",
+                    message="劳动关系不存在",
+                )
+            organization_id = UUID(str(payload["organization_id"]))
+            job_id = UUID(str(payload["job_id"]))
+            if await self._session.get(Organization, organization_id) is None:
+                raise ApiError(status_code=404, code="ORGANIZATION_NOT_FOUND", message="组织不存在")
+            workforce = ExtendedWorkforceService(
+                self._session,
+                actor_id=self._actor_id,
+                trace_id=self._trace_id,
+            )
+            await workforce.ensure_job_effective(job_id, event.effective_date)
+            concurrent = ConcurrentPositionService(
+                self._session,
+                actor_id=self._actor_id,
+                trace_id=self._trace_id,
+            )
+            record = await concurrent.create_concurrent_position(
+                person_id=employment.person_id,
+                organization_id=organization_id,
+                job_id=job_id,
+                effective_from=event.effective_date,
+                effective_to=self._date_value(payload.get("effective_to")),
+                change_reason=event.reason or "人事事件：兼岗",
+                source_event_id=event.id,
+            )
+            event.before_payload = {}
+            return {
+                "concurrent_position_id": str(record.id),
+                "person_id": str(record.person_id),
+                "organization_id": str(record.organization_id),
+                "job_id": str(record.job_id) if record.job_id else None,
+                "relation_type": record.relation_type,
+            }
+
         relation_type = {
             "TRANSFER": "primary",
-            "CONCURRENT_ASSIGNMENT": "concurrent",
             "SECONDMENT": "secondment",
         }[event_type]
         organization_id = UUID(str(payload["organization_id"]))

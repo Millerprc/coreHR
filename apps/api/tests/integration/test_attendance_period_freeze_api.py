@@ -1,3 +1,6 @@
+# Copyright (c) 2026 coreHR 项目贡献者
+# 许可证：coreHR Sustainable Use License v1.0（见仓库根目录 LICENSE）。本文件不是 OSI 开源。
+
 from datetime import UTC, date, datetime, timedelta
 from uuid import UUID
 
@@ -39,7 +42,7 @@ async def _employment(db_session: AsyncSession) -> Employment:
     return employment
 
 
-async def test_period_freeze_blocks_result_recalculation_but_keeps_raw_evidence(
+async def test_period_freeze_blocks_result_recalculation_and_punch_backfill(
     business_client: AsyncClient,
     admin_token: str,
     db_session: AsyncSession,
@@ -69,6 +72,8 @@ async def test_period_freeze_blocks_result_recalculation_but_keeps_raw_evidence(
     assert listed.json()["total"] == 1
     assert listed.json()["items"][0]["id"] == freeze["id"]
 
+    # Requirement: D-113 —— 冻结账期内补录打卡同样被拒绝：
+    # 已月结的账期不允许再被新的打卡事实改写。
     punch = await business_client.post(
         "/api/v1/attendance/punches",
         headers=_auth(admin_token),
@@ -80,8 +85,9 @@ async def test_period_freeze_blocks_result_recalculation_but_keeps_raw_evidence(
             "source_record_id": "frozen-period-punch",
         },
     )
-    assert punch.status_code == 201, punch.text
-    assert await db_session.scalar(select(func.count()).select_from(AttendancePunch)) == 1
+    assert punch.status_code == 409, punch.text
+    assert punch.json()["code"] == "ATTENDANCE_PERIOD_FROZEN"
+    assert await db_session.scalar(select(func.count()).select_from(AttendancePunch)) == 0
 
     daily = await business_client.post(
         "/api/v1/attendance/daily-results/calculate",

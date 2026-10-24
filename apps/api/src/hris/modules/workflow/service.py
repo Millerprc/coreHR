@@ -1,11 +1,15 @@
+# Copyright (c) 2026 coreHR 项目贡献者
+# 许可证：coreHR Sustainable Use License v1.0（见仓库根目录 LICENSE）。本文件不是 OSI 开源。
+
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from hris.core.errors import ApiError
+from hris.modules.workflow import queries
 from hris.modules.workflow.models import WorkflowDefinition, WorkflowVersion
 from hris.modules.workflow.schemas import WorkflowDefinitionCreate
 from hris.modules.workforce.models import AuditLog
@@ -176,35 +180,22 @@ class WorkflowService:
         limit: int,
         offset: int,
     ) -> tuple[list[WorkflowDefinition], int]:
-        total = await self._session.scalar(
-            select(func.count()).select_from(WorkflowDefinition)
+        """流程定义列表。
+
+        Requirement: D-108 — 与引擎读路径共用同一份查询代码（拆包守则 2），
+        社区版与商业版读出来的数必然一致。
+        """
+
+        return await queries.list_definitions(
+            self._session,
+            limit=limit,
+            offset=offset,
         )
-        items = list(
-            (
-                await self._session.scalars(
-                    select(WorkflowDefinition)
-                    .order_by(WorkflowDefinition.code)
-                    .limit(limit)
-                    .offset(offset)
-                )
-            ).all()
-        )
-        return items, total or 0
 
     async def definition_detail(
         self,
         definition_id: UUID,
     ) -> tuple[WorkflowDefinition, list[WorkflowVersion]]:
-        definition = await self._session.get(WorkflowDefinition, definition_id)
-        if definition is None:
-            raise ApiError(status_code=404, code="WORKFLOW_NOT_FOUND", message="workflow definition not found")
-        versions = list(
-            (
-                await self._session.scalars(
-                    select(WorkflowVersion)
-                    .where(WorkflowVersion.workflow_definition_id == definition_id)
-                    .order_by(WorkflowVersion.version.desc())
-                )
-            ).all()
-        )
-        return definition, versions
+        """流程定义详情（含版本列表）。"""
+
+        return await queries.get_definition_detail(self._session, definition_id)

@@ -70,6 +70,32 @@ services:
     security_opt:
       - no-new-privileges:true
 
+  worker:
+    # Requirement: D-110 —— 长任务由**独立 Worker 进程**执行，不挂在 API 启动路径上。
+    # 与 api 用同一个镜像（image 显式写出来是为了复用已构建的镜像，不触发重复构建）。
+    image: corehr-api
+    build:
+      context: ../apps/api
+    environment:
+      APP_ENV: development
+      DATABASE_URL: postgresql+psycopg://corehr:${COREHR_DB_PASSWORD:-corehr_dev_only}@db:5432/corehr
+      REDIS_URL: redis://redis:6379/0
+    command:
+      - python
+      - -m
+      - hris.modules.platform.task_worker
+    volumes:
+      - ../apps/api/src:/app/src
+      - ../apps/api/alembic:/app/alembic
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+
   web:
     build:
       context: ../apps/web

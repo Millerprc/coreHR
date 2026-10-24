@@ -1,3 +1,6 @@
+# Copyright (c) 2026 coreHR 项目贡献者
+# 许可证：coreHR Sustainable Use License v1.0（见仓库根目录 LICENSE）。本文件不是 OSI 开源。
+
 from datetime import date, datetime
 from typing import Annotated, Any
 from uuid import UUID
@@ -53,6 +56,7 @@ from hris.modules.workforce.models import (
     LegalEntity,
     OccupancyRule,
 )
+from hris.modules.workforce.person_corrections_service import PersonCorrectionService
 
 
 router = APIRouter(prefix="/api/v1/workforce", tags=["phase-1-workforce-admin"])
@@ -247,13 +251,38 @@ async def list_persons(
 
 @router.get("/persons/{person_id}", response_model=PersonArchiveResponse)
 async def get_person_archive(
-    person_id: UUID, request: Request, db: DbSession, user: PersonViewer
+    person_id: UUID,
+    request: Request,
+    db: DbSession,
+    user: PersonViewer,
+    effective_at: date | None = Query(default=None),
 ) -> PersonArchiveResponse:
+    """读取人员档案。
+
+    Requirement: D-095 — effective_at 缺省取业务当天；person 返回「当前生效结果」
+    （主档登记值 + 生效日期 ≤ effective_at 的最后一条修正），registered_person
+    返回主档登记值，corrections 返回该员工的修正记录。
+    """
     person, employments, legal_entity_relations, assignments, agreements = await service(
         db, user, request
     ).person_archive(person_id)
+    query_date = effective_at or business_date()
+    correction_service = PersonCorrectionService(
+        db,
+        actor_id=user.id,
+        trace_id=str(request.state.trace_id),
+    )
+    versions = await correction_service.list_field_versions(person_id)
+    registered = PersonResponse.model_validate(person)
+    effective = registered
+    overrides = correction_service.effective_overrides(versions, query_date)
+    if overrides:
+        merged = registered.model_dump()
+        merged.update(overrides)
+        effective = PersonResponse.model_validate(merged)
     return PersonArchiveResponse(
-        person=PersonResponse.model_validate(person),
+        person=effective,
+        registered_person=registered,
         employments=[EmploymentResponse.model_validate(item) for item in employments],
         legal_entity_relations=[
             EmploymentLegalEntityRelationResponse.model_validate(item)
@@ -265,6 +294,11 @@ async def get_person_archive(
         agreements=[
             AgreementRelationshipResponse.model_validate(item) for item in agreements
         ],
+        corrections=[
+            PersonCorrectionService.to_response(record, actor_name)
+            for record, actor_name in versions
+        ],
+        effective_at=query_date,
     )
 
 

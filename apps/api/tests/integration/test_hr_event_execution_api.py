@@ -1,3 +1,6 @@
+# Copyright (c) 2026 coreHR 项目贡献者
+# 许可证：coreHR Sustainable Use License v1.0（见仓库根目录 LICENSE）。本文件不是 OSI 开源。
+
 from datetime import date, datetime, timedelta
 from uuid import UUID
 from zoneinfo import ZoneInfo
@@ -7,6 +10,7 @@ from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from enterprise_support import requires_enterprise
 from hris.modules.platform.models import UserAccount
 from hris.modules.workforce.models import (
     AuditLog,
@@ -201,6 +205,7 @@ async def test_direct_future_and_rollback_hr_events_change_effective_results(
     assert transfer_detail.json()["actual_payload"]["organization_id"] == str(second_organization.id)
 
 
+@requires_enterprise
 async def test_approved_hr_event_executes_after_workflow_completion(
     business_client: AsyncClient,
     admin_token: str,

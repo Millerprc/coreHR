@@ -1,3 +1,6 @@
+# Copyright (c) 2026 coreHR 项目贡献者
+# 许可证：coreHR Sustainable Use License v1.0（见仓库根目录 LICENSE）。本文件不是 OSI 开源。
+
 from typing import Any
 
 from fastapi import FastAPI, Request
@@ -12,13 +15,15 @@ class ApiError(Exception):
         status_code: int,
         code: str,
         message: str,
-        details: list[dict[str, Any]] | None = None,
+        # Requirement: D-108 — 授权拦截的 details 是单对象 {module, required, tier, contact_hint}，
+        # 其余既有错误仍是列表；这里只放宽类型，不改变既有响应形状。
+        details: list[dict[str, Any]] | dict[str, Any] | None = None,
     ) -> None:
         super().__init__(message)
         self.status_code = status_code
         self.code = code
         self.message = message
-        self.details = details or []
+        self.details = details if details is not None else []
 
 
 def _trace_id(request: Request) -> str:

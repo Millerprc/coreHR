@@ -1,4 +1,8 @@
+# Copyright (c) 2026 coreHR 项目贡献者
+# 许可证：coreHR Sustainable Use License v1.0（见仓库根目录 LICENSE）。本文件不是 OSI 开源。
+
 import hashlib
+from collections.abc import Awaitable, Callable
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
@@ -8,8 +12,12 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from hris.core.config import get_settings
 from hris.core.errors import ApiError
+from hris.core.search import like_pattern
 from hris.modules.attendance.extended_schemas import (
+    AttendanceCalculationScope,
+    AttendanceCalculationTarget,
     AttendanceDailyCalculate,
     AttendanceMonthlyCalculate,
     AttendancePeriodFreezeCreate,
@@ -181,13 +189,18 @@ class ExtendedAttendanceService:
         )
         return freeze
 
-    async def _assert_period_not_frozen(
+    async def _find_active_freezes(
         self,
         date_from: date,
         date_to: date,
-    ) -> None:
+    ) -> list[AttendancePeriodFreeze]:
+        """返回与 [date_from, date_to] 重叠的生效中冻结区间。
+
+        口径统一入口：账期重算与打卡补录共用同一份区间判定（同一把月度咨询锁 + 同一组过滤条件），
+        避免出现第二套冻结语义。
+        """
         await self._lock_period(date_from, date_to)
-        freezes = list(
+        return list(
             (
                 await self._session.scalars(
                     select(AttendancePeriodFreeze)
@@ -204,12 +217,50 @@ class ExtendedAttendanceService:
                 )
             ).all()
         )
+
+    async def _assert_period_not_frozen(
+        self,
+        date_from: date,
+        date_to: date,
+    ) -> None:
+        freezes = await self._find_active_freezes(date_from, date_to)
         if not freezes:
             return
         raise ApiError(
             status_code=409,
             code="ATTENDANCE_PERIOD_FROZEN",
             message="所选日期处于考勤冻结期间，需先填写原因并解冻",
+            details=[
+                {
+                    "freeze_id": str(item.id),
+                    "freeze_type": item.freeze_type,
+                    "date_from": item.date_from.isoformat(),
+                    "date_to": item.date_to.isoformat(),
+                }
+                for item in freezes
+            ],
+        )
+
+    async def _assert_punch_not_frozen(self, punched_at: datetime) -> None:
+        # Requirement: D-113 —— 已月结账期不允许再补录打卡，否则考勤事实仍能在冻结后被事后改写。
+        # 业务日口径与账期冻结一致：取打卡时刻在业务时区（settings.business_timezone，
+        # 默认 Asia/Shanghai）下的自然日；冻结区间的 date_from/date_to 同样是业务日历日，
+        # 两者可直接比较。这里不使用班次时区，因为补录打卡可能没有已发布排班可供推导。
+        business_date = punched_at.astimezone(
+            ZoneInfo(get_settings().business_timezone)
+        ).date()
+        freezes = await self._find_active_freezes(business_date, business_date)
+        if not freezes:
+            return
+        primary = freezes[0]
+        raise ApiError(
+            status_code=409,
+            code="ATTENDANCE_PERIOD_FROZEN",
+            message=(
+                f"打卡业务日 {business_date.isoformat()} 处于考勤冻结期间"
+                f"（{primary.date_from.isoformat()} 至 {primary.date_to.isoformat()}），"
+                "不允许补录打卡，需先填写原因并解冻"
+            ),
             details=[
                 {
                     "freeze_id": str(item.id),
@@ -245,8 +296,14 @@ class ExtendedAttendanceService:
     ) -> tuple[list[dict[str, Any]], int]:
         filters = []
         if search:
-            term = f"%{search.strip()}%"
-            filters.append(or_(Person.display_name.ilike(term), Person.employee_number.ilike(term)))
+            # Requirement: D-112 — 搜索词按字面量匹配，转义 LIKE 通配符。
+            term = like_pattern(search)
+            filters.append(
+                or_(
+                    Person.display_name.ilike(term, escape="\\"),
+                    Person.employee_number.ilike(term, escape="\\"),
+                )
+            )
         total = await self._session.scalar(
             select(func.count()).select_from(Employment).join(Person, Person.id == Employment.person_id).where(*filters)
         )
@@ -272,18 +329,50 @@ class ExtendedAttendanceService:
     async def create_shift(self, payload: ShiftCreate) -> Shift:
         if await self._session.scalar(select(Shift.id).where(Shift.code == payload.code)) is not None:
             raise ApiError(status_code=409, code="SHIFT_CODE_EXISTS", message="班次代码已存在")
-        if await self._session.get(AttendanceRuleSet, payload.rule_set_id) is None:
+        rule_set = await self._session.get(AttendanceRuleSet, payload.rule_set_id)
+        if rule_set is None:
             raise ApiError(status_code=404, code="RULE_SET_NOT_FOUND", message="考勤规则集不存在")
-        shift = Shift(**payload.model_dump(), status="active")
+        # Requirement: D-107 —— 班次只能绑定**已发布的规则集版本行**，
+        # 并冻结当时的规则内容（rule_snapshot），旧班次因此不会在规则集发布新版本后静默跟随新规则。
+        if rule_set.status != "active":
+            raise ApiError(
+                status_code=409,
+                code="SHIFT_RULE_SET_NOT_PUBLISHED",
+                message="班次只能引用已发布的考勤规则集版本",
+            )
+        shift = Shift(
+            **payload.model_dump(),
+            status="active",
+            rule_set_version=rule_set.version,
+            rule_snapshot=self._rule_snapshot(rule_set),
+        )
         self._session.add(shift)
         await self._session.flush()
         self._audit(
             action="create",
             object_type="shift",
             object_id=shift.id,
-            after={"code": shift.code, "name": shift.name},
+            after={
+                "code": shift.code,
+                "name": shift.name,
+                "rule_set_version": shift.rule_set_version,
+            },
         )
         return shift
+
+    @staticmethod
+    def _rule_snapshot(rule_set: AttendanceRuleSet) -> dict[str, Any]:
+        """冻结规则集版本内容，供班次独立使用。"""
+        return {
+            "code": rule_set.code,
+            "version": rule_set.version,
+            "timezone": rule_set.timezone,
+            "rules": dict(rule_set.rules or {}),
+            "effective_from": rule_set.effective_from.isoformat(),
+            "effective_to": (
+                rule_set.effective_to.isoformat() if rule_set.effective_to else None
+            ),
+        }
 
     async def list_shifts(
         self,
@@ -309,8 +398,17 @@ class ExtendedAttendanceService:
             raise ApiError(status_code=404, code="SHIFT_NOT_FOUND", message="shift not found")
         changes = payload.model_dump(exclude_unset=True)
         rule_set_id = changes.get("rule_set_id")
-        if rule_set_id is not None and await self._session.get(AttendanceRuleSet, rule_set_id) is None:
-            raise ApiError(status_code=404, code="RULE_SET_NOT_FOUND", message="attendance rule set not found")
+        bound_rule_set = None
+        if rule_set_id is not None:
+            bound_rule_set = await self._session.get(AttendanceRuleSet, rule_set_id)
+            if bound_rule_set is None:
+                raise ApiError(status_code=404, code="RULE_SET_NOT_FOUND", message="attendance rule set not found")
+            if bound_rule_set.status != "active":
+                raise ApiError(
+                    status_code=409,
+                    code="SHIFT_RULE_SET_NOT_PUBLISHED",
+                    message="班次只能引用已发布的考勤规则集版本",
+                )
         start_time = changes.get("start_time", shift.start_time)
         end_time = changes.get("end_time", shift.end_time)
         crosses_midnight = changes.get("crosses_midnight", shift.crosses_midnight)
@@ -321,6 +419,10 @@ class ExtendedAttendanceService:
         before = {field: str(getattr(shift, field)) for field in changes}
         for field, value in changes.items():
             setattr(shift, field, value)
+        if bound_rule_set is not None:
+            # 重新绑定规则集版本时刷新冻结快照。
+            shift.rule_set_version = bound_rule_set.version
+            shift.rule_snapshot = self._rule_snapshot(bound_rule_set)
         await self._session.flush()
         self._audit(
             action="update",
@@ -340,11 +442,18 @@ class ExtendedAttendanceService:
             select(ScheduleAssignment.id).where(
                 ScheduleAssignment.employment_id == payload.employment_id,
                 ScheduleAssignment.work_date == payload.work_date,
+                ScheduleAssignment.sequence_no == 1,
             )
         )
         if existing is not None:
             raise ApiError(status_code=409, code="SCHEDULE_EXISTS", message="该日期已存在排班")
-        assignment = ScheduleAssignment(**payload.model_dump(), status="active")
+        # 单条新增沿用既有语义：直接生效并参与考勤计算（草稿走批量排班接口）。
+        assignment = ScheduleAssignment(
+            **payload.model_dump(),
+            status="active",
+            publish_status="published",
+            sequence_no=1,
+        )
         self._session.add(assignment)
         await self._session.flush()
         self._audit(
@@ -361,6 +470,7 @@ class ExtendedAttendanceService:
         employment_id: UUID | None,
         date_from: date | None,
         date_to: date | None,
+        publish_status: str | None = None,
         limit: int,
         offset: int,
     ) -> tuple[list[ScheduleAssignment], int]:
@@ -371,6 +481,8 @@ class ExtendedAttendanceService:
             filters.append(ScheduleAssignment.work_date >= date_from)
         if date_to is not None:
             filters.append(ScheduleAssignment.work_date <= date_to)
+        if publish_status is not None:
+            filters.append(ScheduleAssignment.publish_status == publish_status)
         total = await self._session.scalar(
             select(func.count()).select_from(ScheduleAssignment).where(*filters)
         )
@@ -413,6 +525,8 @@ class ExtendedAttendanceService:
         return schedule
 
     async def ingest_punch(self, payload: PunchCreate) -> tuple[AttendancePunch, bool]:
+        # Requirement: D-113 —— 幂等命中优先返回既有记录：重复提交同一条打卡不产生新的考勤事实，
+        # 不应被期间冻结拦下（否则上游/设备重试会被误判为补卡失败）。
         existing = await self._session.scalar(
             select(AttendancePunch).where(
                 AttendancePunch.source == payload.source,
@@ -423,6 +537,8 @@ class ExtendedAttendanceService:
             return existing, True
         if await self._session.get(Employment, payload.employment_id) is None:
             raise ApiError(status_code=404, code="EMPLOYMENT_NOT_FOUND", message="劳动关系不存在")
+        # Requirement: D-113 —— 冻结账期内禁止补录打卡（校验在写库之前，失败不留半写状态）。
+        await self._assert_punch_not_frozen(payload.punched_at)
         punch = AttendancePunch(**payload.model_dump())
         self._session.add(punch)
         await self._session.flush()
@@ -553,7 +669,7 @@ class ExtendedAttendanceService:
                 code="LEAVE_BALANCE_NOT_TRACKED",
                 message="leave type is not configured to track a balance",
             )
-        return await self._apply_balance_delta(
+        return await self.apply_balance_delta(
             employment_id=payload.employment_id,
             leave_type=leave_type,
             period_year=payload.period_year,
@@ -602,6 +718,41 @@ class ExtendedAttendanceService:
         )
         return accounts, total or 0
 
+    async def leave_balances_as_of(
+        self,
+        account_ids: list[UUID],
+        as_of: date,
+    ) -> dict[UUID, Decimal]:
+        """计算账户在指定时点的余额。
+
+        口径（唯一口径，写在这里以便审计与复核）：
+        `余额(as_of) = 账户建账初始余额(0) + SUM(流水.amount WHERE effective_date <= as_of)`
+
+        说明：流水按 `effective_date` 归期，与账户版本链（`account_version`）顺序不同。
+        补录更早日期的流水会改变对应时点余额——这是「按生效日期取数」口径的既定行为，
+        与「当前余额」（账户 `current_balance`，按版本链累计）并存、互不覆盖。
+        """
+        if not account_ids:
+            return {}
+        rows = (
+            await self._session.execute(
+                select(
+                    LeaveBalanceTransaction.account_id,
+                    func.coalesce(func.sum(LeaveBalanceTransaction.amount), 0),
+                )
+                .where(
+                    LeaveBalanceTransaction.account_id.in_(account_ids),
+                    LeaveBalanceTransaction.effective_date <= as_of,
+                )
+                .group_by(LeaveBalanceTransaction.account_id)
+            )
+        ).all()
+        totals = {account_id: Decimal(str(total)) for account_id, total in rows}
+        return {
+            account_id: totals.get(account_id, Decimal("0.00"))
+            for account_id in account_ids
+        }
+
     async def list_leave_balance_transactions(
         self,
         account_id: UUID,
@@ -635,7 +786,7 @@ class ExtendedAttendanceService:
         )
         return transactions, total or 0
 
-    async def _apply_balance_delta(
+    async def apply_balance_delta(
         self,
         *,
         employment_id: UUID,
@@ -773,7 +924,7 @@ class ExtendedAttendanceService:
                 code="LEAVE_BALANCE_CROSS_YEAR_UNSUPPORTED",
                 message="managed leave requests must be split by calendar year",
             )
-        await self._apply_balance_delta(
+        await self.apply_balance_delta(
             employment_id=request.employment_id,
             leave_type=leave_type,
             period_year=request.start_date.year,
@@ -817,7 +968,7 @@ class ExtendedAttendanceService:
                 code="LEAVE_TYPE_NOT_FOUND",
                 message="leave type for the approved request is missing",
             )
-        await self._apply_balance_delta(
+        await self.apply_balance_delta(
             employment_id=account.employment_id,
             leave_type=leave_type,
             period_year=account.period_year,
@@ -1078,11 +1229,14 @@ class ExtendedAttendanceService:
             raise ApiError(status_code=404, code="EMPLOYMENT_NOT_FOUND", message="employment not found")
         await self._assert_period_not_frozen(payload.work_date, payload.work_date)
         schedule = await self._session.scalar(
-            select(ScheduleAssignment).where(
+            select(ScheduleAssignment)
+            .where(
                 ScheduleAssignment.employment_id == payload.employment_id,
                 ScheduleAssignment.work_date == payload.work_date,
                 ScheduleAssignment.status == "active",
+                ScheduleAssignment.publish_status == "published",
             )
+            .order_by(ScheduleAssignment.sequence_no)
         )
         scheduled_minutes = 0
         worked_minutes = 0
@@ -1101,13 +1255,18 @@ class ExtendedAttendanceService:
             rule_set = await self._session.get(AttendanceRuleSet, shift.rule_set_id)
             if rule_set is None:
                 raise ApiError(status_code=422, code="RULE_SET_NOT_FOUND", message="attendance rule set not found")
-            timezone = ZoneInfo(rule_set.timezone)
+            # Requirement: D-107 —— 班次使用绑定的**不可变规则集版本快照**，
+            # 规则集发布新版本不会改变旧班次的计算口径。
+            snapshot = shift.rule_snapshot or {}
+            snapshot_rules = snapshot.get("rules")
+            active_rules = snapshot_rules if isinstance(snapshot_rules, dict) else rule_set.rules
+            timezone = ZoneInfo(str(snapshot.get("timezone") or rule_set.timezone))
             scheduled_start = datetime.combine(payload.work_date, shift.start_time, tzinfo=timezone)
             end_date = payload.work_date + timedelta(days=1) if shift.crosses_midnight else payload.work_date
             scheduled_end = datetime.combine(end_date, shift.end_time, tzinfo=timezone)
             scheduled_minutes = max(0, int((scheduled_end - scheduled_start).total_seconds() // 60))
-            grace_late = int(rule_set.rules.get("late_grace_minutes", 0) or 0)
-            grace_early = int(rule_set.rules.get("early_leave_grace_minutes", 0) or 0)
+            grace_late = int(active_rules.get("late_grace_minutes", 0) or 0)
+            grace_early = int(active_rules.get("early_leave_grace_minutes", 0) or 0)
             punches = list(
                 (
                     await self._session.scalars(
@@ -1182,7 +1341,7 @@ class ExtendedAttendanceService:
                     "schedule_id": str(schedule.id),
                     "shift_id": str(shift.id),
                     "rule_set_id": str(rule_set.id),
-                    "rule_set_version": rule_set.version,
+                    "rule_set_version": shift.rule_set_version or rule_set.version,
                     "timezone": rule_set.timezone,
                     "scheduled_start": scheduled_start.isoformat(),
                     "scheduled_end": scheduled_end.isoformat(),
@@ -1285,6 +1444,7 @@ class ExtendedAttendanceService:
                     select(ScheduleAssignment).where(
                         ScheduleAssignment.employment_id == payload.employment_id,
                         ScheduleAssignment.status == "active",
+                        ScheduleAssignment.publish_status == "published",
                         ScheduleAssignment.work_date >= payload.period_month,
                         ScheduleAssignment.work_date < next_month,
                     )
@@ -1359,6 +1519,202 @@ class ExtendedAttendanceService:
             after={"period_month": result.period_month.isoformat(), "version": result.version},
         )
         return result
+
+    async def resolve_calculation_targets(
+        self,
+        *,
+        scope: AttendanceCalculationScope,
+        employment_ids: list[UUID],
+    ) -> AttendanceCalculationTarget:
+        """把「人员范围」解析成实际要处理的关系 id 列表。
+
+        Requirement: D-116 — 全员口径与 `list_employment_options` **完全同源**
+        （所有劳动关系，不按在职状态过滤）：补算历史月份时必须算到已离职的人；
+        口径若与人员列表不一致，管理员在界面上看到的和实际算出来的就不是一回事。
+
+        「指定人员」里的 id 会校验是否真实存在：传进来一个不存在的 id 却静默少算一个人，
+        管理员是事后从结果表里看出来的，很难归因。校验失败直接拒绝，不静默丢弃。
+        「排除人员」里不存在的 id 视为无害（排除一个本来就不存在的人等于没排除）。
+        """
+        if scope is AttendanceCalculationScope.SELECTED:
+            existing = set(
+                (
+                    await self._session.scalars(
+                        select(Employment.id).where(Employment.id.in_(employment_ids))
+                    )
+                ).all()
+            )
+            missing = [item for item in employment_ids if item not in existing]
+            if missing:
+                raise ApiError(
+                    status_code=422,
+                    code="ATTENDANCE_CALCULATION_TARGET_INVALID",
+                    message="指定的人员里有不存在的劳动关系",
+                    details=[{"missing_count": len(missing)}],
+                )
+            resolved = list(employment_ids)
+        else:
+            all_ids = list(
+                (
+                    await self._session.scalars(
+                        select(Employment.id)
+                        .join(Person, Person.id == Employment.person_id)
+                        .order_by(Employment.id)
+                    )
+                ).all()
+            )
+            if scope is AttendanceCalculationScope.EXCLUDED:
+                excluded = set(employment_ids)
+                resolved = [item for item in all_ids if item not in excluded]
+            else:
+                resolved = all_ids
+        return AttendanceCalculationTarget(
+            scope=scope,
+            target_count=len(resolved),
+            employment_ids=resolved,
+        )
+
+    async def calculate_daily_batch(
+        self,
+        *,
+        scope: AttendanceCalculationScope,
+        employment_ids: list[UUID],
+        work_date: date,
+        reason: str,
+        keepalive: Callable[[], Awaitable[None]] | None = None,
+    ) -> dict[str, Any]:
+        """批量计算日报。
+
+        Requirement: D-116 — 一次提交覆盖一整个人员范围，不再要求逐人提交。
+
+        取舍说明：
+        - **整个账期的冻结在开跑前先查**：全员被冻结时如果等到循环里才发现，
+          会得到「200 个人全部失败」的噪音；前置校验直接抛
+          `ATTENDANCE_PERIOD_FROZEN`，任务立即失败并说明原因。
+        - **单个人的失败不牵连其他人**：每个人在独立保存点里计算，失败只回滚他本人，
+          其余人的结果照常落库。失败原因按错误码计数（不含个人信息）。
+        - `keepalive` 由调用方（后台任务处理器）提供，用来在长循环中续租任务。
+        """
+        await self._assert_period_not_frozen(work_date, work_date)
+        targets = await self.resolve_calculation_targets(
+            scope=scope,
+            employment_ids=employment_ids,
+        )
+        succeeded = 0
+        failed = 0
+        failure_codes: dict[str, int] = {}
+        for employment_id in targets.employment_ids:
+            if keepalive is not None:
+                await keepalive()
+            try:
+                async with self._session.begin_nested():
+                    await self.calculate_daily(
+                        AttendanceDailyCalculate(
+                            employment_id=employment_id,
+                            work_date=work_date,
+                            reason=reason,
+                        )
+                    )
+                succeeded += 1
+            except ApiError as exc:
+                failed += 1
+                failure_codes[exc.code] = failure_codes.get(exc.code, 0) + 1
+            except Exception:
+                # Requirement: D-110 — 异常原文可能含个人信息，只记类型，不落库。
+                failed += 1
+                failure_codes["UNEXPECTED_ERROR"] = (
+                    failure_codes.get("UNEXPECTED_ERROR", 0) + 1
+                )
+        return {
+            "kind": "daily",
+            "scope": scope.value,
+            "work_date": work_date.isoformat(),
+            "target_count": targets.target_count,
+            "succeeded_count": succeeded,
+            "failed_count": failed,
+            "failure_codes": failure_codes,
+        }
+
+    async def calculate_monthly_batch(
+        self,
+        *,
+        scope: AttendanceCalculationScope,
+        employment_ids: list[UUID],
+        period_month: date,
+        reason: str,
+        keepalive: Callable[[], Awaitable[None]] | None = None,
+    ) -> dict[str, Any]:
+        """批量计算月报。
+
+        Requirement: D-116 — 一次提交覆盖一整个人员范围。
+
+        月报比日报重得多：每个人要先补算当月缺失的日报（最多 31 次），
+        200 人的一个月约 6000 次单位计算 —— 这正是它必须走后台任务的原因。
+        """
+        await self._assert_period_not_frozen(
+            period_month,
+            self._next_month(period_month) - timedelta(days=1),
+        )
+        targets = await self.resolve_calculation_targets(
+            scope=scope,
+            employment_ids=employment_ids,
+        )
+        succeeded = 0
+        failed = 0
+        failure_codes: dict[str, int] = {}
+        for employment_id in targets.employment_ids:
+            if keepalive is not None:
+                await keepalive()
+            try:
+                async with self._session.begin_nested():
+                    await self.calculate_monthly(
+                        AttendanceMonthlyCalculate(
+                            employment_id=employment_id,
+                            period_month=period_month,
+                            reason=reason,
+                        )
+                    )
+                succeeded += 1
+            except ApiError as exc:
+                failed += 1
+                failure_codes[exc.code] = failure_codes.get(exc.code, 0) + 1
+            except Exception:
+                failed += 1
+                failure_codes["UNEXPECTED_ERROR"] = (
+                    failure_codes.get("UNEXPECTED_ERROR", 0) + 1
+                )
+        return {
+            "kind": "monthly",
+            "scope": scope.value,
+            "period_month": period_month.isoformat(),
+            "target_count": targets.target_count,
+            "succeeded_count": succeeded,
+            "failed_count": failed,
+            "failure_codes": failure_codes,
+        }
+
+    async def assert_period_open_for_calculation(
+        self,
+        *,
+        work_date: date | None = None,
+        period_month: date | None = None,
+    ) -> None:
+        """计算提交前的账期冻结预检。
+
+        Requirement: D-116 — 冻结的账期要在**提交时**就被拒（409），
+        而不是让后台任务跑起来再失败：任务失败是异步反馈，管理员要等好几秒
+        才知道自己白提交了一次，还容易重复提交。
+
+        这里用的是与计算时**完全相同**的冻结判定（同一把月度咨询锁 + 同一组过滤条件），
+        不存在「提交时放行、执行时被拦」的缝隙。
+        """
+        if work_date is not None:
+            await self._assert_period_not_frozen(work_date, work_date)
+        if period_month is not None:
+            await self._assert_period_not_frozen(
+                period_month,
+                self._next_month(period_month) - timedelta(days=1),
+            )
 
     async def list_monthly_results(
         self,

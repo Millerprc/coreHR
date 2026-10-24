@@ -1,9 +1,14 @@
+# Copyright (c) 2026 coreHR 项目贡献者
+# 许可证：coreHR Sustainable Use License v1.0（见仓库根目录 LICENSE）。本文件不是 OSI 开源。
+
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from hris.modules.workforce.person_corrections_schemas import PersonFieldVersionResponse
 
 
 class LegalEntityCreate(BaseModel):
@@ -351,11 +356,21 @@ class AgreementRelationshipResponse(BaseModel):
 
 
 class PersonArchiveResponse(BaseModel):
+    """人员档案。
+
+    Requirement: D-095 — person 是「当前生效结果」（主档登记值 + 生效日期 ≤
+    effective_at 的最后一条修正）；registered_person 保留主档登记值，
+    corrections 给出该员工的修正记录，供界面区分「登记值」与「当前生效值」。
+    """
+
     person: PersonResponse
+    registered_person: PersonResponse
     employments: list[EmploymentResponse]
     legal_entity_relations: list[EmploymentLegalEntityRelationResponse]
     assignments: list[EmploymentAssignmentResponse]
     agreements: list[AgreementRelationshipResponse]
+    corrections: list[PersonFieldVersionResponse]
+    effective_at: date
 
 
 class HeadcountPlanCreate(BaseModel):

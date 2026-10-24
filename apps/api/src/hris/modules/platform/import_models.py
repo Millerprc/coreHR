@@ -1,8 +1,21 @@
+# Copyright (c) 2026 coreHR 项目贡献者
+# 许可证：coreHR Sustainable Use License v1.0（见仓库根目录 LICENSE）。本文件不是 OSI 开源。
+
 from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, UniqueConstraint, Uuid
+from sqlalchemy import (
+    JSON,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    UniqueConstraint,
+    Uuid,
+    text,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from hris.shared.db.base import Base, TimestampMixin, UuidPrimaryKeyMixin
@@ -10,6 +23,15 @@ from hris.shared.db.base import Base, TimestampMixin, UuidPrimaryKeyMixin
 
 class ImportBatch(UuidPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "import_batches"
+    __table_args__ = (
+        # Requirement: D-109 — 初始化导入整批校验、整批写入；日常批量维护允许正确行成功。
+        # 约束名按仓库命名约定（ck_<table>_<name>）生成，与迁移
+        # f2o000000001 的 ck_import_batches_mode_allowed 严格一致。
+        CheckConstraint(
+            "mode IN ('initialize', 'daily')",
+            name="mode_allowed",
+        ),
+    )
 
     entity_type: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
     source_system: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
@@ -18,6 +40,11 @@ class ImportBatch(UuidPrimaryKeyMixin, TimestampMixin, Base):
     idempotency_key: Mapped[UUID] = mapped_column(Uuid, nullable=False, unique=True)
     request_checksum: Mapped[str] = mapped_column(String(64), nullable=False)
     status: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
+    mode: Mapped[str] = mapped_column(
+        String(20),
+        nullable=False,
+        server_default=text("'daily'"),
+    )
     total_rows: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     valid_rows: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     rejected_rows: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

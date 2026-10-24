@@ -1,3 +1,6 @@
+# Copyright (c) 2026 coreHR 项目贡献者
+# 许可证：coreHR Sustainable Use License v1.0（见仓库根目录 LICENSE）。本文件不是 OSI 开源。
+
 import json
 from datetime import date, datetime
 from typing import Any, Literal
@@ -57,6 +60,9 @@ class ImportBatchValidate(ImportRequest):
     source_table: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
     file_name: str | None = Field(default=None, max_length=255)
     idempotency_key: UUID
+    # Requirement: D-109 — 初始化导入整批校验、整批写入（initialize）；
+    # 日常批量维护允许正确行成功（daily，默认值与存量批次一致）。
+    mode: Literal["initialize", "daily"] = "daily"
     rows: list[ImportSourceRow] = Field(min_length=1, max_length=1000)
 
     @model_validator(mode="after")
@@ -211,6 +217,7 @@ class ImportBatchSummaryResponse(BaseModel):
     file_name: str | None
     idempotency_key: UUID
     status: str
+    mode: Literal["initialize", "daily"]
     total_rows: int
     valid_rows: int
     rejected_rows: int
