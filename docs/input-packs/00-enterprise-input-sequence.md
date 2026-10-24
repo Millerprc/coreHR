@@ -31,7 +31,7 @@
 
 职务补充说明见[职务体系输入包](./04-job-architecture-input.md)。当前轮先确认入职流程，不需要同时准备其余人事流程、合同字段或考勤规则。
 
-第二阶段页面和UAT边界见[第二阶段PRD](../01-foundation/13-第二阶段PRD.md)；第三阶段需求和页面边界见[第三阶段需求规格](../01-foundation/14-第三阶段需求规格.md)与[第三阶段PRD](../01-foundation/15-第三阶段PRD.md)。标记为`PENDING_ENTERPRISE_INPUT`的内容不得由AI自行猜测并固化。
+第二阶段页面和UAT历史输入见已归档的[第二阶段PRD](../archive/2026-08-18-foundation-rebaseline/13-第二阶段PRD.md)；第三阶段需求见[第三阶段需求规格](../01-foundation/14-第三阶段需求规格.md)，页面和UAT历史输入见已归档的[第三阶段PRD](../archive/2026-08-18-foundation-rebaseline/15-第三阶段PRD.md)。标记为`PENDING_ENTERPRISE_INPUT`的内容不得由AI自行猜测并固化。
 
 ## 处理规则
 

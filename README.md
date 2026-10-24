@@ -4,7 +4,7 @@
 
 ## 当前状态
 
-第零阶段工程底座已经完成，业务第一至第三阶段的主管理员工程 MVP 已落地，并通过自动化测试、本机 Docker 和浏览器整栈验证。
+第零阶段工程底座已经完成，业务第一至第三阶段的主管理员工程 MVP 已落地，并通过自动化测试、本机 Docker 和浏览器整栈验证。产品目标架构已调整为“Platform Kernel + Workforce Core + 可组合业务套件”；现有代码仍作为迁移底座，尚未完成模块化改造。
 
 这里的“工程 MVP”不等于生产替换验收完成：正式编码对照、完整档案字段、真实人事流程图、合同正式字段/附件规则、企业考勤细则和打卡接口仍需补充。准确状态见[一至三阶段整体 Review 报告](./docs/review/phase-1-3-overall-review-2026-08-12.md)，当前提交的自动化证据见[2026-08-13 工程复验记录](./docs/review/phase-1-3-engineering-reverification-2026-08-13.md)。
 
@@ -87,25 +87,29 @@ export COREHR_BOOTSTRAP_TOKEN="一次性随机初始化凭证"
 apps/api/                FastAPI 服务、业务模块、迁移和后端测试
 apps/web/                React 管理端、状态页和前端测试
 deploy/                  Docker Compose 与环境变量示例
-docs/01-foundation/      项目基线、第一至第三阶段规格/PRD和决策记录
+docs/01-foundation/      产品总体PRD、功能文档规范、阶段规格和决策记录
+docs/archive/            已被新基线替代但仍需追溯的历史文档
 docs/adr/                架构决策记录
 docs/delivery/           阶段交付回执
 docs/implementation/     实施计划与运行手册
+docs/review/             实现、架构和文档符合性审查
 scripts/                 启动、停止和自动检查脚本
 ```
 
 ## 文档入口
 
 - [正式文档目录](./docs/01-foundation/00-正式文档目录.md)
+- [coreHR 产品总体 PRD（父级权威入口）](./docs/01-foundation/16-coreHR产品总体PRD.md)
+- [模块功能需求文档规范](./docs/01-foundation/17-模块功能需求文档规范.md)
+- [平台内核架构适配审查](./docs/review/platform-kernel-architecture-fit-review-2026-08-18.md)
+- [foundation文档重新定基线报告](./docs/review/foundation-document-rebaseline-2026-08-18.md)
 - [第一阶段需求规格](./docs/01-foundation/01-第一阶段需求规格.md)
-- [第一阶段 PRD](./docs/01-foundation/02-第一阶段PRD.md)
 - [第二阶段需求规格](./docs/01-foundation/12-第二阶段需求规格.md)
-- [第二阶段 PRD](./docs/01-foundation/13-第二阶段PRD.md)
 - [第三阶段需求规格](./docs/01-foundation/14-第三阶段需求规格.md)
-- [第三阶段 PRD](./docs/01-foundation/15-第三阶段PRD.md)
 - [项目决策](./docs/01-foundation/03-项目决策.md)
-- [技术架构基线](./docs/01-foundation/04-技术架构基线.md)
 - [代码结构与编码规范](./docs/01-foundation/10-代码结构与编码规范.md)
+- [Ant Design页面与交互载体规范](./docs/design/antd-page-interaction-standard.md)
+- [历史foundation文档归档](./docs/archive/2026-08-18-foundation-rebaseline/README.md)
 - [一至三阶段整体 Review 报告（当前）](./docs/review/phase-1-3-overall-review-2026-08-12.md)
 - [一至三阶段工程复验记录（2026-08-13）](./docs/review/phase-1-3-engineering-reverification-2026-08-13.md)
 - [一至三阶段实现符合性审查（前一快照）](./docs/review/phase-1-3-implementation-conformance-review.md)

@@ -11,8 +11,8 @@
 
 约束条件：
 
-- 来自[第零阶段开发基线](../01-foundation/09-MinimaxCode第零阶段开发基线.md)第 5.1、5.2 节的方向选择：模块化单体、FastAPI、React/TypeScript/Ant Design、PostgreSQL 统一业务 schema、Redis、REST `/api/v1`、本地账号密码、OpenAPI 契约。
-- 来自[技术架构基线](../01-foundation/04-技术架构基线.md)的要求：可重复执行、版本化迁移、敏感数据保护、Windows 开发宿主机与 Linux 容器兼容性。
+- 来自[第零阶段开发基线](../archive/2026-08-18-foundation-rebaseline/09-MinimaxCode第零阶段开发基线.md)第 5.1、5.2 节的历史方向选择：模块化单体、FastAPI、React/TypeScript/Ant Design、PostgreSQL 统一业务 schema、Redis、REST `/api/v1`、本地账号密码、OpenAPI 契约。
+- 来自[第一版技术架构基线](../archive/2026-08-18-foundation-rebaseline/04-技术架构基线.md)的历史要求：可重复执行、版本化迁移、敏感数据保护、Windows 开发宿主机与 Linux 容器兼容性。
 - 来自 ADR 规则：精确版本必须包含当前环境验证证据，不得使用无上限的 `latest`。
 - 第零阶段不实现 HR 业务模型，因此本 ADR 不涉及业务规则。
 - 复审轮：2026-07-31 上午复审指出旧版本（Node 24.15、Vite 5、PG 16.10/Redis 7.4 与实际未验证的 8.6.5）不合适；本版本为修正后版本，待复审通过后改为 `Accepted`。

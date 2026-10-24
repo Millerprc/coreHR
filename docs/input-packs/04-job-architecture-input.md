@@ -1,8 +1,10 @@
 # 企业输入包04：职务体系与职务目录
 
-> 状态：`FIRST_ENTERPRISE_SAMPLE_CONFIRMED / CATALOG_EXPANDABLE`
+> 状态：`MIGRATION_INPUT / REMODEL_MAPPING_PENDING`
 > 输入顺序：第1项
 > 数据安全：只含职务和配置代码，不填写人员姓名、工号或任职人员
+
+> 权威说明：本文件保留已确认样本、既有实现和导入格式作为迁移输入。2026-08-19新增的职位族、职位类、职位子类、职位、职务、职级类别、职级、职等和序列体系采用“合并取超集”，当前权威关系见[组织管理产品需求输入稿](./10-organization-management-product-input.md)及D-073、D-074、D-080至D-082。精确映射完成前，本文件不得单独驱动新一轮模型开发。
 
 ## 1. 本轮目标
 
