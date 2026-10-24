@@ -19,6 +19,8 @@ interface OrganizationVersionDrawerProps {
   readonly types: readonly OrganizationType[]
   readonly organizations: readonly OrganizationOption[]
   readonly saving: boolean
+  readonly initialStatus?: "active" | "inactive"
+  readonly expectedVersion?: number
   readonly onClose: () => void
   readonly onSave: (body: Record<string, unknown>) => Promise<void>
 }
@@ -31,6 +33,8 @@ export function OrganizationVersionDrawer({
   types,
   organizations,
   saving,
+  initialStatus,
+  expectedVersion,
   onClose,
   onSave,
 }: OrganizationVersionDrawerProps) {
@@ -45,15 +49,18 @@ export function OrganizationVersionDrawer({
         organization_type_id: current.organization_type_id,
         parent_organization_id: current.parent_organization_id,
         country_code: current.country_code,
-        status: current.status,
+        // Requirement: ORG-PROT-002 — 详情页“停用”复用版本抽屉，并预置停用状态。
+        status: initialStatus ?? current.status,
       })
     } else {
       form.setFieldsValue({ status: "active" })
     }
-  }, [current, form, mode, open])
+  }, [current, form, initialStatus, mode, open])
 
   async function submit(values: Record<string, unknown>): Promise<void> {
     const reason = String(values.change_reason)
+    // Requirement: ORG-PROT-002 — 已存在未来版本时，继续变更应使用聚合版本而非当前实际版本。
+    const versionForCommand = expectedVersion ?? current?.version ?? 1
     const body = {
       name: values.name,
       organization_type_id: values.organization_type_id,
@@ -67,7 +74,7 @@ export function OrganizationVersionDrawer({
         : {
             status: values.status,
             effective_date: values.effective_date,
-            command: command(current?.version ?? 1, reason),
+            command: command(versionForCommand, reason),
           }),
     }
     await onSave(body)

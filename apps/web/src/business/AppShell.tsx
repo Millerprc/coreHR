@@ -20,12 +20,20 @@ import { GovernanceWorkspace } from "./features/governance/GovernanceWorkspace"
 import { AccountWorkspace } from "./features/platform/AccountWorkspace"
 import { AttendanceWorkspace } from "./features/attendance/AttendanceWorkspace"
 import { LifecycleWorkspace } from "./features/lifecycle/LifecycleWorkspace"
+import { OrganizationDetailWorkspace } from "./features/organization/OrganizationDetailWorkspace"
 import { OrganizationWorkspace } from "./features/organization/OrganizationWorkspace"
 import { HeadcountWorkspace } from "./features/workforce/HeadcountWorkspace"
 import { PeopleWorkspace } from "./features/workforce/PeopleWorkspace"
 import { RecruitmentWorkspace } from "./features/workforce/RecruitmentWorkspace"
 import { workforceApi } from "./features/workforce/api"
-import { workspaceFromHash, workspaces } from "./navigation"
+import {
+  isWorkspaceKey,
+  organizationDetailRouteFromHash,
+  organizationWorkspaceKeys,
+  workspaceFromHash,
+  workspaces,
+} from "./navigation"
+import type { OrganizationDetailRoute } from "./navigation"
 import type { WorkspaceKey } from "./navigation"
 import type { UserProfile } from "./types"
 
@@ -92,22 +100,23 @@ function DashboardWorkspace({
           <Col xs={12} xl={5}><Statistic title="编制月度版本" value={counts.headcountPlans} /></Col>
         </Row>
       )}
+      {/* Requirement: ORG-PROT-001 — 工作台入口与组织管理菜单使用同一套产品术语。 */}
       <div className="workspace-entry-grid">
-        <Card variant="outlined" title="配置中心">
+        <Card variant="outlined" title="基础资料">
           <Typography.Paragraph>维护稳定业务代码、字典层级和启停状态。</Typography.Paragraph>
-          <Button onClick={() => onNavigate("configuration")}>进入配置中心</Button>
+          <Button onClick={() => onNavigate("configuration")}>进入基础资料</Button>
         </Card>
-        <Card variant="outlined" title="组织中心">
+        <Card variant="outlined" title="部门管理">
           <Typography.Paragraph>维护当前组织树、未来变更、法人、负责人、BP及财务维度。</Typography.Paragraph>
-          <Button type="primary" onClick={() => onNavigate("organization")}>进入组织中心</Button>
+          <Button type="primary" onClick={() => onNavigate("organization")}>进入部门管理</Button>
         </Card>
         <Card variant="outlined" title="人员中心">
           <Typography.Paragraph>维护自然人、劳动关系、主组织职务和协议关系。</Typography.Paragraph>
           <Button onClick={() => onNavigate("people")}>进入人员中心</Button>
         </Card>
-        <Card variant="outlined" title="人力与编制">
+        <Card variant="outlined" title="编制管理">
           <Typography.Paragraph>维护月度编制、占编规则、冻结和快照结果。</Typography.Paragraph>
-          <Button onClick={() => onNavigate("headcount")}>进入人力与编制</Button>
+          <Button onClick={() => onNavigate("headcount")}>进入编制管理</Button>
         </Card>
         <Card variant="outlined" title="招聘需求">
           <Typography.Paragraph>创建招聘需求并查看不阻断业务的编制参考。</Typography.Paragraph>
@@ -131,7 +140,11 @@ function PendingWorkspace({ label }: { readonly label: string }) {
 
 export function AppShell({ token, user, onSignedOut }: AppShellProps) {
   const [selected, setSelected] = useState<WorkspaceKey>(() => workspaceFromHash(window.location.hash))
+  const [organizationDetailRoute, setOrganizationDetailRoute] = useState<OrganizationDetailRoute | null>(
+    () => organizationDetailRouteFromHash(window.location.hash),
+  )
   const [signingOut, setSigningOut] = useState(false)
+  const [openMenuKeys, setOpenMenuKeys] = useState<readonly string[]>(["organization-management"])
 
   const can = useCallback(
     (permission: string) => user.permissions.includes("*") || user.permissions.includes(permission),
@@ -141,24 +154,64 @@ export function AppShell({ token, user, onSignedOut }: AppShellProps) {
   const navigate = useCallback((key: WorkspaceKey) => {
     window.location.hash = key
     setSelected(key)
+    setOrganizationDetailRoute(null)
   }, [])
 
   useEffect(() => {
-    const handleHashChange = () => setSelected(workspaceFromHash(window.location.hash))
+    const handleHashChange = () => {
+      setSelected(workspaceFromHash(window.location.hash))
+      setOrganizationDetailRoute(organizationDetailRouteFromHash(window.location.hash))
+    }
     window.addEventListener("hashchange", handleHashChange)
     return () => window.removeEventListener("hashchange", handleHashChange)
   }, [])
 
-  const menuItems = useMemo(
-    () => workspaces
-      .filter((workspace) => !workspace.permission || can(workspace.permission))
+  const visibleWorkspaces = useMemo(
+    () => workspaces.filter((workspace) => !workspace.permission || can(workspace.permission)),
+    [can],
+  )
+
+  const menuItems = useMemo(() => {
+    const item = (key: WorkspaceKey) => {
+      const workspace = visibleWorkspaces.find((candidate) => candidate.key === key)
+      return workspace ? {
+        key: workspace.key,
+        label: workspace.label,
+        disabled: !workspace.available,
+      } : null
+    }
+    const organizationChildren = organizationWorkspaceKeys
+      .map(item)
+      .filter((workspace): workspace is NonNullable<typeof workspace> => workspace !== null)
+    const standalone = visibleWorkspaces
+      .filter((workspace) => workspace.key !== "dashboard" && !organizationWorkspaceKeys.includes(workspace.key))
       .map((workspace) => ({
         key: workspace.key,
         label: workspace.label,
         disabled: !workspace.available,
-      })),
-    [can],
-  )
+      }))
+
+    // Requirement: ORG-PROT-001 — 组织管理菜单展开后呈现部门、职位、编制和基础资料入口。
+    return [
+      item("dashboard"),
+      organizationChildren.length ? {
+        key: "organization-management",
+        label: "组织管理",
+        children: organizationChildren,
+      } : null,
+      ...standalone,
+    ].filter((workspace): workspace is NonNullable<typeof workspace> => workspace !== null)
+  }, [visibleWorkspaces])
+
+  const selectedWorkspace = workspaces.find((workspace) => workspace.key === selected)
+  const selectedInOrganization = organizationWorkspaceKeys.includes(selected)
+
+  useEffect(() => {
+    if (!selectedInOrganization) return
+    setOpenMenuKeys((current) => current.includes("organization-management")
+      ? current
+      : [...current, "organization-management"])
+  }, [selected, selectedInOrganization])
 
   async function signOut(): Promise<void> {
     setSigningOut(true)
@@ -170,7 +223,17 @@ export function AppShell({ token, user, onSignedOut }: AppShellProps) {
   if (selected === "configuration") {
     content = <DictionaryWorkspace token={token} canAdmin={can("CONFIGURATION_ADMIN")} />
   } else if (selected === "organization") {
-    content = <OrganizationWorkspace token={token} canAdmin={can("ORGANIZATION_ADMIN")} />
+    // Requirement: ORG-PROT-002 — 详情Hash在独立标签页直接打开，不先渲染部门列表。
+    content = organizationDetailRoute ? (
+      <OrganizationDetailWorkspace
+        token={token}
+        canAdmin={can("ORGANIZATION_ADMIN")}
+        organizationId={organizationDetailRoute.organizationId}
+        initialEffectiveAt={organizationDetailRoute.effectiveAt}
+      />
+    ) : (
+      <OrganizationWorkspace token={token} canAdmin={can("ORGANIZATION_ADMIN")} />
+    )
   } else if (selected === "people") {
     content = <PeopleWorkspace token={token} canAdmin={can("WORKFORCE_ADMIN")} />
   } else if (selected === "headcount") {
@@ -193,7 +256,7 @@ export function AppShell({ token, user, onSignedOut }: AppShellProps) {
 
   return (
     <Layout className="business-shell">
-      <Sider width={236} theme="dark" breakpoint="lg" collapsedWidth={0}>
+      <Sider width={224} theme="dark" breakpoint="lg" collapsedWidth={0}>
         <div className="business-brand" aria-label="coreHR">
           <span>C</span>
           <strong>coreHR</strong>
@@ -201,17 +264,32 @@ export function AppShell({ token, user, onSignedOut }: AppShellProps) {
         <Menu
           theme="dark"
           mode="inline"
+          openKeys={[...openMenuKeys]}
+          onOpenChange={setOpenMenuKeys}
           selectedKeys={[selected]}
           items={menuItems}
-          onClick={({ key }) => navigate(key as WorkspaceKey)}
+          onClick={({ key }) => {
+            if (isWorkspaceKey(key)) navigate(key)
+          }}
         />
       </Sider>
       <Layout>
         <Header className="business-header">
-          <div>
-            <Typography.Text type="secondary">主管理员工作台</Typography.Text>
-            <Typography.Title level={4}>业务一至三阶段</Typography.Title>
-          </div>
+          <nav className="business-breadcrumb" aria-label="当前位置">
+            {selectedInOrganization && (
+              <>
+                <Typography.Text className="business-breadcrumb-group" type="secondary">组织管理</Typography.Text>
+                <Typography.Text type="secondary">/</Typography.Text>
+              </>
+            )}
+            <Typography.Text strong>{selectedWorkspace?.label ?? "工作台"}</Typography.Text>
+            {organizationDetailRoute && (
+              <>
+                <Typography.Text type="secondary">/</Typography.Text>
+                <Typography.Text strong>部门详情</Typography.Text>
+              </>
+            )}
+          </nav>
           <Space>
             <div className="user-summary">
               <Typography.Text strong>{user.display_name}</Typography.Text>

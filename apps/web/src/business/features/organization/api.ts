@@ -5,6 +5,7 @@ import type {
   CostCenter,
   DirectoryOption,
   Organization,
+  OrganizationEvent,
   OrganizationRelations,
   OrganizationTreeNode,
   OrganizationType,
@@ -35,6 +36,11 @@ export const organizationApi = {
   organization: (token: string, id: string, effectiveAt: string) =>
     apiRequest<Organization>(
       `/api/v1/organizations/${id}?effective_at=${encodeURIComponent(effectiveAt)}`,
+      token,
+    ),
+  events: (token: string, id: string, limit: number, offset: number) =>
+    apiRequest<PageResponse<OrganizationEvent>>(
+      `/api/v1/organizations/${id}/events?limit=${limit}&offset=${offset}`,
       token,
     ),
   createOrganization: (token: string, body: unknown) =>

@@ -2,23 +2,22 @@ import {
   Alert,
   Button,
   Descriptions,
-  Drawer,
   Empty,
-  Form,
   Input,
-  InputNumber,
-  List,
   Popconfirm,
   Select,
   Skeleton,
   Space,
+  Table,
   Tag,
+  Tabs,
   Typography,
 } from "antd"
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 
 import { ApiClientError } from "../../client"
 import { EffectiveDatePicker } from "../../components/EffectiveDatePicker"
+import { organizationDetailUrl } from "../../navigation"
 import { command, organizationApi } from "./api"
 import { OrganizationRelationsTabs } from "./OrganizationRelationsTabs"
 import { OrganizationTree } from "./OrganizationTree"
@@ -40,6 +39,9 @@ interface OrganizationOption {
   readonly id: string
   readonly name: string
   readonly code: string
+  readonly organizationTypeCode: string
+  readonly parentName: string | null
+  readonly status: string
 }
 
 
@@ -50,10 +52,20 @@ function localDate(): string {
 }
 
 
-function flattenTree(nodes: readonly OrganizationTreeNode[]): OrganizationOption[] {
+function flattenTree(
+  nodes: readonly OrganizationTreeNode[],
+  parentName: string | null = null,
+): OrganizationOption[] {
   return nodes.flatMap((node) => [
-    { id: node.id, name: node.name, code: node.code },
-    ...flattenTree(node.children),
+    {
+      id: node.id,
+      name: node.name,
+      code: node.code,
+      organizationTypeCode: node.organization_type_code,
+      parentName,
+      status: node.status,
+    },
+    ...flattenTree(node.children, node.name),
   ])
 }
 
@@ -75,13 +87,43 @@ export function OrganizationWorkspace({ token, canAdmin }: OrganizationWorkspace
   const [error, setError] = useState<string | null>(null)
   const [forbidden, setForbidden] = useState(false)
   const [editorMode, setEditorMode] = useState<"create" | "version" | null>(null)
-  const [typeDrawerOpen, setTypeDrawerOpen] = useState(false)
-  const [editingType, setEditingType] = useState<OrganizationType | null>(null)
-  const [typeForm] = Form.useForm()
+  // Requirement: ORG-PROT-001 — 部门管理宿主页默认提供列表，并保留组织架构树上下文。
+  const [activeView, setActiveView] = useState<"list" | "tree">("list")
+  const [searchText, setSearchText] = useState("")
+  const [typeFilter, setTypeFilter] = useState<string>()
+  const [detailRefreshKey, setDetailRefreshKey] = useState(0)
+  const detailRequestSequence = useRef(0)
 
   const organizationOptions = useMemo(() => flattenTree(tree), [tree])
+  const typeNames = useMemo(
+    () => new Map(types.map((type) => [type.code, type.name])),
+    [types],
+  )
+  const typeFilterOptions = useMemo(
+    () => Array.from(new Set(organizationOptions.map((item) => item.organizationTypeCode)))
+      .sort()
+      .map((code) => ({ label: typeNames.get(code) ?? code, value: code })),
+    [organizationOptions, typeNames],
+  )
+  const filteredOrganizations = useMemo(() => {
+    const query = searchText.trim().toLocaleLowerCase()
+    return organizationOptions.filter((item) => (
+      (!query || item.name.toLocaleLowerCase().includes(query) || item.code.toLocaleLowerCase().includes(query))
+      && (!typeFilter || item.organizationTypeCode === typeFilter)
+    ))
+  }, [organizationOptions, searchText, typeFilter])
+  // Requirement: ORG-PROT-002 — 多个未来版本按聚合版本连续追加，并只允许逆序取消。
+  const detailExpectedVersion = useMemo(() => detail
+    ? Math.max(
+        detail.version,
+        ...detail.planned_events.map((event) => event.expected_version + 1),
+      )
+    : 1, [detail])
 
   const loadBase = useCallback(async () => {
+    // Requirement: ORG-PROT-001 — 重载组织树时同步作废旧详情，避免树与详情属于不同数据时刻。
+    detailRequestSequence.current += 1
+    setDetail(null)
     setLoading(true)
     setError(null)
     try {
@@ -98,28 +140,48 @@ export function OrganizationWorkspace({ token, canAdmin }: OrganizationWorkspace
       )
     } catch (caught) {
       if (caught instanceof ApiClientError && caught.status === 403) setForbidden(true)
-      else setError(caught instanceof Error ? caught.message : "组织中心加载失败")
+      else setError(caught instanceof Error ? caught.message : "部门管理加载失败")
     } finally {
       setLoading(false)
     }
   }, [token])
 
   const loadDetail = useCallback(async () => {
+    // Requirement: ORG-PROT-001 — 快速切换组织或日期时，只允许最新详情请求更新当前操作对象。
+    const requestSequence = ++detailRequestSequence.current
     if (!selectedId) {
       setDetail(null)
+      setDetailLoading(false)
       return
     }
+    setDetail(null)
     setDetailLoading(true)
     setError(null)
     try {
-      setDetail(await organizationApi.organization(token, selectedId, effectiveAt))
+      const nextDetail = await organizationApi.organization(token, selectedId, effectiveAt)
+      if (requestSequence === detailRequestSequence.current) setDetail(nextDetail)
     } catch (caught) {
-      setDetail(null)
-      setError(caught instanceof Error ? caught.message : "组织详情加载失败")
+      if (requestSequence === detailRequestSequence.current) {
+        setDetail(null)
+        setError(caught instanceof Error ? caught.message : "组织详情加载失败")
+      }
     } finally {
-      setDetailLoading(false)
+      if (requestSequence === detailRequestSequence.current) setDetailLoading(false)
     }
   }, [effectiveAt, selectedId, token])
+
+  const selectOrganization = useCallback((organizationId: string) => {
+    // Requirement: ORG-PROT-001 — 用户操作发生时立即作废旧请求，不等待下一轮effect。
+    detailRequestSequence.current += 1
+    setDetail(null)
+    setSelectedId(organizationId)
+  }, [])
+
+  const changeEffectiveAt = useCallback((value: string) => {
+    detailRequestSequence.current += 1
+    setDetail(null)
+    setEffectiveAt(value)
+  }, [])
 
   useEffect(() => {
     void loadBase()
@@ -127,7 +189,7 @@ export function OrganizationWorkspace({ token, canAdmin }: OrganizationWorkspace
 
   useEffect(() => {
     void loadDetail()
-  }, [loadDetail])
+  }, [detailRefreshKey, loadDetail])
 
   async function saveOrganization(body: Record<string, unknown>): Promise<void> {
     setSaving(true)
@@ -136,15 +198,17 @@ export function OrganizationWorkspace({ token, canAdmin }: OrganizationWorkspace
       if (editorMode === "create") {
         const created = await organizationApi.createOrganization(token, body)
         await loadBase()
-        setSelectedId(created.id)
+        selectOrganization(created.id)
       } else if (editorMode === "version" && selectedId) {
         await organizationApi.scheduleVersion(token, selectedId, body)
-        await loadDetail()
+        setDetailRefreshKey((current) => current + 1)
       }
       setEditorMode(null)
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "组织保存失败")
-      if (caught instanceof ApiClientError && caught.status === 409) await loadDetail()
+      if (caught instanceof ApiClientError && caught.status === 409) {
+        setDetailRefreshKey((current) => current + 1)
+      }
     } finally {
       setSaving(false)
     }
@@ -157,46 +221,12 @@ export function OrganizationWorkspace({ token, canAdmin }: OrganizationWorkspace
       await organizationApi.cancelEvent(
         token,
         eventId,
-        command(detail.version, "取消未来组织变更"),
+        command(detailExpectedVersion, "取消未来组织变更"),
       )
-      await loadDetail()
+      // Requirement: ORG-PROT-001 — 异步操作完成后刷新用户当前所选组织，不重放操作发起时的旧详情请求。
+      setDetailRefreshKey((current) => current + 1)
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "取消失败")
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  function openTypeEditor(type?: OrganizationType): void {
-    typeForm.resetFields()
-    setEditingType(type ?? null)
-    typeForm.setFieldsValue(
-      type
-        ? {
-            code: type.code,
-            name: type.name,
-            sort_order: type.sort_order,
-            is_active: type.is_active,
-            change_reason: "维护组织类型",
-          }
-        : { sort_order: 0 },
-    )
-  }
-
-  async function saveType(values: Record<string, unknown>): Promise<void> {
-    setSaving(true)
-    try {
-      if (editingType) {
-        const { code: _code, ...body } = values
-        await organizationApi.updateType(token, editingType.id, body)
-      } else {
-        await organizationApi.createType(token, values)
-      }
-      setEditingType(null)
-      typeForm.resetFields()
-      await loadBase()
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "组织类型保存失败")
     } finally {
       setSaving(false)
     }
@@ -205,8 +235,8 @@ export function OrganizationWorkspace({ token, canAdmin }: OrganizationWorkspace
   if (forbidden) {
     return (
       <section aria-labelledby="organization-title">
-        <Typography.Title id="organization-title" level={2}>组织中心</Typography.Title>
-        <Alert type="error" showIcon message="无权查看组织中心" description="请联系主管理员分配组织查看权限。" />
+        <Typography.Title id="organization-title" level={2}>部门管理</Typography.Title>
+        <Alert type="error" showIcon message="无权查看部门管理" description="请联系主管理员分配组织查看权限。" />
       </section>
     )
   }
@@ -215,16 +245,18 @@ export function OrganizationWorkspace({ token, canAdmin }: OrganizationWorkspace
     <section aria-labelledby="organization-title" className="workspace-section">
       <div className="workspace-heading">
         <div>
-          <Typography.Title id="organization-title" level={2}>组织中心</Typography.Title>
+          <Typography.Title id="organization-title" level={2}>部门管理</Typography.Title>
           <Typography.Paragraph type="secondary">
-            左侧始终显示当前有效组织树。查看日期只影响右侧组织详情、关系和财务维度。
+            维护公司与部门；列表展示当前有效组织，组织树中的查看日期只影响详情、关系和财务维度。
           </Typography.Paragraph>
         </div>
         {canAdmin && (
           <Space wrap>
-            <Button onClick={() => setTypeDrawerOpen(true)}>组织类型</Button>
-            <Button onClick={() => setEditorMode("create")}>新建组织</Button>
-            <Button type="primary" disabled={!detail} onClick={() => setEditorMode("version")}>创建未来版本</Button>
+            <Button type="primary" onClick={() => setEditorMode("create")}>新建部门</Button>
+            <Button
+              disabled={activeView !== "tree" || detailLoading || !detail || detail.id !== selectedId}
+              onClick={() => setEditorMode("version")}
+            >添加变更</Button>
           </Space>
         )}
       </div>
@@ -232,71 +264,165 @@ export function OrganizationWorkspace({ token, canAdmin }: OrganizationWorkspace
       {loading ? (
         <Skeleton active paragraph={{ rows: 10 }} />
       ) : (
-        <div className="organization-layout">
-          <aside className="organization-tree-panel">
-            <div className="panel-heading">
-              <Typography.Title level={5}>当前有效组织树</Typography.Title>
-              <Tag>{organizationOptions.length} 个组织</Tag>
-            </div>
-            <OrganizationTree nodes={tree} selectedId={selectedId} onSelect={setSelectedId} />
-          </aside>
-          <div className="organization-detail-panel">
-            <div className="detail-toolbar">
-              <EffectiveDatePicker value={effectiveAt} onChange={setEffectiveAt} />
-              <Typography.Text type="secondary">树结构不随查看日期重绘</Typography.Text>
-            </div>
-            {detailLoading ? (
-              <Skeleton active paragraph={{ rows: 8 }} />
-            ) : !detail ? (
-              <Empty description={selectedId ? "该日期没有有效组织版本" : "请选择组织"} />
-            ) : (
-              <>
-                <div className="organization-title-row">
-                  <div>
-                    <Typography.Title level={3}>{detail.name}</Typography.Title>
-                    <Space><Typography.Text code>{detail.code}</Typography.Text><Tag>{detail.organization_type_name}</Tag></Space>
+        <Tabs
+          className="organization-view-tabs"
+          activeKey={activeView}
+          onChange={(key) => setActiveView(key as "list" | "tree")}
+          items={[
+            {
+              key: "list",
+              label: "列表",
+              children: (
+                <div className="organization-list-view">
+                  <div className="organization-list-filters" role="search" aria-label="部门筛选">
+                    <Input
+                      allowClear
+                      aria-label="搜索部门名称或编号"
+                      placeholder="搜索部门名称或编号"
+                      value={searchText}
+                      onChange={(event) => setSearchText(event.target.value)}
+                    />
+                    <Select
+                      allowClear
+                      aria-label="全部部门类型"
+                      placeholder="全部部门类型"
+                      options={typeFilterOptions}
+                      value={typeFilter}
+                      onChange={setTypeFilter}
+                    />
+                    <Button onClick={() => {
+                      setSearchText("")
+                      setTypeFilter(undefined)
+                    }}>重置</Button>
                   </div>
-                  <Tag color={detail.status === "active" ? "success" : "default"}>{detail.status === "active" ? "有效" : "停用"}</Tag>
-                </div>
-                <Descriptions bordered size="small" column={{ xs: 1, lg: 2 }}>
-                  <Descriptions.Item label="生效起始">{detail.effective_from}</Descriptions.Item>
-                  <Descriptions.Item label="生效结束">{detail.effective_to ?? "长期"}</Descriptions.Item>
-                  <Descriptions.Item label="直接上级编码">{detail.parent_organization_code ?? "无"}</Descriptions.Item>
-                  <Descriptions.Item label="国家或地区">{detail.country_code ?? "未设置"}</Descriptions.Item>
-                  <Descriptions.Item label="当前版本">{detail.version}</Descriptions.Item>
-                </Descriptions>
-                <div className="future-events">
-                  <Typography.Title level={4}>未来变更</Typography.Title>
-                  <List
-                    dataSource={[...detail.planned_events]}
-                    locale={{ emptyText: <Empty description="没有待生效组织变更" image={Empty.PRESENTED_IMAGE_SIMPLE} /> }}
-                    renderItem={(event) => (
-                      <List.Item
-                        actions={canAdmin ? [
-                          <Popconfirm key="cancel" title="确认取消这条未来变更？" onConfirm={() => void cancelEvent(event.id)}>
-                            <Button type="link" danger loading={saving}>取消</Button>
-                          </Popconfirm>,
-                        ] : undefined}
-                      >
-                        <List.Item.Meta
-                          title={`${event.effective_date} 生效`}
-                          description={`${event.change_reason}，状态：${event.status}`}
-                        />
-                      </List.Item>
-                    )}
+                  <Table<OrganizationOption>
+                    rowKey="id"
+                    dataSource={filteredOrganizations}
+                    locale={{ emptyText: <Empty description="没有符合条件的部门" image={Empty.PRESENTED_IMAGE_SIMPLE} /> }}
+                    pagination={{
+                      pageSize: 20,
+                      showSizeChanger: false,
+                      showTotal: (total) => `共 ${total} 个部门`,
+                    }}
+                    columns={[
+                      { title: "部门名称", dataIndex: "name", fixed: "left", width: 220 },
+                      { title: "编号", dataIndex: "code", width: 160 },
+                      {
+                        title: "部门类型",
+                        dataIndex: "organizationTypeCode",
+                        width: 140,
+                        render: (value) => typeNames.get(value) ?? value,
+                      },
+                      { title: "上级部门", dataIndex: "parentName", width: 220, render: (value) => value ?? "—" },
+                      {
+                        title: "状态",
+                        dataIndex: "status",
+                        width: 110,
+                        render: (value) => <Tag color={value === "active" ? "success" : "error"}>{value === "active" ? "启用" : "禁用"}</Tag>,
+                      },
+                      {
+                        title: "操作",
+                        key: "action",
+                        fixed: "right",
+                        width: 190,
+                        render: (_, item) => (
+                          <Space size={0}>
+                            {/* Requirement: ORG-PROT-002 — 列表查看在新标签页打开已确认的组织详情。 */}
+                            <Button
+                              type="link"
+                              onClick={() => window.open(
+                                organizationDetailUrl(item.id, effectiveAt),
+                                "_blank",
+                                "noopener,noreferrer",
+                              )}
+                            >查看</Button>
+                            <Button type="link" onClick={() => {
+                              selectOrganization(item.id)
+                              setActiveView("tree")
+                            }}>树中定位</Button>
+                          </Space>
+                        ),
+                      },
+                    ]}
                   />
                 </div>
-                <OrganizationRelationsTabs
-                  token={token}
-                  organizationId={detail.id}
-                  effectiveAt={effectiveAt}
-                  canAdmin={canAdmin}
-                  organizations={organizationOptions}
-                />
-              </>
-            )}
-          </div>
-        </div>
+              ),
+            },
+            {
+              key: "tree",
+              label: "组织架构树",
+              children: (
+                <div className="organization-layout">
+                  <aside className="organization-tree-panel">
+                    <div className="panel-heading">
+                      <Typography.Title level={5}>当前有效组织树</Typography.Title>
+                      <Tag>{organizationOptions.length} 个组织</Tag>
+                    </div>
+                    <OrganizationTree nodes={tree} selectedId={selectedId} onSelect={selectOrganization} />
+                  </aside>
+                  <div className="organization-detail-panel">
+                    <div className="detail-toolbar">
+                      <EffectiveDatePicker value={effectiveAt} onChange={changeEffectiveAt} />
+                      <Typography.Text type="secondary">树结构不随查看日期重绘</Typography.Text>
+                    </div>
+                    {detailLoading ? (
+                      <Skeleton active paragraph={{ rows: 8 }} />
+                    ) : !detail ? (
+                      <Empty description={selectedId ? "该日期没有有效组织版本" : "请选择组织"} />
+                    ) : (
+                      <>
+                        <div className="organization-title-row">
+                          <div>
+                            <Typography.Title level={3}>{detail.name}</Typography.Title>
+                            <Space><Typography.Text code>{detail.code}</Typography.Text><Tag>{detail.organization_type_name}</Tag></Space>
+                          </div>
+                          <Tag color={detail.status === "active" ? "success" : "default"}>{detail.status === "active" ? "有效" : "停用"}</Tag>
+                        </div>
+                        <Descriptions bordered size="small" column={{ xs: 1, lg: 2 }}>
+                          <Descriptions.Item label="生效起始">{detail.effective_from}</Descriptions.Item>
+                          <Descriptions.Item label="生效结束">{detail.effective_to ?? "长期"}</Descriptions.Item>
+                          <Descriptions.Item label="直接上级编码">{detail.parent_organization_code ?? "无"}</Descriptions.Item>
+                          <Descriptions.Item label="国家或地区">{detail.country_code ?? "未设置"}</Descriptions.Item>
+                          <Descriptions.Item label="当前版本">{detail.version}</Descriptions.Item>
+                        </Descriptions>
+                        <div className="future-events">
+                          <Typography.Title level={4}>未来变更</Typography.Title>
+                          {/* Requirement: D-068 — 使用语义列表替代Ant Design 6已废弃的List组件。 */}
+                          {detail.planned_events.length ? (
+                            <ul className="future-event-list">
+                              {detail.planned_events.map((event) => (
+                                <li key={event.id}>
+                                  <div>
+                                    <Typography.Text strong>{event.effective_date} 生效</Typography.Text>
+                                    <Typography.Text type="secondary">{event.change_reason}，状态：{event.status}</Typography.Text>
+                                  </div>
+                                  {canAdmin && event.expected_version + 1 === detailExpectedVersion && (
+                                    <Popconfirm title="确认取消这条未来变更？" onConfirm={() => void cancelEvent(event.id)}>
+                                      <Button type="link" danger loading={saving}>取消</Button>
+                                    </Popconfirm>
+                                  )}
+                                </li>
+                              ))}
+                            </ul>
+                          ) : (
+                            <Empty description="没有待生效组织变更" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+                          )}
+                        </div>
+                        <OrganizationRelationsTabs
+                          token={token}
+                          organizationId={detail.id}
+                          effectiveAt={effectiveAt}
+                          canAdmin={canAdmin}
+                          organizations={organizationOptions}
+                        />
+                      </>
+                    )}
+                  </div>
+                </div>
+              ),
+            },
+          ]}
+        />
       )}
 
       <OrganizationVersionDrawer
@@ -306,41 +432,10 @@ export function OrganizationWorkspace({ token, canAdmin }: OrganizationWorkspace
         types={types}
         organizations={organizationOptions}
         saving={saving}
+        expectedVersion={detailExpectedVersion}
         onClose={() => setEditorMode(null)}
         onSave={saveOrganization}
       />
-
-      <Drawer
-        title="组织类型"
-        size="large"
-        open={typeDrawerOpen}
-        onClose={() => setTypeDrawerOpen(false)}
-      >
-        <div className="detail-toolbar">
-          <Typography.Paragraph type="secondary">预置集团、BG、BU、部门，也可增加企业自定义类型。</Typography.Paragraph>
-          <Button type="primary" onClick={() => openTypeEditor()}>新建类型</Button>
-        </div>
-        <List
-          dataSource={[...types]}
-          renderItem={(type) => (
-            <List.Item actions={[<Button key="edit" type="link" onClick={() => openTypeEditor(type)}>编辑</Button>]}>
-              <List.Item.Meta title={`${type.name} (${type.code})`} description={`排序 ${type.sort_order}，${type.is_active ? "有效" : "已停用"}`} />
-            </List.Item>
-          )}
-        />
-        <Form form={typeForm} layout="vertical" requiredMark={false} onFinish={(values) => void saveType(values)}>
-          <Form.Item label="类型代码" name="code" rules={[{ required: true }]}><Input disabled={Boolean(editingType)} /></Form.Item>
-          <Form.Item label="类型名称" name="name" rules={[{ required: true }]}><Input /></Form.Item>
-          <Form.Item label="排序号" name="sort_order"><InputNumber min={0} precision={0} /></Form.Item>
-          {editingType && (
-            <>
-              <Form.Item label="状态" name="is_active"><Select options={[{ label: "有效", value: true }, { label: "停用", value: false }]} /></Form.Item>
-              <Form.Item label="变更原因" name="change_reason" rules={[{ required: true }]}><Input /></Form.Item>
-            </>
-          )}
-          <Button type="primary" htmlType="submit" loading={saving}>{editingType ? "保存修改" : "创建类型"}</Button>
-        </Form>
-      </Drawer>
     </section>
   )
 }

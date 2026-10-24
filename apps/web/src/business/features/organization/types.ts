@@ -137,6 +137,8 @@ export interface DirectoryOption {
 export interface PageResponse<T> {
   readonly items: readonly T[]
   readonly total: number
+  readonly limit?: number
+  readonly offset?: number
 }
 
 

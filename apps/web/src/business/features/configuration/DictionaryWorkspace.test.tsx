@@ -85,6 +85,6 @@ describe("DictionaryWorkspace", () => {
 
     render(<DictionaryWorkspace token="restricted-token" canAdmin={false} />)
 
-    expect(await screen.findByText("无权查看配置中心")).toBeInTheDocument()
+    expect(await screen.findByText("无权查看基础资料")).toBeInTheDocument()
   })
 })

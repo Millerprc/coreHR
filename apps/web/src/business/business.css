@@ -3,14 +3,14 @@
   background: #f4f6f8;
   font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
   font-synthesis: none;
-  --corehr-accent: #176b87;
-  --corehr-accent-strong: #0f536a;
-  --corehr-navy: #132a36;
-  --corehr-border: #dce3e8;
-  --corehr-muted: #60717e;
+  --corehr-accent: #1677ff;
+  --corehr-accent-strong: #0958d9;
+  --corehr-navy: #101828;
+  --corehr-border: #e5e7eb;
+  --corehr-muted: #667085;
   --corehr-surface: #ffffff;
-  --corehr-soft: #eef3f5;
-  --corehr-radius: 10px;
+  --corehr-soft: #f5f7fa;
+  --corehr-radius: 8px;
 }
 
 * { box-sizing: border-box; }
@@ -47,22 +47,70 @@ button, input, textarea, select { font: inherit; }
 
 .business-shell { min-height: 100dvh; }
 .business-shell > .ant-layout-sider { background: var(--corehr-navy); }
-.business-brand { height: 72px; display: flex; align-items: center; gap: 12px; padding: 0 22px; color: #fff; font-size: 18px; }
+.business-brand { height: 64px; display: flex; align-items: center; gap: 12px; padding: 0 20px; color: #fff; font-size: 18px; }
 .business-brand span { width: 34px; height: 34px; border-radius: 8px; }
 .business-header {
-  min-height: 76px;
+  min-height: 64px;
   height: auto;
-  padding: 12px 28px;
+  padding: 10px 24px;
   background: var(--corehr-surface);
   display: flex;
   align-items: center;
   justify-content: space-between;
   border-bottom: 1px solid var(--corehr-border);
 }
-.business-header h4 { margin: 0 !important; }
+.business-breadcrumb { display: flex; align-items: center; gap: 8px; }
+.business-breadcrumb-group { color: #667085; }
 .user-summary { display: grid; text-align: right; line-height: 1.35; }
-.business-content { padding: 24px; overflow: auto; }
+.business-content { padding: 24px; overflow: auto; background: #f5f7fa; }
 .workspace-section { width: min(1560px, 100%); margin: 0 auto; }
+
+/* Requirement: ORG-PROT-001 — 部门管理宿主页使用列表/树双视图和统一筛选条。 */
+.organization-view-tabs > .ant-tabs-nav { margin: 0; padding: 0 18px; background: var(--corehr-surface); }
+.organization-list-view { margin-top: 16px; background: var(--corehr-surface); }
+.organization-list-filters {
+  display: grid;
+  grid-template-columns: minmax(260px, 1.5fr) minmax(180px, 0.8fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 16px;
+  border-bottom: 1px solid var(--corehr-border);
+}
+.organization-list-filters .ant-input-affix-wrapper,
+.organization-list-filters .ant-select { width: 100%; }
+
+/* Requirement: ORG-PROT-002 — 已确认的组织详情在独立标签页使用信息主区、日期条和变更记录页签。 */
+.organization-detail-page { width: min(1320px, 100%); margin: 0 auto; }
+.organization-detail-hero {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 8px 0 18px;
+}
+.organization-detail-hero h2 { margin: 0 !important; }
+.organization-detail-summary { margin-top: 12px; }
+.organization-detail-page > .ant-tabs > .ant-tabs-nav {
+  margin-bottom: 16px;
+  padding: 0 2px;
+  background: var(--corehr-surface);
+}
+.organization-detail-datebar {
+  width: fit-content;
+  margin-bottom: 16px;
+  padding: 10px 12px;
+  border: 1px solid var(--corehr-border);
+  border-radius: var(--corehr-radius);
+  background: var(--corehr-surface);
+}
+.organization-detail-card {
+  padding: 28px 30px;
+  border: 1px solid var(--corehr-border);
+  border-radius: var(--corehr-radius);
+  background: var(--corehr-surface);
+}
+.organization-detail-card h4 { margin: 0 0 22px !important; }
+.organization-detail-card .ant-descriptions-item-label { min-width: 112px; color: var(--corehr-muted); }
 
 .lifecycle-tabs { margin-top: 18px; }
 .lifecycle-panel-stack { display: grid; gap: 18px; }
@@ -149,6 +197,16 @@ button, input, textarea, select { font: inherit; }
 .effective-date-picker { min-width: 180px; }
 .organization-title-row { padding: 18px 0 16px; border-top: 1px solid var(--corehr-border); }
 .future-events { margin: 28px 0 8px; }
+.future-event-list { list-style: none; margin: 0; padding: 0; }
+.future-event-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--corehr-border);
+}
+.future-event-list li > div { display: grid; gap: 4px; }
 
 .relation-panel { display: grid; gap: 16px; padding: 8px 2px 18px; }
 .relation-panel > label, .relation-grid > label, .relation-controls > label { display: grid; gap: 6px; }
@@ -169,11 +227,14 @@ button, input, textarea, select { font: inherit; }
   .business-header > div:first-child { display: none; }
   .business-content { padding: 14px; }
   .workspace-heading, .detail-toolbar, .organization-title-row { align-items: flex-start; flex-direction: column; }
+  .organization-detail-hero { flex-direction: column; }
+  .organization-detail-card { padding: 20px 18px; }
   .workspace-entry-grid, .filter-grid, .dictionary-layout, .organization-layout, .relation-grid, .relation-controls, .relation-grid-three { grid-template-columns: 1fr; }
   .dictionary-list, .organization-tree-panel { border-right: 0; border-bottom: 1px solid var(--corehr-border); max-height: 340px; }
   .dictionary-detail, .organization-detail-panel { padding: 16px; }
   .metric-strip .ant-col { border-right: 0; }
   .user-summary { display: none; }
+  .organization-list-filters { grid-template-columns: 1fr; }
 }
 
 @media (prefers-reduced-motion: reduce) {

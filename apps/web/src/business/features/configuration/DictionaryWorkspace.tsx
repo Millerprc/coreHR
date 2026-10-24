@@ -288,8 +288,8 @@ export function DictionaryWorkspace({ token, canAdmin }: DictionaryWorkspaceProp
   if (forbidden) {
     return (
       <section aria-labelledby="configuration-title">
-        <Typography.Title id="configuration-title" level={2}>配置中心</Typography.Title>
-        <Alert type="error" showIcon message="无权查看配置中心" description="请联系主管理员分配配置查看权限。" />
+        <Typography.Title id="configuration-title" level={2}>基础资料</Typography.Title>
+        <Alert type="error" showIcon message="无权查看基础资料" description="请联系主管理员分配基础资料查看权限。" />
       </section>
     )
   }
@@ -298,7 +298,8 @@ export function DictionaryWorkspace({ token, canAdmin }: DictionaryWorkspaceProp
     <section aria-labelledby="configuration-title" className="workspace-section">
       <div className="workspace-heading">
         <div>
-          <Typography.Title id="configuration-title" level={2}>配置中心</Typography.Title>
+          {/* Requirement: ORG-PROT-001 — 配置工作区在组织管理中统一显示为“基础资料”。 */}
+          <Typography.Title id="configuration-title" level={2}>基础资料</Typography.Title>
           <Typography.Paragraph type="secondary">
             维护稳定业务代码、层级关系和启停状态。历史业务记录不会因显示名称变化而改写。
           </Typography.Paragraph>

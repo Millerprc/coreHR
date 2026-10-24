@@ -11,9 +11,11 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
       locale={zhCN}
       theme={{
         token: {
-          colorPrimary: "#1769aa",
-          borderRadius: 10,
-          colorBgLayout: "#f3f6fa",
+          // Requirement: ORG-PROT-001 — 已批准框架页使用Ant Design主蓝与紧凑圆角Token。
+          colorPrimary: "#1677ff",
+          borderRadius: 6,
+          colorBgLayout: "#f5f7fa",
+          fontFamily: '"Noto Sans SC", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif',
         },
       }}
     >

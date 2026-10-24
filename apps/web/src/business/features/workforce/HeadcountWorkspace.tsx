@@ -86,7 +86,7 @@ export function HeadcountWorkspace({ token, canAdmin }: HeadcountWorkspaceProps)
       setRules(rulePage.items)
       setFreezes(freezePage.items)
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "人力与编制加载失败")
+      setError(caught instanceof Error ? caught.message : "编制管理加载失败")
     } finally {
       setLoading(false)
     }
@@ -142,7 +142,7 @@ export function HeadcountWorkspace({ token, canAdmin }: HeadcountWorkspaceProps)
       form.resetFields()
       await load()
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "人力与编制保存失败")
+      setError(caught instanceof Error ? caught.message : "编制管理保存失败")
     } finally {
       setSaving(false)
     }
@@ -181,7 +181,8 @@ export function HeadcountWorkspace({ token, canAdmin }: HeadcountWorkspaceProps)
     <section className="workspace-section" aria-labelledby="headcount-title">
       <div className="workspace-heading">
         <div>
-          <Typography.Title id="headcount-title" level={2}>人力与编制</Typography.Title>
+          {/* Requirement: ORG-PROT-001 — 编制工作区在组织管理中统一显示为“编制管理”。 */}
+          <Typography.Title id="headcount-title" level={2}>编制管理</Typography.Title>
           <Typography.Paragraph type="secondary">编制仅呈现结果，不预占或阻断招聘；月均人数为（月初＋月末）÷2。</Typography.Paragraph>
         </div>
         {canAdmin && <Button type="primary" onClick={() => openAction("plan")}>维护编制</Button>}

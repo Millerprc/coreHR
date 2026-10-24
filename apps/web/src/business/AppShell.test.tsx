@@ -53,7 +53,7 @@ describe("AppShell navigation", () => {
     )
   })
 
-  it("opens the organization workspace from the administrator menu", async () => {
+  it("opens department management from the organization management group", async () => {
     render(
       <AppShell
         token="synthetic-token"
@@ -62,15 +62,17 @@ describe("AppShell navigation", () => {
       />,
     )
 
-    fireEvent.click(screen.getByRole("menuitem", { name: "组织中心" }))
+    expect(screen.getByRole("menuitem", { name: "组织管理" })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole("menuitem", { name: "部门管理" }))
 
     expect(
-      await screen.findByRole("heading", { name: "组织中心" }),
+      await screen.findByRole("heading", { name: "部门管理" }),
     ).toBeInTheDocument()
+    expect(screen.getByText("组织管理", { selector: ".business-breadcrumb-group" })).toBeInTheDocument()
     expect(window.location.hash).toBe("#organization")
   })
 
-  it("opens the configuration workspace and keeps location in the hash", async () => {
+  it("opens basic data from the organization management group and keeps location in the hash", async () => {
     render(
       <AppShell
         token="synthetic-token"
@@ -79,10 +81,10 @@ describe("AppShell navigation", () => {
       />,
     )
 
-    fireEvent.click(screen.getByRole("menuitem", { name: "配置中心" }))
+    fireEvent.click(screen.getByRole("menuitem", { name: "基础资料" }))
 
     expect(
-      await screen.findByRole("heading", { name: "配置中心" }),
+      await screen.findByRole("heading", { name: "基础资料" }),
     ).toBeInTheDocument()
     expect(window.location.hash).toBe("#configuration")
   })

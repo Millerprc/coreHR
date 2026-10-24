@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react"
+import { fireEvent, render, screen, within } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
 import { LifecycleWorkspace } from "./LifecycleWorkspace"
@@ -67,11 +67,14 @@ describe("LifecycleWorkspace", () => {
     render(<LifecycleWorkspace token="synthetic-token" canAdmin />)
 
     expect(await screen.findByText("E0000000001")).toBeInTheDocument()
-    expect(screen.getByRole("button", { name: "发起审批" })).toBeInTheDocument()
+    // Requirement: CHECKPOINT-001 — 在目标行内验证操作，避免遍历整页隐藏页签的样式导致测试超时。
+    const eventRow = screen.getByText("E0000000001").closest("tr")!
+    expect(within(eventRow).getByRole("button", { name: "发起审批" })).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole("tab", { name: "流程与待办" }))
     expect(await screen.findByText("TRANSFER_APPROVAL")).toBeInTheDocument()
-    expect(screen.getByRole("button", { name: /通\s*过/ })).toBeInTheDocument()
+    const taskRow = screen.getByText("或签").closest("tr")!
+    expect(within(taskRow).getByRole("button", { name: /通\s*过/ })).toBeInTheDocument()
     expect(screen.getByText("或签")).toBeInTheDocument()
   }, 15_000)
 })
