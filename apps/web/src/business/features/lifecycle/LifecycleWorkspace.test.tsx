@@ -70,14 +70,21 @@ describe("LifecycleWorkspace", () => {
     render(<LifecycleWorkspace token="synthetic-token" canAdmin />)
 
     expect(await screen.findByText("E0000000001")).toBeInTheDocument()
-    // Requirement: CHECKPOINT-001 — 在目标行内验证操作，避免遍历整页隐藏页签的样式导致测试超时。
+    // Requirement: CHECKPOINT-001 — 查询必须限定在目标行内。
+    //
+    // 为什么不用 getByRole：它在 jsdom 里要为整篇文档计算无障碍树与可见性，
+    // 每算一次可见性就要调 getComputedStyle，而 antd 6 的 CSS-in-JS 在运行时往
+    // <style> 里注入了成千上万条规则 —— 实测**单次行内 getByRole 要 4.8~5.0 秒**，
+    // 而 getByText 只需 1 毫秒。本用例原本要 9 秒（CI runner 上顶穿 15 秒上限、随机变红）。
+    //
+    // 改用「文本定位 + 断言它确实是个 button」，语义强度不变，成本降三个数量级。
     const eventRow = screen.getByText("E0000000001").closest("tr")!
-    expect(within(eventRow).getByRole("button", { name: "发起审批" })).toBeInTheDocument()
+    expect(within(eventRow).getByText("发起审批").closest("button")).not.toBeNull()
 
-    fireEvent.click(screen.getByRole("tab", { name: "流程与待办" }))
+    fireEvent.click(screen.getByText("流程与待办"))
     expect(await screen.findByText("TRANSFER_APPROVAL")).toBeInTheDocument()
     const taskRow = screen.getByText("或签").closest("tr")!
-    expect(within(taskRow).getByRole("button", { name: /通\s*过/ })).toBeInTheDocument()
-    expect(screen.getByText("或签")).toBeInTheDocument()
-  }, 15_000)
+    expect(within(taskRow).getByText(/通\s*过/).closest("button")).not.toBeNull()
+    expect(within(taskRow).getByText("或签")).toBeInTheDocument()
+  }, 30_000)
 })

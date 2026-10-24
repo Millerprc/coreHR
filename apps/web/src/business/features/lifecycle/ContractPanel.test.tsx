@@ -127,5 +127,5 @@ describe("ContractPanel", () => {
       reason: "Synthetic amendment",
       amendment: { effective_to: "2026-12-31" },
     })
-  }, 15_000)
+  }, 45_000)
 })

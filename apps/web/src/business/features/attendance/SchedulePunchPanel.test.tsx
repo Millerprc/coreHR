@@ -95,5 +95,5 @@ describe("SchedulePunchPanel", () => {
     expect(dialog).toHaveTextContent("该账期已冻结")
     // 弹窗不能被关掉 —— 用户要看到原因才能决定下一步
     expect(screen.getByRole("dialog")).toBeInTheDocument()
-  }, 15_000)
+  }, 45_000)
 })

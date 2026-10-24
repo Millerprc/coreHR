@@ -144,5 +144,5 @@ describe("ScheduleManagementPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: "批准" }))
     await waitFor(() => expect(decided).toHaveLength(1))
     expect(decided[0]).toContain("/schedule-swaps/swap-1")
-  }, 15_000)
+  }, 45_000)
 })

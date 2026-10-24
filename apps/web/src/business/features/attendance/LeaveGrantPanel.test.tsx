@@ -108,5 +108,5 @@ describe("LeaveGrantPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: "发放" }))
     await waitFor(() => expect(issued).toHaveLength(1))
     expect(issued[0]).toContain("/leave-grant-batches/batch-1/issue")
-  }, 15_000)
+  }, 45_000)
 })

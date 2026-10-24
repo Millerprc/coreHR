@@ -120,7 +120,7 @@ describe("ReportPanel", () => {
     // 日报只带工作日期，不带账期。
     expect(typeof stub.submitted[0].work_date).toBe("string")
     expect("period_month" in stub.submitted[0]).toBe(false)
-  }, 15_000)
+  }, 45_000)
 
   it("切到指定人员并选中人员后按选中人员提交", async () => {
     const stub: FetchStub = { submitted: [], dailyFetches: [], taskFetches: [] }
@@ -141,7 +141,7 @@ describe("ReportPanel", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: /计\s*算/ }))
     await waitFor(() => expect(stub.submitted).toHaveLength(1))
     expect(stub.submitted[0]).toMatchObject({ kind: "daily", scope: "selected", employment_ids: ["employment-1"] })
-  }, 15_000)
+  }, 45_000)
 
   it("提交后轮询到成功并刷新结果表", async () => {
     const stub: FetchStub = { submitted: [], dailyFetches: [], taskFetches: [] }
@@ -164,5 +164,5 @@ describe("ReportPanel", () => {
     const taskFetchesAfterDone = stub.taskFetches.length
     await new Promise((resolve) => setTimeout(resolve, 2500))
     expect(stub.taskFetches.length).toBe(taskFetchesAfterDone)
-  }, 20_000)
+  }, 45_000)
 })

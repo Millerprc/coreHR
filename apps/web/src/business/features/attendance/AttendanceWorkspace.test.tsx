@@ -114,5 +114,5 @@ describe("AttendanceWorkspace", () => {
     expect(await screen.findByText("8.00 天")).toBeInTheDocument()
     expect(screen.getAllByText("年假").length).toBeGreaterThan(0)
     expect(screen.getByRole("button", { name: "调整额度" })).toBeInTheDocument()
-  }, 15_000)
+  }, 45_000)
 })

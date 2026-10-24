@@ -112,5 +112,5 @@ describe("ApplicationPanel", () => {
       reason: "Synthetic accepted offer",
     })
     expect(body.idempotency_key).toMatch(/^[0-9a-f-]{36}$/)
-  }, 15_000)
+  }, 45_000)
 })
