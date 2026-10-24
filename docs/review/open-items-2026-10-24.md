@@ -350,7 +350,7 @@
 |---|---|---|
 | **F1** | ~~**替换内置占位公钥**~~ **✅ 本轮已完成** | `apps/api/src/hris/core/licensing/keys.py` 的 `BUILTIN_PUBLIC_KEYS["k1"]` 已从**占位公钥**（私钥已丢弃，任何 Token 都验签不过）替换为**正式签发公钥**。公钥进仓库、私钥永不进仓库的口径不变；轮换机制（kid 并存、`COREHR_LICENSE_PUBLIC_KEYS` 与内置表合并）也不变。**无需你再操作。** |
 | **F2** | **生成并保管 Ed25519 签发私钥** **🟡 密钥已生成，转移与轮换待你做** | 私钥已在本机生成（`C:\Users\83289\.corehr\signing\ed25519.pem`，PKCS8 PEM，ACL 收紧到当前用户 + SYSTEM），公钥已写入内置表。**你还需要做的两件事**：① 把私钥复制到**离线介质**（U 盘 / 离线密码库 / 离线备份）并**从本机删除** —— 开发机不应长期持有签发私钥（见 D6）；② 之后做一次**轮换**（新增 `k2` 与 `k1` 并存，等旧 Token 过期再摘 `k1`）。签发工具在 `C:\Users\83289\.corehr\tools\issue-license.ps1`（**刻意放在仓库外**，确保不随公开仓分发），用法见该目录下的 `README` 与 `--help`。⚠️ 生成私钥**不要**用 PowerShell 的 `RandomNumberGenerator.Fill`（PS 5.1 会静默产生全零弱密钥）—— 本轮用 Python `cryptography` 生成，已避开该坑。 |
-| **F3** | **GitHub 侧仓库操作** | 现仓 `Millerprc/coreHR` 仍为**公开**。Wave 3a 要做：现仓转私有 → 新建干净的公开仓（计划建议名 `coreHR-community`，**现名 `coreHR` 已被占用**）→ 统一本地 remote。**这属于账户级变更，必须你亲自操作**（也见 A24 / D4）。 |
+| **F3** | **GitHub 侧仓库操作** **🟡 2026-10-24 晚：产品决策人拍板「沿用现有仓，不新建」** | 现仓 `Millerprc/coreHR` 保持**公开**，代码**已直接推送到它的 `main`**（2026-10-24 21:22，HEAD `aa5541f`，12 个提交，565 个受版本控制的文件，本地 remote URL 已从 `HRIS.git` 统一为 `coreHR.git`）。**Wave 3a 计划的「转私有 → 新建干净的公开仓」按产品决策人的意思取消**：不新建仓、不改可见性，Open Core 的「公开仓只放开源部分」这一步暂缓执行。**仍然只剩账户级动作**：仓库描述、topics、以及是否补一份 `CONTRIBUTING` 链接的说明（仓库文件已含 `CONTRIBUTING.md`）。 |
 | **F4** | **仓库描述与 topics** | GitHub 侧设置：说明这是 Open Core 项目、指向 LICENSE 与商业授权渠道。 |
 
 ### F 组 2 · 工程残留（已登记，未做）
