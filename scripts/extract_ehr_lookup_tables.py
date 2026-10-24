@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+
+# Copyright (c) 2026 coreHR 项目贡献者
+# 许可证：coreHR Sustainable Use License v1.0（见仓库根目录 LICENSE）。本文件不是 OSI 开源。
+
 """Extract approved lookup tables from a large MySQL dump without loading PII.
 
 Only ``country``, ``ehr_dict`` and ``ehr_dict_element`` DDL/INSERT statements

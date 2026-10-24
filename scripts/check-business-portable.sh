@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+
+# Copyright (c) 2026 coreHR 项目贡献者
+# 许可证：coreHR Sustainable Use License v1.0（见仓库根目录 LICENSE）。本文件不是 OSI 开源。
+
 set -euo pipefail
 
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -23,6 +27,28 @@ cleanup() {
 trap cleanup EXIT
 
 docker compose -f "${base_compose}" build api web
+
+# 许可证声明守卫：公开仓里每一份源文件都必须带版权与许可证指向（Requirement: D-108）。
+# 在容器里跑是因为它需要遍历整个仓库（apps/** 与 scripts/**），而不是只有 apps/web。
+docker run --rm \
+  -v "${project_root}:/repo" \
+  -w /repo \
+  corehr-web \
+  node scripts/check-license-header.mjs
+
+# 私有实现防误发守卫（Requirement: D-108）：在公开仓分发前抓到 packages/ 误入版本控制。
+# 这一条在**宿主机**跑 —— 守卫要读 git 的已跟踪文件清单，而镜像里没有 git。
+# 前提：宿主机装了 node 与 git。
+if ! command -v node >/dev/null 2>&1; then
+  echo "Private package isolation guard requires Node.js on the host." >&2
+  exit 1
+fi
+if ! command -v git >/dev/null 2>&1; then
+  echo "Private package isolation guard requires git on the host." >&2
+  exit 1
+fi
+node "${project_root}/scripts/check-private-package-isolation.mjs"
+
 docker compose -f "${base_compose}" up -d --wait db redis
 
 docker compose -f "${base_compose}" exec -T db \

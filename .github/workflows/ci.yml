@@ -1,0 +1,148 @@
+# Copyright (c) 2026 coreHR 项目贡献者
+# 许可证：coreHR Sustainable Use License v1.0（见仓库根目录 LICENSE）。本文件不是 OSI 开源。
+
+# coreHR 最小 CI 护栏。
+#
+# 定位：不是「什么都要跑」，而是**守住三条一旦破掉就难以挽回的线**：
+#   1. 迁移链不能漂移、不能分叉（数据库是生产事实，drift 会在部署时才炸）；
+#   2. 公开仓里不能出现私有实现（一旦进历史，商业保护就不可逆地失效）；
+#   3. 源码必须带版权与许可证声明（法律凭据，漏一个文件就等于没声明）。
+#
+# 取舍说明：
+# - **私有实现不参与 CI**。`packages/` 被 `.gitignore` 排除，checkout 里根本不存在；
+#   CI 因此天然跑在「公开仓模式」下 —— 这正是对外分发时的真实形态。
+# - 本地全量验证仍是 `scripts/check-business-portable.sh`（用 docker 跑，贴近部署形态）；
+#   CI 用 runner 直跑，代价是换掉了容器环境，换来的是快与简单。
+# - 后端用例依赖 Postgres 服务；不依赖 Redis（授权缓存的 Redis 失败路径是「回落而非报错」，
+#   属于被测行为之一，不该被外部服务遮蔽）。
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: 后端（迁移漂移 + 用例）
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: corehr
+          POSTGRES_PASSWORD: corehr_dev_only
+          POSTGRES_DB: corehr_ci_test
+        ports:
+          - "5432:5432"
+        options: >-
+          --health-cmd "pg_isready -U corehr -d corehr_ci_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # 库名必须含 test —— 测试夹具的硬契约，否则会拒绝而不是静默跑错库。
+      DATABASE_URL: postgresql+psycopg://corehr:corehr_dev_only@localhost:5432/corehr_ci_test
+      TEST_DATABASE_URL: postgresql+psycopg://corehr:corehr_dev_only@localhost:5432/corehr_ci_test
+      PYTHONPATH: src
+    defaults:
+      run:
+        working-directory: apps/api
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: apps/api/requirements.lock
+
+      - name: 安装依赖
+        run: pip install -r requirements.lock
+
+      - name: 迁移链必须是单链单头
+        run: |
+          set -euo pipefail
+          heads="$(alembic -c alembic-business.ini heads)"
+          echo "${heads}"
+          count="$(printf '%s\n' "${heads}" | grep -c . || true)"
+          if [ "${count}" -ne 1 ]; then
+            echo "::error::迁移链出现 ${count} 个 head（必须单链单头）：${heads}"
+            exit 1
+          fi
+
+      - name: 迁移升级
+        run: alembic -c alembic-business.ini upgrade head
+
+      - name: 迁移漂移检查（模型与迁移必须一致）
+        run: alembic -c alembic-business.ini check
+
+      - name: 编译检查
+        run: python -m compileall -q src
+
+      - name: 用例
+        run: python -m pytest -q -p no:cacheprovider
+
+  frontend:
+    name: 前端（类型 + 用例 + 构建）
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 类型检查
+        run: npx tsc -b
+
+      - name: 用例
+        run: npm run test:run
+
+      - name: 业务端构建
+        run: npx vite build --config vite.business.config.ts
+
+  guards:
+    name: 仓库守卫（版权头 / AntD / 私有实现隔离）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: 版权与许可证声明守卫
+        run: node scripts/check-license-header.mjs
+
+      - name: Ant Design 规范守卫
+        working-directory: apps/web
+        run: node scripts/check-antd-usage.mjs
+
+      - name: 私有实现防误发守卫
+        run: node scripts/check-private-package-isolation.mjs
+
+      - name: 检出后的工作区不得含私有实现目录
+        run: |
+          if [ -d packages ]; then
+            echo "::error::检出后的工作区出现了 packages/（私有实现目录）。公开仓的检出结果必须完全不含商业实现。"
+            exit 1
+          fi
+          echo "工作区不含 packages/ —— 符合预期。"
