@@ -7,6 +7,15 @@
 *.p12
 secrets/
 
+# Licensing artifacts (License Token, offline signing keys)
+*.lic
+*.license.json
+signing/
+
+# Private commercial implementation (Open Core) — 永不进版本控制、绝不随公开仓分发。
+# 私有实现只存在于本地工作区与离线备份里；它由 scripts/check-private-package-isolation.mjs 守卫。
+packages/
+
 # Python
 __pycache__/
 *.py[cod]

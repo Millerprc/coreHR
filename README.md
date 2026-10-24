@@ -26,6 +26,40 @@
 - 尚未完成一万人同时打卡、查询考勤或薪酬的容量验证。
 - MySQL、Oracle、多租户和应用服务器中间件兼容性延后到第五阶段评估。
 
+## 授权与商业使用
+
+> **本软件不是 OSI 认可的开源软件。** coreHR 采用自研的
+> [coreHR Sustainable Use License v1.0](./LICENSE)（源码可见，Source Available），
+> 不是 MIT / Apache-2.0 等 OSI 开源许可证。第三方组件各自适用其原始许可证，
+> 清单与协议兼容性结论见 [NOTICE](./NOTICE)。
+
+### 社区版能做什么
+
+- **全部功能可浏览、读路径完全开放**：数据模型、API 契约、界面、迁移链与文档都在本仓库里，
+  可自由查看、阅读、学习，并为非商业目的修改。
+- **写操作被禁用**：未授权时系统以**只读演示模式**运行——读得到的都是真实数据，
+  但一切写操作会被拒绝并给出明确的授权指引。系统不会伪造业务数据，
+  也不会返回推算得出的业务结果。
+- 考勤、流程引擎、生命周期、数据治理导入引擎这四个模块的**写能力**需要商业授权；
+  Workforce Core 与绩效模块默认属于免费层。
+
+### 商业版解锁什么
+
+- 按**模块授权**解锁上述模块的写能力（License Token 的 `entitlements` 逐模块授予
+  read / write），授权范围外的模块读取能力仍然开放。
+- 取得授权后可按商业许可协议获得**私有层**的模块级实现（考勤规则求解、流程状态机与选路、
+  生命周期生效计算、治理导入校验等）。
+- 授权以 **Ed25519 离线签名**的 License Token 授予，验证过程**不需要联网**，
+  私有化离线部署不受影响。
+
+### 如何申请
+
+- 商业授权、签发流程与部署步骤见仓库根目录的 [LICENSE](./LICENSE) 第 11 节
+  与 [Open Core 开源发布与模块级授权实施计划](./docs/implementation/open-core-licensing-plan.md)。
+- 提交贡献前请先阅读 [CONTRIBUTING.md](./CONTRIBUTING.md)。
+- 源码版权头由 `node scripts/check-license-header.mjs` 守卫；批量补头用
+  `node scripts/apply-license-header.mjs`。
+
 ## 技术栈
 
 - PostgreSQL 16
