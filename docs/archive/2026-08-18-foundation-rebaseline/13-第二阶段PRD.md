@@ -1,12 +1,14 @@
 # HRIS 第二阶段产品需求文档
 
-> 状态：`PARTIAL / ENTERPRISE_INPUT_PENDING`
+> 状态：`ARCHIVED / HISTORICAL_INPUT / ENTERPRISE_INPUT_PENDING`
 >
 > 版本：v0.1-draft
 >
 > 日期：2026-08-13
 >
 > 当前读者：用户、产品分析、业务验收和后续开发任务拆解者
+
+> 归档说明：页面和UAT旅程可作为Workflow、Recruitment、Contract和Workforce功能迁移输入，但不得单独批准开发。
 
 ## 1. 产品目标
 
@@ -273,4 +275,4 @@ offer → 显式录用转换 → hired
 - 企业异常、撤回、超时、回退和下游同步场景通过。
 - 第二阶段Review签字完成。
 
-当前输入只处理入职流程，详见[第二阶段需求规格第13节](./12-第二阶段需求规格.md)和[企业输入包06](../input-packs/06-hr-workflow-input.md)。
+当前输入只处理入职流程，详见[第二阶段需求规格第13节](../../01-foundation/12-第二阶段需求规格.md)和[企业输入包06](../../input-packs/06-hr-workflow-input.md)。
