@@ -22,6 +22,7 @@ from hris.modules.platform.dependencies import ensure_permissions, require_permi
 from hris.modules.platform.import_models import ImportBatch
 from hris.modules.platform.models import UserAccount
 from hris.modules.platform.task_handlers import IMPORT_BATCH_EXECUTE
+from hris.modules.platform.task_models import BackgroundTask
 from hris.modules.platform.task_queue import TaskQueue
 from hris.modules.platform.task_schemas import BackgroundTaskSummaryResponse
 
@@ -40,14 +41,45 @@ EXECUTABLE_BATCH_STATUSES = frozenset({"validated", "validated_with_errors"})
 class ImportBatchSubmit(BaseModel):
     """异步执行导入批次的请求体。
 
-    ``idempotency_key`` 命中既有任务时返回**同一条任务**（幂等），
+    ``idempotency_key`` 命中**同一次提交**时返回**同一条任务**（幂等），
     不带该字段则每次提交都产生一条新任务。
+
+    Requirement: D-121 — 同一个标识被复用到**另一条导入请求**（另一个批次或另一个
+    发起人）时必须报冲突，而不是返回旧任务。
     """
 
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
 
     reason: str = Field(min_length=1, max_length=500)
     idempotency_key: UUID | None = None
+
+
+def _assert_same_submission(
+    task: BackgroundTask,
+    *,
+    batch_id: UUID,
+    actor_id: UUID,
+) -> None:
+    """校验幂等标识命中的任务确实是**这一次提交**。
+
+    Requirement: D-121 — 早先的写法只要标识相同就返回旧任务。
+    批次 B 复用批次 A 的标识时，接口会返回 202「已受理」，
+    但 B 根本没进队列 —— 调用方以为提交成功，实际什么都没发生。
+    标识相同但请求不同，必须是 409 冲突。
+    """
+
+    payload = task.payload or {}
+    same_request = (
+        task.task_type == IMPORT_BATCH_EXECUTE
+        and str(payload.get("batch_id")) == str(batch_id)
+        and str(payload.get("actor_id")) == str(actor_id)
+    )
+    if not same_request:
+        raise ApiError(
+            status_code=409,
+            code="BACKGROUND_TASK_IDEMPOTENCY_CONFLICT",
+            message="重复提交标识已被另一条后台任务占用",
+        )
 
 
 @router.post(
@@ -81,6 +113,8 @@ async def submit_import_batch(
     if idempotency_key is not None:
         existing = await queue.find_by_idempotency_key(idempotency_key)
         if existing is not None:
+            # 幂等命中必须先校验是不是同一次提交，再决定是返回旧任务还是报冲突。
+            _assert_same_submission(existing, batch_id=batch_id, actor_id=user.id)
             return BackgroundTaskSummaryResponse.model_validate(existing)
 
     if batch.status not in EXECUTABLE_BATCH_STATUSES:
@@ -100,5 +134,6 @@ async def submit_import_batch(
         },
         created_by=user.id,
         idempotency_key=idempotency_key,
+        idempotency_scope={"batch_id": str(batch_id), "actor_id": str(user.id)},
     )
     return BackgroundTaskSummaryResponse.model_validate(task)

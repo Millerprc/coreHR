@@ -13,7 +13,7 @@ from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from hris.core.database import get_db
@@ -109,32 +109,61 @@ async def retry_background_task(
 
     只有 ``failed`` 状态的任务可以重试：成功或仍在执行的任务重复重试没有意义，
     直接返回 409，避免把已完成的动作重复触发。
+
+    Requirement: D-121 — **原子条件更新**。早先的写法是「先读状态、再改成等待中」，
+    两个并发重试请求会同时读到 ``failed``；其中一个可能在任务已经被 Worker 执行完之后
+    仍把它改回 ``pending``，造成重复计算与多出一版结果。
+    现在用一条带状态条件的 ``UPDATE ... RETURNING`` 让数据库做判定：
+    只有「当前仍然是 failed」的任务会被改回队列，且只有一个请求能改成功。
     """
 
-    task = await db.get(BackgroundTask, task_id)
-    if task is None:
-        raise ApiError(
-            status_code=404,
-            code="BACKGROUND_TASK_NOT_FOUND",
-            message="后台任务不存在",
+    now = datetime.now(UTC)
+    stmt = (
+        update(BackgroundTask)
+        .where(
+            BackgroundTask.id == task_id,
+            BackgroundTask.status == TASK_STATUS_FAILED,
         )
-    if task.status != TASK_STATUS_FAILED:
+        .values(
+            status=TASK_STATUS_PENDING,
+            attempts=0,
+            next_attempt_at=now,
+            error_code=None,
+            finished_at=None,
+            lease_owner=None,
+            lease_expires_at=None,
+            started_at=None,
+            progress=None,
+        )
+        .returning(BackgroundTask)
+    )
+    row = (await db.execute(stmt)).scalar_one_or_none()
+    if row is None:
+        # 条件没命中：要么任务不存在，要么状态已经被别人改了（跑完了 / 已被重试）。
+        exists = await db.get(BackgroundTask, task_id)
+        if exists is None:
+            raise ApiError(
+                status_code=404,
+                code="BACKGROUND_TASK_NOT_FOUND",
+                message="后台任务不存在",
+            )
         raise ApiError(
             status_code=409,
             code="BACKGROUND_TASK_NOT_RETRYABLE",
             message="只有失败状态的后台任务可以重试",
         )
-
-    task.status = TASK_STATUS_PENDING
-    task.attempts = 0
-    task.next_attempt_at = datetime.now(UTC)
-    task.error_code = None
-    task.finished_at = None
-    task.lease_owner = None
-    task.lease_expires_at = None
-    task.started_at = None
-    await db.flush()
     # Requirement: D-110 — ``updated_at`` 带服务端 onupdate，更新后会被标记为过期；
-    # 直接序列化会触发同步上下文里的懒加载，因此先刷新再组装响应。
-    await db.refresh(task)
-    return BackgroundTaskResponse.model_validate(task)
+    # 直接序列化会触发同步上下文里的懒加载。RETURNING 已经带回刷新后的值，
+    # 这里再取一次会话内的持久对象，保证响应里的时间戳是数据库里的真实值。
+    refreshed = await db.scalar(
+        select(BackgroundTask)
+        .where(BackgroundTask.id == task_id)
+        .execution_options(populate_existing=True)
+    )
+    if refreshed is None:
+        raise ApiError(
+            status_code=404,
+            code="BACKGROUND_TASK_NOT_FOUND",
+            message="后台任务不存在",
+        )
+    return BackgroundTaskResponse.model_validate(refreshed)

@@ -37,6 +37,53 @@ BASE_BACKOFF_SECONDS = 30
 MAX_BACKOFF_SECONDS = 1800
 DEFAULT_LEASE_SECONDS = 60
 
+#: 尝试次数用尽时的受控错误码（不含个人信息）。
+ERROR_CODE_RETRY_EXHAUSTED = "retry_exhausted"
+
+
+class TaskLeaseLostError(RuntimeError):
+    """租约已被别的 Worker 抢走 —— 当前 Worker 不得再写这条任务的结果。
+
+    Requirement: D-121 — 领取、执行、落结果三步必须绑定**同一个执行者**。
+    租约被抢走后继续写结果，等于两个 Worker 同时写同一批业务数据
+    （批量考勤计算每次执行都产生新版本，重复执行会写出重复结果与重复审计）。
+
+    抛这个错而不是默默写：写不进去总比写错强。
+    """
+
+
+def _assert_same_submission(
+    existing: BackgroundTask,
+    *,
+    task_type: str,
+    scope: dict[str, Any] | None,
+) -> None:
+    """幂等键命中但**不是同一件事**时必须报冲突，不能静默返回旧任务。
+
+    Requirement: D-121 — 同一个重复提交标识被复用到另一条请求时，
+    如果直接返回旧任务，调用方会以为新请求已被受理，而它实际上根本没进队列。
+
+    `scope` 是「这条请求的身份字段」（例如导入批次 id、发起人 id）。
+    只比对这些字段，**不比对** ``trace_id`` / ``reason`` 这类每次请求都可能不同的值。
+    """
+
+    if existing.task_type != task_type:
+        raise ApiError(
+            status_code=409,
+            code="BACKGROUND_TASK_IDEMPOTENCY_CONFLICT",
+            message="重复提交标识已被另一条后台任务占用",
+        )
+    if not scope:
+        return
+    payload = existing.payload or {}
+    for key, value in scope.items():
+        if str(payload.get(key)) != str(value):
+            raise ApiError(
+                status_code=409,
+                code="BACKGROUND_TASK_IDEMPOTENCY_CONFLICT",
+                message="重复提交标识已被另一条后台任务占用",
+            )
+
 
 class TaskQueue:
     """后台任务队列。
@@ -72,16 +119,27 @@ class TaskQueue:
         max_attempts: int = MAX_ATTEMPTS,
         created_by: UUID | None = None,
         idempotency_key: str | None = None,
+        idempotency_scope: dict[str, Any] | None = None,
         available_at: datetime | None = None,
     ) -> BackgroundTask:
         """把任务放进队列。
 
         ``idempotency_key`` 命中已存在的任务时**直接返回那条既有任务**（幂等，不新建）。
+        但命中的是**另一条请求**时（``idempotency_scope`` 不匹配）必须报 409 冲突 ——
+        静默返回旧任务会让调用方误以为新请求已受理。
+
+        Requirement: D-121 — 幂等键的语义是「同一次提交重试返回同一条任务」，
+        而不是「这个键名下的一切请求都算同一次」。
         """
 
         if idempotency_key is not None:
             existing = await self.find_by_idempotency_key(idempotency_key)
             if existing is not None:
+                _assert_same_submission(
+                    existing,
+                    task_type=task_type,
+                    scope=idempotency_scope,
+                )
                 return existing
 
         now = datetime.now(UTC)
@@ -113,6 +171,11 @@ class TaskQueue:
             existing = await self.find_by_idempotency_key(idempotency_key)
             if existing is None:
                 raise
+            _assert_same_submission(
+                existing,
+                task_type=task_type,
+                scope=idempotency_scope,
+            )
             return existing
         return task
 
@@ -126,6 +189,11 @@ class TaskQueue:
 
         领取使用 ``FOR UPDATE SKIP LOCKED``：多个 Worker 实例并行执行时，
         同一批行只会被一个实例拿到，其余实例直接跳过。
+
+        Requirement: D-121 — **尝试次数已用尽的任务不再被领取**。
+        崩溃（进程被杀）不会走 ``fail()``，只能靠回收流程重排；
+        如果回收只是无脑放回队列，崩溃循环的任务会被无限重复领取。
+        这里用 ``attempts < max_attempts`` 兜底，回收流程则直接把它置为失败。
         """
 
         now = datetime.now(UTC)
@@ -135,6 +203,7 @@ class TaskQueue:
                 .where(
                     BackgroundTask.status == TASK_STATUS_PENDING,
                     BackgroundTask.next_attempt_at <= now,
+                    BackgroundTask.attempts < BackgroundTask.max_attempts,
                 )
                 .order_by(BackgroundTask.next_attempt_at, BackgroundTask.created_at)
                 .limit(limit)
@@ -156,10 +225,17 @@ class TaskQueue:
         task_id: UUID,
         result: dict[str, Any] | None = None,
         progress: str | None = None,
+        *,
+        expected_owner: str | None = None,
     ) -> BackgroundTask:
-        """把任务标记为成功。"""
+        """把任务标记为成功。
+
+        Requirement: D-121 — 传 ``expected_owner`` 时校验租约归属：
+        租约已被别人抢走就**不写结果**（抛 :class:`TaskLeaseLostError`）。
+        """
 
         task = await self._require(task_id)
+        self._assert_lease_owner(task, expected_owner)
         task.status = TASK_STATUS_SUCCEEDED
         task.result = result
         task.progress = progress
@@ -205,14 +281,20 @@ class TaskQueue:
         error_code: str,
         *,
         retryable: bool = True,
+        expected_owner: str | None = None,
     ) -> BackgroundTask:
         """把任务标记为失败。
 
         ``retryable=True`` 且还有重试次数时回到 ``pending`` 并按指数退避重排；
         否则置为 ``failed`` 并落结束时间。
+
+        Requirement: D-121 — 传 ``expected_owner`` 时校验租约归属：
+        租约已被别人抢走就**不改这条任务**（抛 :class:`TaskLeaseLostError`），
+        否则迟到的 Worker 会把别人正在跑的任务改写掉。
         """
 
         task = await self._require(task_id)
+        self._assert_lease_owner(task, expected_owner)
         task.error_code = sanitize_error_code(error_code) or "unknown_error"
         task.lease_owner = None
         task.lease_expires_at = None
@@ -249,6 +331,10 @@ class TaskQueue:
         ``now`` 只作为「租约是否已过期」的判定基准；
         回收后的任务**立即**可被再次领取，因此 ``next_attempt_at`` 取真实当前时间
         而不是判定基准（判定基准可能来自测试用的未来时刻）。
+
+        Requirement: D-121 — **尝试次数已用尽的任务不再放回队列**，直接置为失败。
+        进程崩溃不会走 ``fail()``，如果这里无脑放回，崩溃循环的任务会被无限重放，
+        「最多重试 N 次」就形同虚设。
         """
 
         cutoff = now if now is not None else datetime.now(UTC)
@@ -265,9 +351,14 @@ class TaskQueue:
             )
         ).all()
         for task in rows:
-            task.status = TASK_STATUS_PENDING
             task.lease_owner = None
             task.lease_expires_at = None
+            if task.attempts >= task.max_attempts:
+                task.status = TASK_STATUS_FAILED
+                task.error_code = task.error_code or ERROR_CODE_RETRY_EXHAUSTED
+                task.finished_at = available_at
+                continue
+            task.status = TASK_STATUS_PENDING
             task.next_attempt_at = available_at
         if rows:
             await self._db.flush()
@@ -291,6 +382,23 @@ class TaskQueue:
                 message="后台任务不存在",
             )
         return task
+
+    @staticmethod
+    def _assert_lease_owner(
+        task: BackgroundTask,
+        expected_owner: str | None,
+    ) -> None:
+        """校验租约归属，不匹配就拒绝写这条任务。
+
+        Requirement: D-121 — 领取者与写结果者必须是同一个。
+        """
+
+        if expected_owner is None:
+            return
+        if task.lease_owner != expected_owner:
+            raise TaskLeaseLostError(
+                f"task {task.id} 的租约已不属于 {expected_owner}，拒绝写入"
+            )
 
     async def _refresh(self, task: BackgroundTask) -> None:
         """重新读取任务行。

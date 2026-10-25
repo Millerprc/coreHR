@@ -108,8 +108,9 @@ async def _execute_attendance_calculation(
         if now - renewed_at < _LEASE_RENEW_INTERVAL_SECONDS:
             return
         renewed_at = now
-        # 租约已被别人抢走时 renew_lease 会抛错 —— 此时必须让整个任务失败，
+        # 租约已被别人抢走时 renew_lease 会抛错 —— 此时必须**中止整个任务**，
         # 而不是继续写结果（否则两个 Worker 同时在写同一批考勤结果）。
+        # 异常会一路冒到 execute_task，Worker 放弃这条任务并回滚本次执行。
         await queue.renew_lease(task.id, expected_owner=task.lease_owner)
 
     if kind == "daily":
@@ -154,6 +155,10 @@ async def execute_task(queue: TaskQueue, task: BackgroundTask) -> BackgroundTask
     Requirement: D-110 — 处理器抛出的异常原文可能含姓名、手机号等个人信息，
     因此只把「异常类型名」写进错误码，异常原文既不落库也不进日志。
     处理器在保存点内执行，单条任务失败不会污染同一轮里的其他任务。
+
+    Requirement: D-121 — 落结果时校验**租约归属**：租约已被别的 Worker 抢走就
+    抛 :class:`TaskLeaseLostError`，由 Worker 放弃这条任务。
+    迟到的 Worker 绝不能把别人正在跑的任务改写掉。
     """
 
     handler = get_handler(task.task_type)
@@ -167,6 +172,7 @@ async def execute_task(queue: TaskQueue, task: BackgroundTask) -> BackgroundTask
             task.id,
             f"handler_unknown:{task.task_type}",
             retryable=False,
+            expected_owner=queue.worker_id,
         )
 
     try:
@@ -179,5 +185,13 @@ async def execute_task(queue: TaskQueue, task: BackgroundTask) -> BackgroundTask
             task.task_type,
             type(exc).__name__,
         )
-        return await queue.fail(task.id, f"handler_exception:{type(exc).__name__}")
-    return await queue.complete(task.id, result=result)
+        return await queue.fail(
+            task.id,
+            f"handler_exception:{type(exc).__name__}",
+            expected_owner=queue.worker_id,
+        )
+    return await queue.complete(
+        task.id,
+        result=result,
+        expected_owner=queue.worker_id,
+    )
